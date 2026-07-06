@@ -1,0 +1,23 @@
+<settings>
+    <setting propertyKey="@Properties.workoutEnabled" title="@Strings.setWorkoutEnabled">
+        <settingConfig type="boolean"/>
+    </setting>
+    <setting propertyKey="@Properties.numIntervals" title="@Strings.setNumIntervals">
+        <settingConfig type="numeric" min="1" max="30"/>
+    </setting>
+    <setting propertyKey="@Properties.workMinutes" title="@Strings.setWorkMinutes">
+        <settingConfig type="numeric" min="0.5" max="60"/>
+    </setting>
+    <setting propertyKey="@Properties.restMinutes" title="@Strings.setRestMinutes">
+        <settingConfig type="numeric" min="0" max="60"/>
+    </setting>
+    <setting propertyKey="@Properties.targetLo" title="@Strings.setTargetLo">
+        <settingConfig type="numeric" min="4" max="60"/>
+    </setting>
+    <setting propertyKey="@Properties.targetHi" title="@Strings.setTargetHi">
+        <settingConfig type="numeric" min="4" max="60"/>
+    </setting>
+    <setting propertyKey="@Properties.pressToContinue" title="@Strings.setPressToContinue">
+        <settingConfig type="boolean"/>
+    </setting>
+</settings>

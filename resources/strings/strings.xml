@@ -1,0 +1,10 @@
+<strings>
+    <string id="AppName">StrongRow</string>
+    <string id="setWorkoutEnabled">Enable interval workout</string>
+    <string id="setNumIntervals">Number of intervals</string>
+    <string id="setWorkMinutes">Work length (minutes)</string>
+    <string id="setRestMinutes">Rest length (minutes)</string>
+    <string id="setTargetLo">Target low (spm)</string>
+    <string id="setTargetHi">Target high (spm)</string>
+    <string id="setPressToContinue">Press START after rest</string>
+</strings>

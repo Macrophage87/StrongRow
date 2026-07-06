@@ -1,0 +1,9 @@
+<properties>
+    <property id="workoutEnabled" type="boolean">true</property>
+    <property id="numIntervals" type="number">5</property>
+    <property id="workMinutes" type="float">4.0</property>
+    <property id="restMinutes" type="float">2.0</property>
+    <property id="targetLo" type="number">16</property>
+    <property id="targetHi" type="number">18</property>
+    <property id="pressToContinue" type="boolean">true</property>
+</properties>

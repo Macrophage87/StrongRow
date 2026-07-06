@@ -1,0 +1,21 @@
+# Connect IQ build output
+bin/
+*.prg
+*.iq
+gen/
+*-mir/
+*.mir
+*.mcgen
+*.mbc
+
+# Developer keys / secrets (never commit these)
+developer_key*
+*.der
+*.pem
+
+# Editor / IDE
+*-settings.json
+.vscode/
+
+# Temp
+*.tmp
