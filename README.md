@@ -1,5 +1,7 @@
 # StrongRow
 
+![StrongRow — low-rate rowing, measured to a tenth](store/hero.png)
+
 A Garmin Connect IQ watch app for **strength-focused, low-stroke-rate rowing**. It
 computes stroke rate from the watch's raw accelerometer — tuned for the slow,
 deliberate strokes used in strength/durability work — and displays it to a
@@ -71,6 +73,15 @@ epix Pro (47 mm), and fēnix 6 / 6 Pro / 6S Pro / 6X Pro.
 
 To install: copy the matching `.prg` into `GARMIN\Apps` on the watch, reboot, then
 launch **StrongRow** from the app list.
+
+## Store assets
+
+The `store/` directory holds the Connect IQ Store listing material:
+`description.txt` (store description, under the 4,000-character limit),
+`icon.png` / `icon.svg` (512 × 512 app icon), and `hero.png` / `hero.svg`
+(1920 × 1080 hero image). All artwork — including the 80 × 80 launcher icon in
+`resources/drawables/` — is generated from `store/generate.py` (requires
+`cairosvg`), so it can be tweaked and regenerated at any size.
 
 ## Author & license
 

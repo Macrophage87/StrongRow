@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#101c30"/>
+      <stop offset="0.45" stop-color="#3b2f4a"/>
+      <stop offset="0.78" stop-color="#c05f33"/>
+      <stop offset="1" stop-color="#f2a548"/>
+    </linearGradient>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#173142"/>
+      <stop offset="1" stop-color="#0b1826"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffd98a" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffd98a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1920" height="720" fill="url(#sky)"/>
+  <circle cx="960" cy="720" r="572.0" fill="url(#glow)"/>
+  <circle cx="960" cy="680" r="260" fill="#f6b352"/>
+  <rect y="720" width="1920" height="360" fill="url(#water)"/>
+  <rect x="810.0" y="746" width="300" height="7" rx="3.5" fill="#f7b45c" opacity="0.38"/><rect x="840.0" y="776" width="240" height="7" rx="3.5" fill="#f7b45c" opacity="0.34"/><rect x="800.0" y="806" width="320" height="7" rx="3.5" fill="#f7b45c" opacity="0.31"/><rect x="860.0" y="836" width="200" height="7" rx="3.5" fill="#f7b45c" opacity="0.28"/><rect x="830.0" y="866" width="260" height="7" rx="3.5" fill="#f7b45c" opacity="0.24"/><rect x="885.0" y="896" width="150" height="7" rx="3.5" fill="#f7b45c" opacity="0.20"/><rect x="860.0" y="926" width="200" height="7" rx="3.5" fill="#f7b45c" opacity="0.17"/><rect x="905.0" y="956" width="110" height="7" rx="3.5" fill="#f7b45c" opacity="0.13"/><rect x="890.0" y="986" width="140" height="7" rx="3.5" fill="#f7b45c" opacity="0.10"/><rect x="920.0" y="1016" width="80" height="7" rx="3.5" fill="#f7b45c" opacity="0.06"/>
+  <rect x="300" y="780" width="260" height="5" rx="2.5" fill="#3d6a7a" opacity="0.5"/><rect x="1500" y="770" width="300" height="5" rx="2.5" fill="#3d6a7a" opacity="0.5"/><rect x="520" y="900" width="340" height="5" rx="2.5" fill="#3d6a7a" opacity="0.5"/><rect x="1350" y="920" width="280" height="5" rx="2.5" fill="#3d6a7a" opacity="0.5"/><rect x="240" y="1000" width="300" height="5" rx="2.5" fill="#3d6a7a" opacity="0.5"/><rect x="1580" y="1010" width="240" height="5" rx="2.5" fill="#3d6a7a" opacity="0.5"/>
+  
+  <text x="960" y="170" text-anchor="middle" font-family="DejaVu Sans" font-weight="bold"
+        font-size="118" letter-spacing="26" fill="#f7f3ea">STRONGROW</text>
+  <text x="960" y="238" text-anchor="middle" font-family="DejaVu Sans"
+        font-size="34" letter-spacing="10" fill="#f5b45f">LOW-RATE ROWING &#183; MEASURED TO A TENTH</text>
+
+  
+  <g id="rower">
+    <!-- far-side oar (behind everything) -->
+    <line x1="965" y1="612" x2="700" y2="775" stroke="#2a3648" stroke-width="10" stroke-linecap="round"/>
+    <path d="M 736 752 L 700 775 L 652 818 L 690 810 Z" fill="#2a3648"/>
+
+    <!-- hull -->
+    <path d="M 260 706
+             C 500 692, 760 688, 1000 688
+             C 1240 688, 1480 694, 1660 704
+             C 1500 716, 1240 722, 1000 722
+             C 760 722, 470 716, 260 706 Z" fill="#0d1420"/>
+    <!-- stern fin -->
+    <path d="M 1470 718 L 1492 752 L 1504 718 Z" fill="#0d1420"/>
+    <!-- bow ball -->
+    <circle cx="258" cy="705" r="7" fill="#0d1420"/>
+
+    <!-- foot stretcher -->
+    <path d="M 1312 652 L 1328 656 L 1300 710 L 1284 706 Z" fill="#0d1420"/>
+
+    <!-- seat -->
+    <rect x="938" y="674" width="92" height="13" rx="6.5" fill="#0d1420"/>
+
+    <!-- legs: quad capsule to a defined knee, shin down to the stretcher -->
+    <line x1="995" y1="650" x2="1148" y2="620" stroke="#0d1420" stroke-width="46" stroke-linecap="round"/>
+    <!-- quad bulge on top of thigh -->
+    <ellipse cx="1070" cy="618" rx="52" ry="15" fill="#0d1420" transform="rotate(-11 1070 618)"/>
+    <circle cx="1148" cy="622" r="23" fill="#0d1420"/>
+    <line x1="1148" y1="622" x2="1252" y2="672" stroke="#0d1420" stroke-width="23" stroke-linecap="round"/>
+    <!-- calf bulge -->
+    <ellipse cx="1196" cy="654" rx="24" ry="11" fill="#0d1420" transform="rotate(26 1196 654)"/>
+    <!-- foot on stretcher -->
+    <path d="M 1244 658 L 1288 672 L 1282 696 L 1240 684 Z" fill="#0d1420"/>
+
+    <!-- glutes -->
+    <circle cx="972" cy="656" r="25" fill="#0d1420"/>
+
+    <!-- torso: modest back lean, chest up, broad shoulders tapering to waist -->
+    <path d="M 948 676
+             C 930 656, 916 610, 906 566
+             C 900 540, 900 522, 916 514
+             C 934 506, 956 516, 964 540
+             C 974 570, 982 608, 996 640
+             C 1010 668, 986 690, 948 676 Z" fill="#0d1420"/>
+    <!-- trap / rear delt mass -->
+    <ellipse cx="922" cy="530" rx="24" ry="18" fill="#0d1420" transform="rotate(42 922 530)"/>
+
+    <!-- head + neck, chin level (looking toward the stern) -->
+    <circle cx="924" cy="488" r="33" fill="#0d1420"/>
+
+    <!-- near oar: handle at the ribs through the oarlock into the water -->
+    <line x1="962" y1="612" x2="648" y2="816" stroke="#0d1420" stroke-width="12" stroke-linecap="round"/>
+    <!-- blade -->
+    <path d="M 694 780 L 648 816 L 590 864 L 630 858 Z" fill="#0d1420"/>
+    <!-- splash where the shaft meets the water -->
+    <path d="M 764 738 Q 786 726 810 736" stroke="#f2d8a8" stroke-width="5" fill="none" opacity="0.7"/>
+    <!-- rigger to oarlock -->
+    <path d="M 910 700 L 830 700 L 826 690 L 868 690 Z" fill="#0d1420"/>
+    <circle cx="828" cy="698" r="9" fill="#0d1420"/>
+
+    <!-- arm: thick upper arm to a drawn-back elbow, forearm to the handle -->
+    <line x1="926" y1="540" x2="856" y2="622" stroke="#0d1420" stroke-width="34" stroke-linecap="round"/>
+    <line x1="856" y1="622" x2="958" y2="614" stroke="#0d1420" stroke-width="24" stroke-linecap="round"/>
+    <!-- deltoid -->
+    <circle cx="928" cy="538" r="24" fill="#0d1420"/>
+    <!-- fist -->
+    <circle cx="962" cy="612" r="13" fill="#0d1420"/>
+  </g>
+
+</svg>
