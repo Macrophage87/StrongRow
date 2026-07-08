@@ -32,9 +32,15 @@ catch/drive surge directly, so slow strokes are resolved with sub-1 spm precisio
 - **GPS is on for the whole session**, so the FIT file carries position, speed
   and distance; the display shows the live **/500 m split** and **metres per
   stroke**.
-- The computed rate and distance-per-stroke are written to the FIT file as
-  developer fields (`row_stroke_rate` in spm, `dist_per_stroke` in m) for
-  offline analysis.
+- **R-R / HRV is logged explicitly**, without depending on the watch's
+  "Log HRV" device setting: raw beat-to-beat intervals from the active
+  heart-rate source (strap or wrist OHR) are captured every second, and a
+  rolling **rMSSD** (last ~90 artifact-filtered beat pairs, 30 % jump
+  rejection) is computed on the watch. An **RR indicator** next to the GPS
+  status turns green while intervals are streaming.
+- FIT developer fields written for offline analysis: `row_stroke_rate` (spm)
+  and `dist_per_stroke` (m), `rr_interval` (up to 4 raw ms values per record)
+  and `rmssd` (ms) per record, plus a session-level `avg_rmssd` (ms).
 
 ### Why a watch app, not a data field
 

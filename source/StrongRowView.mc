@@ -28,6 +28,11 @@ using Toybox.Lang;
 // stroke, and both stroke rate and distance-per-stroke are written to the FIT
 // as developer fields.
 //
+// R-R / HRV: beat-to-beat intervals from the active heart-rate source are
+// logged explicitly to the FIT (raw rr_interval arrays per record, a rolling
+// artifact-filtered rMSSD per record, and a session-average rMSSD), without
+// depending on the watch's "Log HRV" device setting.
+//
 // Optional built-in interval workout (default 5 x 4:00 at 16-18 spm, 2:00
 // rest, press-START gate after each rest) wrapped in untimed WARM UP and
 // COOL DOWN steps that only advance on a START press - so launching and
@@ -78,6 +83,12 @@ class StrongRowView extends Ui.View {
     hidden const AC_MIN_CONF = 0.35;  // below this: no period lock
     hidden const AC_SUB_K    = 0.50;  // subharmonic must reach this vs best
     hidden const REFRACT_FRAC = 0.72; // fraction of locked period a peak is ignored
+    // R-R / HRV
+    hidden const RR_MIN_MS = 250;     // physiological beat interval range
+    hidden const RR_MAX_MS = 2500;
+    hidden const RR_ART_K  = 0.30;    // reject successive jumps > 30% as artifacts
+    hidden const RR_NDIFF  = 90;      // rMSSD window: last ~90 beat pairs
+    hidden const RR_PER_REC = 4;      // raw intervals logged per record
 
     hidden var mDt;
     hidden var mAlphaSlow;
@@ -111,6 +122,17 @@ class StrongRowView extends Ui.View {
     hidden var mAcBatch;
     hidden var mAcPeriod;
 
+    // R-R / HRV state
+    hidden var mRrOk;
+    hidden var mLastRrMs;
+    hidden var mRrLast;
+    hidden var mDiffSq;
+    hidden var mDiffIdx;
+    hidden var mDiffCount;
+    hidden var mRmssd;
+    hidden var mRmssdSum;
+    hidden var mRmssdN;
+
     // ================= app / workout state ==================================
     hidden var mSensorOk;
     hidden var mGpsQual;
@@ -118,6 +140,9 @@ class StrongRowView extends Ui.View {
     hidden var mSession;
     hidden var mFitRate;
     hidden var mFitDps;
+    hidden var mFitRr;
+    hidden var mFitRmssd;
+    hidden var mFitAvgRmssd;
     hidden var mStartMs;
 
     hidden var mSteps;
@@ -136,6 +161,18 @@ class StrongRowView extends Ui.View {
         mSession    = null;
         mFitRate    = null;
         mFitDps     = null;
+        mFitRr      = null;
+        mFitRmssd   = null;
+        mFitAvgRmssd = null;
+        mRrOk       = false;
+        mLastRrMs   = 0;
+        mRrLast     = 0;
+        mDiffSq     = new [RR_NDIFF];
+        mDiffIdx    = 0;
+        mDiffCount  = 0;
+        mRmssd      = 0.0;
+        mRmssdSum   = 0.0;
+        mRmssdN     = 0;
         mStartMs    = 0;
         mStarted    = false;
         mPaused     = false;
@@ -241,6 +278,11 @@ class StrongRowView extends Ui.View {
         if (mStarted && !mPaused) {
             if (mFitRate != null) { mFitRate.setData(mRate); }
             if (mFitDps != null)  { mFitDps.setData(distPerStroke(currentSpeed())); }
+            if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }
+            if (mRmssd > 0.0) {
+                mRmssdSum += mRmssd;
+                mRmssdN++;
+            }
         }
         if (mWorkoutEnabled && mStarted && !mPaused) {
             var st = mSteps[mStepIdx];
@@ -254,15 +296,29 @@ class StrongRowView extends Ui.View {
 
     // ================= sensor / detector ===================================
     hidden function startSensor() {
+        var accOpt = { :enabled => true, :sampleRate => REQ_RATE };
+        // ask for beat-to-beat (R-R) intervals along with the accelerometer;
+        // fall back to accelerometer-only on devices/firmware without them
         try {
-            var options = {
+            Sensor.registerSensorDataListener(method(:onSensorData), {
                 :period => 1,
-                :accelerometer => { :enabled => true, :sampleRate => REQ_RATE }
-            };
-            Sensor.registerSensorDataListener(method(:onAccel), options);
+                :accelerometer => accOpt,
+                :heartBeatIntervals => { :enabled => true }
+            });
             mSensorOk = true;
+            mRrOk = true;
         } catch (e) {
-            mSensorOk = false;
+            try {
+                Sensor.registerSensorDataListener(method(:onSensorData), {
+                    :period => 1,
+                    :accelerometer => accOpt
+                });
+                mSensorOk = true;
+                mRrOk = false;
+            } catch (e2) {
+                mSensorOk = false;
+                mRrOk = false;
+            }
         }
     }
 
@@ -292,7 +348,10 @@ class StrongRowView extends Ui.View {
         mCoeffReady = true;
     }
 
-    function onAccel(sensorData as Sensor.SensorData) as Void {
+    function onSensorData(sensorData as Sensor.SensorData) as Void {
+        if (mRrOk && (sensorData has :heartRateData) && sensorData.heartRateData != null) {
+            handleRr(sensorData.heartRateData.heartBeatIntervals);
+        }
         var accel = sensorData.accelerometerData;
         if (accel == null) { return; }
         var xs = accel.x;
@@ -472,6 +531,49 @@ class StrongRowView extends Ui.View {
         }
     }
 
+    // ================= R-R / HRV ===========================================
+    // Raw beat-to-beat intervals go into the FIT unfiltered (offline tools do
+    // their own cleaning); the on-watch rMSSD uses only artifact-free pairs.
+    hidden function handleRr(ivals) {
+        if (ivals == null) { return; }
+        var n = ivals.size();
+        if (n <= 0) { return; }
+        mLastRrMs = System.getTimer();
+
+        var arr = new [RR_PER_REC];
+        for (var j = 0; j < RR_PER_REC; j++) { arr[j] = 0; }
+        var k = 0;
+        for (var i = 0; i < n; i++) {
+            var rr = ivals[i];
+            if (rr == null) { continue; }
+            rr = rr.toNumber();
+            if (k < RR_PER_REC) { arr[k] = rr; k++; }
+            if (rr >= RR_MIN_MS && rr <= RR_MAX_MS) {
+                if (mRrLast > 0) {
+                    var d = rr - mRrLast;
+                    if (d < 0) { d = -d; }
+                    if (d <= RR_ART_K * mRrLast) {
+                        mDiffSq[mDiffIdx] = (d * 1.0) * d;
+                        mDiffIdx = (mDiffIdx + 1) % RR_NDIFF;
+                        if (mDiffCount < RR_NDIFF) { mDiffCount++; }
+                    }
+                }
+                mRrLast = rr;
+            }
+        }
+        if (k > 0 && mFitRr != null && mStarted && !mPaused) {
+            mFitRr.setData(arr);
+        }
+        recomputeRmssd();
+    }
+
+    hidden function recomputeRmssd() {
+        if (mDiffCount < 5) { mRmssd = 0.0; return; }
+        var s = 0.0;
+        for (var i = 0; i < mDiffCount; i++) { s += mDiffSq[i]; }
+        mRmssd = Math.sqrt(s / mDiffCount);
+    }
+
     hidden function registerStroke(t) {
         if (mLastStrokeT > -50.0) {
             var p = t - mLastStrokeT;
@@ -528,6 +630,25 @@ class StrongRowView extends Ui.View {
                 mFitDps = mSession.createField(
                     "dist_per_stroke", 1, Fit.DATA_TYPE_FLOAT,
                     { :mesgType => Fit.MESG_TYPE_RECORD, :units => "m" });
+                // explicit R-R / HRV logging, independent of the watch's
+                // "Log HRV" device setting
+                try {
+                    mFitRr = mSession.createField(
+                        "rr_interval", 2, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "ms", :count => RR_PER_REC });
+                    mFitRmssd = mSession.createField(
+                        "rmssd", 3, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "ms" });
+                    mFitAvgRmssd = mSession.createField(
+                        "avg_rmssd", 4, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_SESSION, :units => "ms" });
+                } catch (e) {
+                    mFitRr = null;
+                    mFitRmssd = null;
+                    mFitAvgRmssd = null;
+                }
+                mRmssdSum = 0.0;
+                mRmssdN = 0;
             } catch (e) {
                 mSession = null;
             }
@@ -612,10 +733,16 @@ class StrongRowView extends Ui.View {
     function stopAndSave() {
         if (mSession != null) {
             if (mSession.isRecording()) { mSession.stop(); }
+            if (mFitAvgRmssd != null && mRmssdN > 0) {
+                mFitAvgRmssd.setData(mRmssdSum / mRmssdN);
+            }
             mSession.save();
             mSession = null;
             mFitRate = null;
             mFitDps = null;
+            mFitRr = null;
+            mFitRmssd = null;
+            mFitAvgRmssd = null;
         }
         mStarted = false;
     }
@@ -688,7 +815,14 @@ class StrongRowView extends Ui.View {
         if (mGpsQual >= 3)      { col = Gfx.COLOR_GREEN;  }   // usable / good
         else if (mGpsQual == 2) { col = Gfx.COLOR_YELLOW; }   // poor
         dc.setColor(col, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(w / 2, h * 0.045, Gfx.FONT_XTINY, "GPS", Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(w * 0.42, h * 0.045, Gfx.FONT_XTINY, "GPS", Gfx.TEXT_JUSTIFY_CENTER);
+        // RR: green while beat intervals are streaming in
+        var rcol = Gfx.COLOR_DK_GRAY;
+        if (mRrOk && mLastRrMs > 0 && (System.getTimer() - mLastRrMs) < 5000) {
+            rcol = Gfx.COLOR_GREEN;
+        }
+        dc.setColor(rcol, Gfx.COLOR_TRANSPARENT);
+        dc.drawText(w * 0.60, h * 0.045, Gfx.FONT_XTINY, "RR", Gfx.TEXT_JUSTIFY_CENTER);
     }
 
     hidden function drawRate(dc, w, h, col) {
