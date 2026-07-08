@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate StrongRow store artwork: hero (1920x1080) and icon (512x512).
+"""Generate StrongRow store artwork: hero (1440x720) and icon (512x512).
 
 Scene: stylized muscular sculler at the finish of the drive, silhouetted
 against a dusk sky with a low sun, single scull hull on calm water.
@@ -108,7 +108,7 @@ SKY_WATER = '''
   </defs>
 '''
 
-def scene(w=1920, h=1080, waterline=720, sun_cx=960, sun_r=260, with_text=True):
+def scene(w=1440, h=720, waterline=720, sun_cx=960, sun_r=260, with_text=True):
     reflect = []
     # sun reflection column: horizontal amber dashes fading downward
     import_y = waterline + 26
@@ -134,7 +134,7 @@ def scene(w=1920, h=1080, waterline=720, sun_cx=960, sun_r=260, with_text=True):
   <text x="960" y="238" text-anchor="middle" font-family="DejaVu Sans"
         font-size="34" letter-spacing="10" fill="#f5b45f">LOW-RATE ROWING &#183; MEASURED TO A TENTH</text>
 '''
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 1920 1080">
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 1920 960">
   {SKY_WATER}
   <rect width="1920" height="{waterline}" fill="url(#sky)"/>
   <circle cx="{sun_cx}" cy="{waterline}" r="{sun_r * 2.2}" fill="url(#glow)"/>
@@ -170,7 +170,7 @@ def icon():
 hero_svg = scene()
 open(f"{OUT}/hero.svg", "w").write(hero_svg)
 cairosvg.svg2png(bytestring=hero_svg.encode(), write_to=f"{OUT}/hero.png",
-                 output_width=1920, output_height=1080)
+                 output_width=1440, output_height=720)
 
 icon_svg = icon()
 cairosvg.svg2png(bytestring=icon_svg.encode(), write_to=LAUNCHER,

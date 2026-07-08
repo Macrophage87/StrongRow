@@ -79,7 +79,7 @@ launch **StrongRow** from the app list.
 The `store/` directory holds the Connect IQ Store listing material:
 `description.txt` (store description, under the 4,000-character limit),
 `icon.png` / `icon.svg` (512 × 512 app icon), and `hero.png` / `hero.svg`
-(1920 × 1080 hero image). All artwork — including the 80 × 80 launcher icon in
+(1440 × 720 hero image). All artwork — including the 80 × 80 launcher icon in
 `resources/drawables/` — is generated from `store/generate.py` (requires
 `cairosvg`), so it can be tweaked and regenerated at any size.
 
