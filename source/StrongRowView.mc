@@ -1,6 +1,7 @@
 using Toybox.WatchUi as Ui;
 using Toybox.Graphics as Gfx;
 using Toybox.Sensor;
+using Toybox.Position;
 using Toybox.System;
 using Toybox.Math;
 using Toybox.Timer;
@@ -15,10 +16,28 @@ using Toybox.Lang;
 // StrongRow - strength-focused rowing app that derives stroke rate from the raw wrist
 // accelerometer at ~25 Hz, tuned for LOW rates and shown to a tenth of a spm.
 //
+// Stroke detection works on the SIGNED band-passed signal of the dominant
+// accelerometer axis (not the rectified magnitude): the drive and the recovery
+// produce opposite-going lobes there, so only one of them is a positive peak.
+// On top of that, an autocorrelation estimate of the true cycle period gates
+// the peak detector, so the mid-cycle recovery surge cannot be counted as a
+// second stroke (the bug that made v1 read ~2x the real rate).
+//
+// GPS is enabled for the whole session, so the FIT file carries position,
+// speed and distance; the display shows the /500 m split and metres per
+// stroke, and both stroke rate and distance-per-stroke are written to the FIT
+// as developer fields.
+//
+// R-R / HRV: beat-to-beat intervals from the active heart-rate source are
+// logged explicitly to the FIT (raw rr_interval arrays per record, a rolling
+// artifact-filtered rMSSD per record, and a session-average rMSSD), without
+// depending on the watch's "Log HRV" device setting.
+//
 // Optional built-in interval workout (default 5 x 4:00 at 16-18 spm, 2:00
-// rest, press-START gate after each rest). Everything is configurable from the
-// Connect IQ app settings in Garmin Connect, including turning the workout off
-// entirely for a plain free row.
+// rest, press-START gate after each rest) wrapped in untimed WARM UP and
+// COOL DOWN steps that only advance on a START press - so launching and
+// docking are recorded without eating into the intervals. Everything is
+// configurable from the Connect IQ app settings in Garmin Connect.
 //
 // Note: only the watch accelerometer is available - Connect IQ cannot read an
 // external chest strap's accelerometer (HRM 600 etc.), so stroke detection is
@@ -31,6 +50,8 @@ class StrongRowView extends Ui.View {
     hidden const STEP_REST = 1;
     hidden const STEP_GATE = 2;
     hidden const STEP_DONE = 3;
+    hidden const STEP_WARM = 4;
+    hidden const STEP_COOL = 5;
 
     // ---- workout params (loaded from settings) ----
     hidden var mWorkoutEnabled;
@@ -40,26 +61,46 @@ class StrongRowView extends Ui.View {
     hidden var mTgtLo;
     hidden var mTgtHi;
     hidden var mGate;
+    hidden var mWarmCool;
 
     // ================= stroke detector tunables =============================
     hidden const REQ_RATE = 25;
     hidden const MIN_RATE = 6.0;
-    hidden const MAX_RATE = 50.0;
+    hidden const MAX_RATE = 40.0;
     hidden const FC_SLOW = 0.10;
     hidden const FC_FAST = 1.80;
     hidden const FC_ENV  = 0.30;
+    hidden const FC_VAR  = 0.03;
     hidden const THR_K    = 0.60;
     hidden const THR_LO_K = 0.40;
     hidden const MIN_THR  = 40.0;
     hidden const NPER = 3;
+    // autocorrelation period gate
+    hidden const AC_HZ       = 5.0;   // decimated sample rate
+    hidden const AC_BUF      = 128;   // ~25 s of history
+    hidden const AC_WIN      = 64;    // products per lag
+    hidden const AC_MIN_N    = 40;    // don't estimate before ~8 s of data
+    hidden const AC_MIN_CONF = 0.35;  // below this: no period lock
+    hidden const AC_SUB_K    = 0.50;  // subharmonic must reach this vs best
+    hidden const REFRACT_FRAC = 0.72; // fraction of locked period a peak is ignored
+    // R-R / HRV
+    hidden const RR_MIN_MS = 250;     // physiological beat interval range
+    hidden const RR_MAX_MS = 2500;
+    hidden const RR_ART_K  = 0.30;    // reject successive jumps > 30% as artifacts
+    hidden const RR_NDIFF  = 90;      // rMSSD window: last ~90 beat pairs
+    hidden const RR_PER_REC = 4;      // raw intervals logged per record
 
     hidden var mDt;
     hidden var mAlphaSlow;
     hidden var mAlphaFast;
     hidden var mAlphaEnv;
+    hidden var mAlphaVar;
     hidden var mCoeffReady;
-    hidden var mGravity;
-    hidden var mLp;
+    // per-axis filter state (gravity, band-pass, activity variance)
+    hidden var mGravX; hidden var mGravY; hidden var mGravZ;
+    hidden var mLpX;   hidden var mLpY;   hidden var mLpZ;
+    hidden var mVarX;  hidden var mVarY;  hidden var mVarZ;
+    hidden var mAxis;
     hidden var mEnv;
     hidden var mArmed;
     hidden var mSampleIdx;
@@ -70,12 +111,38 @@ class StrongRowView extends Ui.View {
     hidden var mPCount;
     hidden var mRate;
     hidden var mStrokeCount;
+    // autocorrelation state
+    hidden var mDecim;
+    hidden var mAcDt;
+    hidden var mAcBuf;
+    hidden var mAcIdx;
+    hidden var mAcCount;
+    hidden var mAcAccum;
+    hidden var mAcAccumN;
+    hidden var mAcBatch;
+    hidden var mAcPeriod;
+
+    // R-R / HRV state
+    hidden var mRrOk;
+    hidden var mLastRrMs;
+    hidden var mRrLast;
+    hidden var mDiffSq;
+    hidden var mDiffIdx;
+    hidden var mDiffCount;
+    hidden var mRmssd;
+    hidden var mRmssdSum;
+    hidden var mRmssdN;
 
     // ================= app / workout state ==================================
     hidden var mSensorOk;
+    hidden var mGpsQual;
     hidden var mTimer;
     hidden var mSession;
-    hidden var mFitField;
+    hidden var mFitRate;
+    hidden var mFitDps;
+    hidden var mFitRr;
+    hidden var mFitRmssd;
+    hidden var mFitAvgRmssd;
     hidden var mStartMs;
 
     hidden var mSteps;
@@ -90,8 +157,22 @@ class StrongRowView extends Ui.View {
         resetDetector();
         mCoeffReady = false;
         mSensorOk   = false;
+        mGpsQual    = 0;
         mSession    = null;
-        mFitField   = null;
+        mFitRate    = null;
+        mFitDps     = null;
+        mFitRr      = null;
+        mFitRmssd   = null;
+        mFitAvgRmssd = null;
+        mRrOk       = false;
+        mLastRrMs   = 0;
+        mRrLast     = 0;
+        mDiffSq     = new [RR_NDIFF];
+        mDiffIdx    = 0;
+        mDiffCount  = 0;
+        mRmssd      = 0.0;
+        mRmssdSum   = 0.0;
+        mRmssdN     = 0;
         mStartMs    = 0;
         mStarted    = false;
         mPaused     = false;
@@ -126,6 +207,7 @@ class StrongRowView extends Ui.View {
         mTgtHi = getProp("targetHi", 18).toNumber();
         if (mTgtHi < mTgtLo) { var t = mTgtLo; mTgtLo = mTgtHi; mTgtHi = t; }
         mGate = getProp("pressToContinue", true);
+        mWarmCool = getProp("warmupCooldown", true);
     }
 
     // reload from Garmin Connect settings (only when not mid-session)
@@ -138,6 +220,9 @@ class StrongRowView extends Ui.View {
 
     hidden function buildWorkout() {
         mSteps = [];
+        if (mWarmCool) {
+            mSteps.add({ :type => STEP_WARM });
+        }
         for (var i = 1; i <= mNumWork; i++) {
             mSteps.add({ :type => STEP_WORK, :dur => mWorkSec, :idx => i });
             if (i < mNumWork) {
@@ -149,12 +234,17 @@ class StrongRowView extends Ui.View {
                 }
             }
         }
+        if (mWarmCool) {
+            mSteps.add({ :type => STEP_COOL });
+        }
         mSteps.add({ :type => STEP_DONE });
     }
 
     hidden function resetDetector() {
-        mGravity     = 1000.0;
-        mLp          = 0.0;
+        mGravX = 0.0; mGravY = 0.0; mGravZ = 0.0;
+        mLpX   = 0.0; mLpY   = 0.0; mLpZ   = 0.0;
+        mVarX  = 0.0; mVarY  = 0.0; mVarZ  = 0.0;
+        mAxis        = 0;
         mEnv         = 0.0;
         mArmed       = true;
         mSampleIdx   = 0;
@@ -165,17 +255,34 @@ class StrongRowView extends Ui.View {
         mPCount      = 0;
         mRate        = 0.0;
         mStrokeCount = 0;
+        mDecim       = 5;
+        mAcDt        = 0.2;
+        mAcBuf       = new [AC_BUF];
+        for (var i = 0; i < AC_BUF; i++) { mAcBuf[i] = 0.0; }
+        mAcIdx       = 0;
+        mAcCount     = 0;
+        mAcAccum     = 0.0;
+        mAcAccumN    = 0;
+        mAcBatch     = 0;
+        mAcPeriod    = 0.0;
     }
 
     function onLayout(dc) {
         startSensor();
+        startGps();
         mTimer = new Timer.Timer();
         mTimer.start(method(:onTick), 250, true);
     }
 
     function onTick() as Void {
-        if (mFitField != null && !mPaused && mStarted) {
-            mFitField.setData(mRate);
+        if (mStarted && !mPaused) {
+            if (mFitRate != null) { mFitRate.setData(mRate); }
+            if (mFitDps != null)  { mFitDps.setData(distPerStroke(currentSpeed())); }
+            if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }
+            if (mRmssd > 0.0) {
+                mRmssdSum += mRmssd;
+                mRmssdN++;
+            }
         }
         if (mWorkoutEnabled && mStarted && !mPaused) {
             var st = mSteps[mStepIdx];
@@ -189,15 +296,43 @@ class StrongRowView extends Ui.View {
 
     // ================= sensor / detector ===================================
     hidden function startSensor() {
+        var accOpt = { :enabled => true, :sampleRate => REQ_RATE };
+        // ask for beat-to-beat (R-R) intervals along with the accelerometer;
+        // fall back to accelerometer-only on devices/firmware without them
         try {
-            var options = {
+            Sensor.registerSensorDataListener(method(:onSensorData), {
                 :period => 1,
-                :accelerometer => { :enabled => true, :sampleRate => REQ_RATE }
-            };
-            Sensor.registerSensorDataListener(method(:onAccel), options);
+                :accelerometer => accOpt,
+                :heartBeatIntervals => { :enabled => true }
+            });
             mSensorOk = true;
+            mRrOk = true;
         } catch (e) {
-            mSensorOk = false;
+            try {
+                Sensor.registerSensorDataListener(method(:onSensorData), {
+                    :period => 1,
+                    :accelerometer => accOpt
+                });
+                mSensorOk = true;
+                mRrOk = false;
+            } catch (e2) {
+                mSensorOk = false;
+                mRrOk = false;
+            }
+        }
+    }
+
+    // GPS on for the whole app lifetime, so a fix is ready before START and
+    // the recording session logs position / speed / distance.
+    hidden function startGps() {
+        try {
+            Position.enableLocationEvents(Position.LOCATION_CONTINUOUS, method(:onPosition));
+        } catch (e) {}
+    }
+
+    function onPosition(info as Position.Info) as Void {
+        if (info != null && info.accuracy != null) {
+            mGpsQual = info.accuracy;
         }
     }
 
@@ -206,10 +341,17 @@ class StrongRowView extends Ui.View {
         mAlphaSlow = mDt / (mDt + 1.0 / (2.0 * Math.PI * FC_SLOW));
         mAlphaFast = mDt / (mDt + 1.0 / (2.0 * Math.PI * FC_FAST));
         mAlphaEnv  = mDt / (mDt + 1.0 / (2.0 * Math.PI * FC_ENV));
+        mAlphaVar  = mDt / (mDt + 1.0 / (2.0 * Math.PI * FC_VAR));
+        mDecim = (rate / AC_HZ + 0.5).toNumber();
+        if (mDecim < 1) { mDecim = 1; }
+        mAcDt = mDt * mDecim;
         mCoeffReady = true;
     }
 
-    function onAccel(sensorData as Sensor.SensorData) as Void {
+    function onSensorData(sensorData as Sensor.SensorData) as Void {
+        if (mRrOk && (sensorData has :heartRateData) && sensorData.heartRateData != null) {
+            handleRr(sensorData.heartRateData.heartBeatIntervals);
+        }
         var accel = sensorData.accelerometerData;
         if (accel == null) { return; }
         var xs = accel.x;
@@ -220,16 +362,39 @@ class StrongRowView extends Ui.View {
         if (n <= 0) { return; }
         if (!mCoeffReady) { computeCoeffs(n); }
 
-        for (var i = 0; i < n; i++) {
-            var fx = xs[i];
-            var fy = ys[i];
-            var fz = zs[i];
-            var s = Math.sqrt(fx * fx + fy * fy + fz * fz);
+        // dynamic refractory: once the autocorrelation has locked the cycle
+        // period, a new peak within REFRACT_FRAC of it is the recovery surge
+        // of the SAME stroke, not a new stroke.
+        var refract = 60.0 / MAX_RATE;
+        if (mAcPeriod > 0.0) {
+            var r2 = mAcPeriod * REFRACT_FRAC;
+            if (r2 > refract) { refract = r2; }
+        }
 
-            mGravity += mAlphaSlow * (s - mGravity);
-            var hp = s - mGravity;
-            mLp += mAlphaFast * (hp - mLp);
-            var sig = mLp;
+        for (var i = 0; i < n; i++) {
+            var fx = xs[i].toFloat();
+            var fy = ys[i].toFloat();
+            var fz = zs[i].toFloat();
+
+            // per-axis gravity removal + band-pass + activity variance
+            mGravX += mAlphaSlow * (fx - mGravX);
+            var hx = fx - mGravX;
+            mLpX += mAlphaFast * (hx - mLpX);
+            mVarX += mAlphaVar * (mLpX * mLpX - mVarX);
+
+            mGravY += mAlphaSlow * (fy - mGravY);
+            var hy = fy - mGravY;
+            mLpY += mAlphaFast * (hy - mLpY);
+            mVarY += mAlphaVar * (mLpY * mLpY - mVarY);
+
+            mGravZ += mAlphaSlow * (fz - mGravZ);
+            var hz = fz - mGravZ;
+            mLpZ += mAlphaFast * (hz - mLpZ);
+            mVarZ += mAlphaVar * (mLpZ * mLpZ - mVarZ);
+
+            // SIGNED signal of the dominant axis: drive and recovery lobes
+            // have opposite sign here, unlike in the rectified magnitude.
+            var sig = (mAxis == 0) ? mLpX : ((mAxis == 1) ? mLpY : mLpZ);
 
             var a = (sig < 0.0) ? -sig : sig;
             mEnv += mAlphaEnv * (a - mEnv);
@@ -238,13 +403,42 @@ class StrongRowView extends Ui.View {
             var thrLo = thr * THR_LO_K;
 
             var t = mSampleIdx * mDt;
-            if (mArmed && sig > thr && (t - mLastStrokeT) > (60.0 / MAX_RATE)) {
+            if (mArmed && sig > thr && (t - mLastStrokeT) > refract) {
                 registerStroke(t);
                 mArmed = false;
             } else if (sig < thrLo) {
                 mArmed = true;
             }
+
+            // decimate for the autocorrelation buffer
+            mAcAccum += sig;
+            mAcAccumN++;
+            if (mAcAccumN >= mDecim) {
+                mAcBuf[mAcIdx] = mAcAccum / mAcAccumN;
+                mAcIdx = (mAcIdx + 1) % AC_BUF;
+                if (mAcCount < AC_BUF) { mAcCount++; }
+                mAcAccum = 0.0;
+                mAcAccumN = 0;
+            }
             mSampleIdx++;
+        }
+
+        // switch dominant axis only on a clear (1.5x) win, to avoid flapping
+        var cur = (mAxis == 0) ? mVarX : ((mAxis == 1) ? mVarY : mVarZ);
+        var b = mAxis;
+        var bv = cur * 1.5;
+        if (mVarX > bv) { b = 0; bv = mVarX; }
+        if (mVarY > bv) { b = 1; bv = mVarY; }
+        if (mVarZ > bv) { b = 2; bv = mVarZ; }
+        if (b != mAxis) {
+            mAxis = b;
+            mArmed = true;
+        }
+
+        mAcBatch++;
+        if (mAcBatch >= 2) {
+            mAcBatch = 0;
+            updateAutocorr();
         }
 
         var now = mSampleIdx * mDt;
@@ -259,6 +453,125 @@ class StrongRowView extends Ui.View {
             mPCount = 0;
             mPIdx = 0;
         }
+    }
+
+    // Estimate the stroke cycle period from the autocorrelation of the
+    // decimated band-passed signal. The signal is periodic at the TRUE cycle
+    // length; at half a cycle the drive lobe lands on the (differently
+    // shaped, opposite-going) recovery lobe, so the half-period correlation
+    // stays well below the fundamental and cannot be picked.
+    hidden function updateAutocorr() {
+        var n = mAcCount;
+        if (n < AC_MIN_N) { return; }
+
+        // linearize the newest n samples, oldest first
+        var buf = new [n];
+        var start = (mAcIdx - n + AC_BUF) % AC_BUF;
+        for (var i = 0; i < n; i++) {
+            buf[i] = mAcBuf[(start + i) % AC_BUF];
+        }
+
+        var minLag = ((60.0 / MAX_RATE) / mAcDt + 0.5).toNumber();
+        var maxLag = ((60.0 / MIN_RATE) / mAcDt + 0.5).toNumber();
+        if (minLag < 2) { minLag = 2; }
+        if (maxLag > n - 8) { maxLag = n - 8; }
+        if (maxLag <= minLag) { return; }
+
+        var w = AC_WIN;
+        if (w > n - maxLag) { w = n - maxLag; }
+        if (w < 20) { return; }
+
+        var e = 0.0;
+        for (var k = n - w; k < n; k++) { e += buf[k] * buf[k]; }
+        if (e <= 0.0) { mAcPeriod = 0.0; return; }
+
+        var rr = new [maxLag + 1];
+        var best = 0.0;
+        var bestL = 0;
+        for (var lag = minLag; lag <= maxLag; lag++) {
+            var s = 0.0;
+            for (var k = n - w; k < n; k++) { s += buf[k] * buf[k - lag]; }
+            rr[lag] = s;
+            if (s > best) { best = s; bestL = lag; }
+        }
+
+        if (bestL == 0 || best / e < AC_MIN_CONF) {
+            mAcPeriod = 0.0;
+            return;
+        }
+
+        // subharmonic correction: the global best can land on an integer
+        // multiple of the true period (lag quantization favors whichever
+        // multiple falls closest to a bin). Try bestL/6 .. bestL/2 and take
+        // the largest divisor whose lag is still a strong peak. At the true
+        // HALF-period the drive lobe correlates with the opposite-going
+        // recovery lobe, so r stays near zero there and this can never
+        // select the double-count rate.
+        var chosen = bestL;
+        for (var div = 6; div >= 2; div--) {
+            var c = ((bestL * 1.0) / div + 0.5).toNumber();
+            if (c < minLag) { continue; }
+            var cBest = rr[c];
+            var cLag = c;
+            if (c + 1 <= maxLag && rr[c + 1] > cBest) { cBest = rr[c + 1]; cLag = c + 1; }
+            if (c - 1 >= minLag && rr[c - 1] > cBest) { cBest = rr[c - 1]; cLag = c - 1; }
+            if (cBest >= AC_SUB_K * best) {
+                chosen = cLag;
+                break;
+            }
+        }
+
+        var p = chosen * mAcDt;
+        var d = p - mAcPeriod;
+        if (d < 0.0) { d = -d; }
+        if (mAcPeriod > 0.0 && d < 0.35 * mAcPeriod) {
+            mAcPeriod += 0.4 * (p - mAcPeriod);
+        } else {
+            mAcPeriod = p;
+        }
+    }
+
+    // ================= R-R / HRV ===========================================
+    // Raw beat-to-beat intervals go into the FIT unfiltered (offline tools do
+    // their own cleaning); the on-watch rMSSD uses only artifact-free pairs.
+    hidden function handleRr(ivals) {
+        if (ivals == null) { return; }
+        var n = ivals.size();
+        if (n <= 0) { return; }
+        mLastRrMs = System.getTimer();
+
+        var arr = new [RR_PER_REC];
+        for (var j = 0; j < RR_PER_REC; j++) { arr[j] = 0; }
+        var k = 0;
+        for (var i = 0; i < n; i++) {
+            var rr = ivals[i];
+            if (rr == null) { continue; }
+            rr = rr.toNumber();
+            if (k < RR_PER_REC) { arr[k] = rr; k++; }
+            if (rr >= RR_MIN_MS && rr <= RR_MAX_MS) {
+                if (mRrLast > 0) {
+                    var d = rr - mRrLast;
+                    if (d < 0) { d = -d; }
+                    if (d <= RR_ART_K * mRrLast) {
+                        mDiffSq[mDiffIdx] = (d * 1.0) * d;
+                        mDiffIdx = (mDiffIdx + 1) % RR_NDIFF;
+                        if (mDiffCount < RR_NDIFF) { mDiffCount++; }
+                    }
+                }
+                mRrLast = rr;
+            }
+        }
+        if (k > 0 && mFitRr != null && mStarted && !mPaused) {
+            mFitRr.setData(arr);
+        }
+        recomputeRmssd();
+    }
+
+    hidden function recomputeRmssd() {
+        if (mDiffCount < 5) { mRmssd = 0.0; return; }
+        var s = 0.0;
+        for (var i = 0; i < mDiffCount; i++) { s += mDiffSq[i]; }
+        mRmssd = Math.sqrt(s / mDiffCount);
     }
 
     hidden function registerStroke(t) {
@@ -284,6 +597,24 @@ class StrongRowView extends Ui.View {
         if (avg > 0.0) { mRate = 60.0 / avg; }
     }
 
+    // ================= speed / distance helpers ============================
+    hidden function currentSpeed() {
+        var ai = Activity.getActivityInfo();
+        if (ai != null && ai.currentSpeed != null) { return ai.currentSpeed; }
+        return 0.0;
+    }
+
+    hidden function elapsedDist() {
+        var ai = Activity.getActivityInfo();
+        if (ai != null && ai.elapsedDistance != null) { return ai.elapsedDistance; }
+        return 0.0;
+    }
+
+    hidden function distPerStroke(spd) {
+        if (spd > 0.3 && mRate > 0.0) { return spd * 60.0 / mRate; }
+        return 0.0;
+    }
+
     // ================= session / workout control ===========================
     hidden function startSession() {
         if (mSession == null) {
@@ -293,9 +624,31 @@ class StrongRowView extends Ui.View {
                     :sport => Activity.SPORT_ROWING,
                     :subSport => Activity.SUB_SPORT_GENERIC
                 });
-                mFitField = mSession.createField(
+                mFitRate = mSession.createField(
                     "row_stroke_rate", 0, Fit.DATA_TYPE_FLOAT,
                     { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
+                mFitDps = mSession.createField(
+                    "dist_per_stroke", 1, Fit.DATA_TYPE_FLOAT,
+                    { :mesgType => Fit.MESG_TYPE_RECORD, :units => "m" });
+                // explicit R-R / HRV logging, independent of the watch's
+                // "Log HRV" device setting
+                try {
+                    mFitRr = mSession.createField(
+                        "rr_interval", 2, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "ms", :count => RR_PER_REC });
+                    mFitRmssd = mSession.createField(
+                        "rmssd", 3, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "ms" });
+                    mFitAvgRmssd = mSession.createField(
+                        "avg_rmssd", 4, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_SESSION, :units => "ms" });
+                } catch (e) {
+                    mFitRr = null;
+                    mFitRmssd = null;
+                    mFitAvgRmssd = null;
+                }
+                mRmssdSum = 0.0;
+                mRmssdN = 0;
             } catch (e) {
                 mSession = null;
             }
@@ -309,6 +662,10 @@ class StrongRowView extends Ui.View {
         var el = (System.getTimer() - mStepStartMs) / 1000.0;
         var r = st[:dur] - el;
         return (r < 0.0) ? 0.0 : r;
+    }
+
+    hidden function stepElapsed() {
+        return (System.getTimer() - mStepStartMs) / 1000.0;
     }
 
     function onPrimary() {
@@ -330,7 +687,7 @@ class StrongRowView extends Ui.View {
         }
         var st = mSteps[mStepIdx];
         var t = st[:type];
-        if (t == STEP_GATE) {
+        if (t == STEP_GATE || t == STEP_WARM || t == STEP_COOL) {
             advanceStep();
         } else if (t == STEP_DONE) {
             return;
@@ -346,14 +703,14 @@ class StrongRowView extends Ui.View {
         mStepIdx = 0;
         mStartMs = System.getTimer();
         mStepStartMs = mStartMs;
-        alert(STEP_WORK);
+        alert(mSteps[0][:type]);
     }
 
     hidden function advanceStep() {
         mStepIdx++;
         var st = mSteps[mStepIdx];
         var t = st[:type];
-        if (t == STEP_WORK || t == STEP_REST) {
+        if (t == STEP_WORK || t == STEP_REST || t == STEP_COOL) {
             if (mSession != null) { try { mSession.addLap(); } catch (e) {} }
             mStepStartMs = System.getTimer();
         }
@@ -376,9 +733,16 @@ class StrongRowView extends Ui.View {
     function stopAndSave() {
         if (mSession != null) {
             if (mSession.isRecording()) { mSession.stop(); }
+            if (mFitAvgRmssd != null && mRmssdN > 0) {
+                mFitAvgRmssd.setData(mRmssdSum / mRmssdN);
+            }
             mSession.save();
             mSession = null;
-            mFitField = null;
+            mFitRate = null;
+            mFitDps = null;
+            mFitRr = null;
+            mFitRmssd = null;
+            mFitAvgRmssd = null;
         }
         mStarted = false;
     }
@@ -388,6 +752,7 @@ class StrongRowView extends Ui.View {
         if (mSensorOk) {
             try { Sensor.unregisterSensorDataListener(); } catch (e) {}
         }
+        try { Position.enableLocationEvents(Position.LOCATION_DISABLE, method(:onPosition)); } catch (e) {}
         stopAndSave();
     }
 
@@ -395,7 +760,7 @@ class StrongRowView extends Ui.View {
         if (!(Toybox has :Attention)) { return; }
         if (Attention has :vibrate) {
             var v;
-            if (stepType == STEP_REST || stepType == STEP_DONE) {
+            if (stepType == STEP_REST || stepType == STEP_DONE || stepType == STEP_COOL) {
                 v = [ new Attention.VibeProfile(75, 300),
                       new Attention.VibeProfile(0, 150),
                       new Attention.VibeProfile(75, 300) ];
@@ -408,6 +773,7 @@ class StrongRowView extends Ui.View {
             var tone = Attention.TONE_LAP;
             if (stepType == STEP_REST)      { tone = Attention.TONE_ALERT_HI; }
             else if (stepType == STEP_GATE) { tone = Attention.TONE_ALERT_LO; }
+            else if (stepType == STEP_COOL) { tone = Attention.TONE_ALERT_HI; }
             else if (stepType == STEP_DONE) { tone = Attention.TONE_STOP; }
             try { Attention.playTone(tone); } catch (e) {}
         }
@@ -421,6 +787,13 @@ class StrongRowView extends Ui.View {
         return m.format("%d") + ":" + r.format("%02d");
     }
 
+    hidden function mmssUp(secs) {
+        var s = secs.toNumber();
+        var m = s / 60;
+        var r = s % 60;
+        return m.format("%d") + ":" + r.format("%02d");
+    }
+
     hidden function totalElapsed() {
         var secs = (System.getTimer() - mStartMs) / 1000;
         var m = secs / 60;
@@ -428,23 +801,56 @@ class StrongRowView extends Ui.View {
         return m.format("%d") + ":" + s.format("%02d");
     }
 
+    hidden function paceStr(spd) {
+        if (spd <= 0.3) { return "-:--"; }
+        var secs = 500.0 / spd;
+        if (secs > 3599.0) { return "-:--"; }
+        var m = (secs / 60).toNumber();
+        var r = (secs - m * 60).toNumber();
+        return m.format("%d") + ":" + r.format("%02d");
+    }
+
+    hidden function drawGps(dc, w, h) {
+        var col = Gfx.COLOR_RED;
+        if (mGpsQual >= 3)      { col = Gfx.COLOR_GREEN;  }   // usable / good
+        else if (mGpsQual == 2) { col = Gfx.COLOR_YELLOW; }   // poor
+        dc.setColor(col, Gfx.COLOR_TRANSPARENT);
+        dc.drawText(w * 0.42, h * 0.045, Gfx.FONT_XTINY, "GPS", Gfx.TEXT_JUSTIFY_CENTER);
+        // RR: green while beat intervals are streaming in
+        var rcol = Gfx.COLOR_DK_GRAY;
+        if (mRrOk && mLastRrMs > 0 && (System.getTimer() - mLastRrMs) < 5000) {
+            rcol = Gfx.COLOR_GREEN;
+        }
+        dc.setColor(rcol, Gfx.COLOR_TRANSPARENT);
+        dc.drawText(w * 0.60, h * 0.045, Gfx.FONT_XTINY, "RR", Gfx.TEXT_JUSTIFY_CENTER);
+    }
+
     hidden function drawRate(dc, w, h, col) {
         var valFont = (w >= 300) ? Gfx.FONT_NUMBER_THAI_HOT : Gfx.FONT_NUMBER_HOT;
         var val = (mRate > 0.0) ? mRate.format("%.1f") : "--.-";
         dc.setColor(col, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(w / 2, h * 0.55, valFont, val,
+        dc.drawText(w / 2, h * 0.52, valFont, val,
                     Gfx.TEXT_JUSTIFY_CENTER | Gfx.TEXT_JUSTIFY_VCENTER);
     }
 
-    hidden function drawFoot(dc, w, h) {
+    hidden function drawPace(dc, w, h, spd) {
+        var dps = distPerStroke(spd);
+        var txt = paceStr(spd) + "/500m";
+        if (dps > 0.0) { txt += "  " + dps.format("%.1f") + "m/str"; }
+        dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
+        dc.drawText(w / 2, h * 0.70, Gfx.FONT_XTINY, txt, Gfx.TEXT_JUSTIFY_CENTER);
+    }
+
+    hidden function drawFoot(dc, w, h, dist) {
         var foot;
         var fcol = Gfx.COLOR_LT_GRAY;
+        var km = (dist / 1000.0).format("%.2f") + "km";
         if (!mSensorOk) {
             foot = "NO ACCEL"; fcol = Gfx.COLOR_RED;
         } else if (mPaused) {
-            foot = "PAUSED  " + mStrokeCount.toString() + " str"; fcol = Gfx.COLOR_YELLOW;
+            foot = "PAUSED  " + mStrokeCount.toString() + "str"; fcol = Gfx.COLOR_YELLOW;
         } else if (mStarted) {
-            foot = "REC " + totalElapsed() + "  " + mStrokeCount.toString() + " str";
+            foot = "REC " + totalElapsed() + " " + km + " " + mStrokeCount.toString() + "str";
             fcol = Gfx.COLOR_RED;
         } else {
             foot = "START to record";
@@ -459,14 +865,20 @@ class StrongRowView extends Ui.View {
         dc.setColor(Gfx.COLOR_BLACK, Gfx.COLOR_BLACK);
         dc.clear();
 
+        var spd = currentSpeed();
+        var dist = elapsedDist();
+
+        drawGps(dc, w, h);
+
         // ---- free-row mode (workout disabled) ----
         if (!mWorkoutEnabled) {
             dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
-            dc.drawText(w / 2, h * 0.12, Gfx.FONT_SMALL, "ROW SPM", Gfx.TEXT_JUSTIFY_CENTER);
+            dc.drawText(w / 2, h * 0.13, Gfx.FONT_SMALL, "ROW SPM", Gfx.TEXT_JUSTIFY_CENTER);
             drawRate(dc, w, h, Gfx.COLOR_WHITE);
+            drawPace(dc, w, h, spd);
             dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
-            dc.drawText(w / 2, h * 0.75, Gfx.FONT_XTINY, "free row", Gfx.TEXT_JUSTIFY_CENTER);
-            drawFoot(dc, w, h);
+            dc.drawText(w / 2, h * 0.78, Gfx.FONT_XTINY, "free row", Gfx.TEXT_JUSTIFY_CENTER);
+            drawFoot(dc, w, h, dist);
             return;
         }
 
@@ -477,16 +889,22 @@ class StrongRowView extends Ui.View {
         var title;
         if (!mStarted)              { title = mNumWork.toString() + "x" + (mWorkSec / 60).toString() + "'"; }
         else if (mPaused)           { title = "PAUSED"; }
+        else if (type == STEP_WARM) { title = "WARM UP"; }
         else if (type == STEP_WORK) { title = "WORK " + st[:idx].toString() + "/" + mNumWork.toString(); }
         else if (type == STEP_REST) { title = "REST"; }
         else if (type == STEP_GATE) { title = "READY"; }
+        else if (type == STEP_COOL) { title = "COOL DOWN"; }
         else                        { title = "DONE"; }
         dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(w / 2, h * 0.12, Gfx.FONT_SMALL, title, Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(w / 2, h * 0.13, Gfx.FONT_SMALL, title, Gfx.TEXT_JUSTIFY_CENTER);
 
         if (type == STEP_WORK || type == STEP_REST) {
             dc.setColor(Gfx.COLOR_WHITE, Gfx.COLOR_TRANSPARENT);
             dc.drawText(w / 2, h * 0.30, Gfx.FONT_NUMBER_MILD, mmss(stepRemaining()),
+                        Gfx.TEXT_JUSTIFY_CENTER | Gfx.TEXT_JUSTIFY_VCENTER);
+        } else if (type == STEP_WARM || type == STEP_COOL) {
+            dc.setColor(Gfx.COLOR_WHITE, Gfx.COLOR_TRANSPARENT);
+            dc.drawText(w / 2, h * 0.30, Gfx.FONT_NUMBER_MILD, mmssUp(stepElapsed()),
                         Gfx.TEXT_JUSTIFY_CENTER | Gfx.TEXT_JUSTIFY_VCENTER);
         } else if (type == STEP_GATE) {
             dc.setColor(Gfx.COLOR_YELLOW, Gfx.COLOR_TRANSPARENT);
@@ -503,16 +921,19 @@ class StrongRowView extends Ui.View {
             col = (mRate >= mTgtLo && mRate <= mTgtHi) ? Gfx.COLOR_GREEN : Gfx.COLOR_ORANGE;
         }
         drawRate(dc, w, h, col);
+        drawPace(dc, w, h, spd);
 
         var sub;
-        if (type == STEP_WORK)      { sub = "target " + mTgtLo.toString() + "-" + mTgtHi.toString() + " spm"; }
+        if (type == STEP_WARM)      { sub = "START to begin work 1"; }
+        else if (type == STEP_WORK) { sub = "target " + mTgtLo.toString() + "-" + mTgtHi.toString() + " spm"; }
         else if (type == STEP_REST) { sub = "next: WORK " + st[:nextn].toString(); }
         else if (type == STEP_GATE) { sub = "to start WORK " + st[:nextn].toString(); }
+        else if (type == STEP_COOL) { sub = "START when docked"; }
         else if (type == STEP_DONE) { sub = "BACK to save"; }
         else                        { sub = "target " + mTgtLo.toString() + "-" + mTgtHi.toString() + " spm"; }
         dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(w / 2, h * 0.75, Gfx.FONT_XTINY, sub, Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(w / 2, h * 0.78, Gfx.FONT_XTINY, sub, Gfx.TEXT_JUSTIFY_CENTER);
 
-        drawFoot(dc, w, h);
+        drawFoot(dc, w, h, dist);
     }
 }

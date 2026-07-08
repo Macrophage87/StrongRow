@@ -20,4 +20,7 @@
     <setting propertyKey="@Properties.pressToContinue" title="@Strings.setPressToContinue">
         <settingConfig type="boolean"/>
     </setting>
+    <setting propertyKey="@Properties.warmupCooldown" title="@Strings.setWarmupCooldown">
+        <settingConfig type="boolean"/>
+    </setting>
 </settings>

@@ -7,4 +7,5 @@
     <string id="setTargetLo">Target low (spm)</string>
     <string id="setTargetHi">Target high (spm)</string>
     <string id="setPressToContinue">Press START after rest</string>
+    <string id="setWarmupCooldown">Warmup and cooldown steps</string>
 </strings>

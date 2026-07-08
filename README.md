@@ -17,13 +17,32 @@ catch/drive surge directly, so slow strokes are resolved with sub-1 spm precisio
 ## How it works
 
 - Reads the wrist accelerometer at ~25 Hz.
-- Band-passes the acceleration magnitude (removes gravity drift and hand jitter),
-  then detects each stroke with an adaptive-envelope threshold plus hysteresis and
-  a refractory window (rejects the recovery sub-peak, caps at 50 spm).
-- Stroke rate = 60 ÷ the average of the last few stroke periods → a stable,
-  tenths-resolution readout with no artificial low-rate floor.
-- The computed rate is also written to the FIT file as a developer field
-  (`row_stroke_rate`) for offline analysis.
+- Band-passes each axis separately (removes gravity drift and hand jitter) and
+  tracks which axis carries the stroke motion; detection runs on that axis's
+  **signed** signal, where the drive and the recovery produce opposite-going
+  lobes — unlike the rectified magnitude, where they look alike. (v1 used the
+  magnitude and counted both surges, reading ~2× the true rate.)
+- An **autocorrelation of the signal locks onto the true stroke-cycle period**
+  (with a subharmonic check so it can't settle on a multiple of it), and that
+  period gates the peak detector: a surge arriving mid-cycle is the recovery of
+  the *same* stroke and is never counted. Verified in simulation from 14 to
+  30 spm, including recovery surges as strong as the drive.
+- Each stroke is then time-stamped by an adaptive-envelope threshold with
+  hysteresis; stroke rate = 60 ÷ the average of the last few stroke periods → a
+  stable, tenths-resolution readout with no artificial low-rate floor (caps at
+  40 spm).
+- **GPS is on for the whole session**, so the FIT file carries position, speed
+  and distance; the display shows the live **/500 m split** and **metres per
+  stroke**.
+- **R-R / HRV is logged explicitly**, without depending on the watch's
+  "Log HRV" device setting: raw beat-to-beat intervals from the active
+  heart-rate source (strap or wrist OHR) are captured every second, and a
+  rolling **rMSSD** (last ~90 artifact-filtered beat pairs, 30 % jump
+  rejection) is computed on the watch. An **RR indicator** next to the GPS
+  status turns green while intervals are streaming.
+- FIT developer fields written for offline analysis: `row_stroke_rate` (spm)
+  and `dist_per_stroke` (m), `rr_interval` (up to 4 raw ms values per record)
+  and `rmssd` (ms) per record, plus a session-level `avg_rmssd` (ms).
 
 ### Why a watch app, not a data field
 
@@ -41,9 +60,16 @@ the big stroke-rate number turns **green when you're in the target band** and
 **orange when you're outside it**. Each work/rest step is its own lap in the FIT,
 and every transition vibrates and beeps.
 
+The workout is wrapped in an untimed **WARM UP** and **COOL DOWN**: pressing
+START begins recording immediately in the warmup (so launching is captured),
+and the first interval only starts on the next START press. After the last
+interval the cooldown records until you press START again at the dock, then
+BACK saves. Both are their own laps, so they're easy to trim in analysis.
+
 ### Controls
 
-- **START/STOP** — begin the workout · pause/resume · continue past a rest gate.
+- **START/STOP** — begin the workout · end warmup / cooldown · continue past a
+  rest gate · pause/resume during intervals.
 - **BACK** — save the row and exit.
 
 ### Settings (Garmin Connect → app settings, no rebuild needed)
@@ -56,6 +82,7 @@ and every transition vibrates and beeps.
 | Rest length (minutes) | 2 |
 | Target low / high (spm) | 16 / 18 |
 | Press START after rest (gate) | on |
+| Warmup and cooldown steps | on |
 
 Turning the workout off gives a plain free row: live stroke rate with START to
 record and BACK to save.
