@@ -28,9 +28,14 @@ catch/drive surge directly, so slow strokes are resolved with sub-1 spm precisio
   the *same* stroke and is never counted. Verified in simulation from 14 to
   30 spm, including recovery surges as strong as the drive.
 - Each stroke is then time-stamped by an adaptive-envelope threshold with
-  hysteresis; stroke rate = 60 ÷ the average of the last few stroke periods → a
-  stable, tenths-resolution readout with no artificial low-rate floor (caps at
-  40 spm).
+  hysteresis; stroke rate = 60 ÷ the **median** of the last five stroke periods
+  → a stable, tenths-resolution readout with no artificial low-rate floor
+  (caps at 40 spm), robust to any single missed or spurious peak.
+- Output cleaning: the first 5 s after launch are quiet while the filters
+  settle; readings above 30 spm are only reported when the autocorrelation
+  lock confirms them (so rhythmic non-rowing hand motion — docking, handling
+  the boat — reads as 0 instead of a phantom 35–40 spm burst); and a locked
+  reading that disagrees with the lock by more than 30 % snaps to it.
 - **GPS is on for the whole session**, so the FIT file carries position, speed
   and distance; the display shows the live **/500 m split** and **metres per
   stroke**.

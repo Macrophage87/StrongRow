@@ -74,7 +74,10 @@ class StrongRowView extends Ui.View {
     hidden const THR_K    = 0.60;
     hidden const THR_LO_K = 0.40;
     hidden const MIN_THR  = 40.0;
-    hidden const NPER = 3;
+    hidden const NPER = 5;
+    hidden const QUIET_S = 5.0;       // no strokes while filters settle at boot
+    hidden const FAST_NEEDS_LOCK = 30.0; // rates above this need an autocorr lock
+    hidden const LOCK_SNAP_K = 0.30;  // locked rate deviating more snaps to lock
     // autocorrelation period gate
     hidden const AC_HZ       = 5.0;   // decimated sample rate
     hidden const AC_BUF      = 128;   // ~25 s of history
@@ -121,6 +124,7 @@ class StrongRowView extends Ui.View {
     hidden var mAcAccumN;
     hidden var mAcBatch;
     hidden var mAcPeriod;
+    hidden var mAcLowConf;
 
     // R-R / HRV state
     hidden var mRrOk;
@@ -265,6 +269,7 @@ class StrongRowView extends Ui.View {
         mAcAccumN    = 0;
         mAcBatch     = 0;
         mAcPeriod    = 0.0;
+        mAcLowConf   = 0;
     }
 
     function onLayout(dc) {
@@ -276,7 +281,7 @@ class StrongRowView extends Ui.View {
 
     function onTick() as Void {
         if (mStarted && !mPaused) {
-            if (mFitRate != null) { mFitRate.setData(mRate); }
+            if (mFitRate != null) { mFitRate.setData(outputRate()); }
             if (mFitDps != null)  { mFitDps.setData(distPerStroke(currentSpeed())); }
             if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }
             if (mRmssd > 0.0) {
@@ -376,6 +381,14 @@ class StrongRowView extends Ui.View {
             var fy = ys[i].toFloat();
             var fz = zs[i].toFloat();
 
+            // seed the gravity trackers so the first seconds don't produce a
+            // huge phantom transient while the filters converge from zero
+            if (mSampleIdx == 0) {
+                mGravX = fx;
+                mGravY = fy;
+                mGravZ = fz;
+            }
+
             // per-axis gravity removal + band-pass + activity variance
             mGravX += mAlphaSlow * (fx - mGravX);
             var hx = fx - mGravX;
@@ -403,7 +416,7 @@ class StrongRowView extends Ui.View {
             var thrLo = thr * THR_LO_K;
 
             var t = mSampleIdx * mDt;
-            if (mArmed && sig > thr && (t - mLastStrokeT) > refract) {
+            if (mArmed && sig > thr && (t - mLastStrokeT) > refract && t > QUIET_S) {
                 registerStroke(t);
                 mArmed = false;
             } else if (sig < thrLo) {
@@ -495,10 +508,14 @@ class StrongRowView extends Ui.View {
             if (s > best) { best = s; bestL = lag; }
         }
 
+        // three consecutive low-confidence evaluations to unlock, so a brief
+        // lull mid-piece can't drop the period gate and let artifacts through
         if (bestL == 0 || best / e < AC_MIN_CONF) {
-            mAcPeriod = 0.0;
+            mAcLowConf++;
+            if (mAcLowConf >= 3) { mAcPeriod = 0.0; }
             return;
         }
+        mAcLowConf = 0;
 
         // subharmonic correction: the global best can land on an integer
         // multiple of the true period (lag quantization favors whichever
@@ -589,12 +606,41 @@ class StrongRowView extends Ui.View {
         mLastStrokeT = t;
     }
 
+    // rate from the MEDIAN of the last NPER stroke periods: one bad period
+    // (missed or spurious peak) cannot move the readout
     hidden function recomputeRate() {
         if (mPCount <= 0) { mRate = 0.0; return; }
-        var sum = 0.0;
-        for (var i = 0; i < mPCount; i++) { sum += mPeriods[i]; }
-        var avg = sum / mPCount;
-        if (avg > 0.0) { mRate = 60.0 / avg; }
+        var tmp = new [mPCount];
+        for (var i = 0; i < mPCount; i++) { tmp[i] = mPeriods[i]; }
+        for (var i = 1; i < mPCount; i++) {
+            var v = tmp[i];
+            var j = i - 1;
+            while (j >= 0 && tmp[j] > v) { tmp[j + 1] = tmp[j]; j--; }
+            tmp[j + 1] = v;
+        }
+        var med = tmp[mPCount / 2];
+        if (mPCount % 2 == 0) { med = (med + tmp[mPCount / 2 - 1]) / 2.0; }
+        if (med > 0.0) { mRate = 60.0 / med; }
+    }
+
+    // final cleaned rate for display and FIT: fast readings need the
+    // autocorrelation lock to agree (kills phantom bursts from non-rowing
+    // hand motion), and a locked reading that disagrees with the lock by
+    // more than 30% snaps to it (kills residual half/double readings)
+    hidden function outputRate() {
+        var r = mRate;
+        if (mAcPeriod > 0.0) {
+            var ac = 60.0 / mAcPeriod;
+            if (r > 0.0) {
+                var dev = r - ac;
+                if (dev < 0.0) { dev = -dev; }
+                if (dev > LOCK_SNAP_K * ac) { r = ac; }
+            }
+        } else if (r > FAST_NEEDS_LOCK) {
+            r = 0.0;
+        }
+        if (r > MAX_RATE) { r = MAX_RATE; }
+        return r;
     }
 
     // ================= speed / distance helpers ============================
@@ -611,7 +657,8 @@ class StrongRowView extends Ui.View {
     }
 
     hidden function distPerStroke(spd) {
-        if (spd > 0.3 && mRate > 0.0) { return spd * 60.0 / mRate; }
+        var r = outputRate();
+        if (spd > 0.3 && r > 0.0) { return spd * 60.0 / r; }
         return 0.0;
     }
 
@@ -827,7 +874,8 @@ class StrongRowView extends Ui.View {
 
     hidden function drawRate(dc, w, h, col) {
         var valFont = (w >= 300) ? Gfx.FONT_NUMBER_THAI_HOT : Gfx.FONT_NUMBER_HOT;
-        var val = (mRate > 0.0) ? mRate.format("%.1f") : "--.-";
+        var r = outputRate();
+        var val = (r > 0.0) ? r.format("%.1f") : "--.-";
         dc.setColor(col, Gfx.COLOR_TRANSPARENT);
         dc.drawText(w / 2, h * 0.52, valFont, val,
                     Gfx.TEXT_JUSTIFY_CENTER | Gfx.TEXT_JUSTIFY_VCENTER);
@@ -917,8 +965,9 @@ class StrongRowView extends Ui.View {
         }
 
         var col = Gfx.COLOR_WHITE;
-        if (type == STEP_WORK && mRate > 0.0) {
-            col = (mRate >= mTgtLo && mRate <= mTgtHi) ? Gfx.COLOR_GREEN : Gfx.COLOR_ORANGE;
+        var dispRate = outputRate();
+        if (type == STEP_WORK && dispRate > 0.0) {
+            col = (dispRate >= mTgtLo && dispRate <= mTgtHi) ? Gfx.COLOR_GREEN : Gfx.COLOR_ORANGE;
         }
         drawRate(dc, w, h, col);
         drawPace(dc, w, h, spd);
