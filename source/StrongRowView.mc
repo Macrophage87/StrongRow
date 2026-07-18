@@ -147,6 +147,9 @@ class StrongRowView extends Ui.View {
     hidden var mFitRr;
     hidden var mFitRmssd;
     hidden var mFitAvgRmssd;
+    hidden var mFitCorr;
+    hidden var mFitCorrTotal;
+    hidden var mCorrAccum;
     hidden var mStartMs;
 
     hidden var mSteps;
@@ -168,6 +171,9 @@ class StrongRowView extends Ui.View {
         mFitRr      = null;
         mFitRmssd   = null;
         mFitAvgRmssd = null;
+        mFitCorr    = null;
+        mFitCorrTotal = null;
+        mCorrAccum  = 0.0;
         mRrOk       = false;
         mLastRrMs   = 0;
         mRrLast     = 0;
@@ -287,6 +293,11 @@ class StrongRowView extends Ui.View {
             if (mRmssd > 0.0) {
                 mRmssdSum += mRmssd;
                 mRmssdN++;
+            }
+            if (mFitCorr != null) {
+                var cr = correctiveRate();
+                mFitCorr.setData(cr);
+                mCorrAccum += cr / 240.0;   // spm integrated over a 250 ms tick
             }
         }
         if (mWorkoutEnabled && mStarted && !mPaused) {
@@ -662,6 +673,24 @@ class StrongRowView extends Ui.View {
         return 0.0;
     }
 
+    // the watch's own cadence, which counts every blade movement
+    hidden function nativeCadence() {
+        var ai = Activity.getActivityInfo();
+        if (ai != null && ai.currentCadence != null) { return ai.currentCadence.toFloat(); }
+        return 0.0;
+    }
+
+    // corrective-stroke rate: native blade movements minus our true drives.
+    // Field testing showed the native counter registers steering taps and
+    // boat-handling motion that the drive detector correctly ignores, so the
+    // difference is a boat-handling workload measure (spm). Clamped at zero
+    // because the native counter also lags to zero at lap boundaries.
+    hidden function correctiveRate() {
+        var c = nativeCadence() - outputRate();
+        if (c < 0.0) { c = 0.0; }
+        return c;
+    }
+
     // ================= session / workout control ===========================
     hidden function startSession() {
         if (mSession == null) {
@@ -696,6 +725,20 @@ class StrongRowView extends Ui.View {
                 }
                 mRmssdSum = 0.0;
                 mRmssdN = 0;
+                // boat-handling workload: blade movements the drive detector
+                // correctly ignores (steering taps, corrections)
+                try {
+                    mFitCorr = mSession.createField(
+                        "corrective_rate", 5, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
+                    mFitCorrTotal = mSession.createField(
+                        "total_corrective_strokes", 6, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_SESSION, :units => "strokes" });
+                } catch (e) {
+                    mFitCorr = null;
+                    mFitCorrTotal = null;
+                }
+                mCorrAccum = 0.0;
             } catch (e) {
                 mSession = null;
             }
@@ -783,6 +826,9 @@ class StrongRowView extends Ui.View {
             if (mFitAvgRmssd != null && mRmssdN > 0) {
                 mFitAvgRmssd.setData(mRmssdSum / mRmssdN);
             }
+            if (mFitCorrTotal != null) {
+                mFitCorrTotal.setData((mCorrAccum + 0.5).toNumber());
+            }
             mSession.save();
             mSession = null;
             mFitRate = null;
@@ -790,6 +836,8 @@ class StrongRowView extends Ui.View {
             mFitRr = null;
             mFitRmssd = null;
             mFitAvgRmssd = null;
+            mFitCorr = null;
+            mFitCorrTotal = null;
         }
         mStarted = false;
     }

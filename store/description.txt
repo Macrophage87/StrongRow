@@ -12,7 +12,7 @@ On open water you take small corrective strokes — steering taps that keep the 
 
 A COMPLETE SESSION IN THE FIT FILE
 
-GPS is on for the whole row: position, speed and distance are recorded, with the live /500 m split and metres per stroke on screen. Developer fields log row_stroke_rate, dist_per_stroke, raw R-R intervals and rolling rMSSD — beat-to-beat HRV captured explicitly, regardless of the watch's Log HRV setting.
+GPS is on for the whole row: position, speed and distance are recorded, with the live /500 m split and metres per stroke on screen. Developer fields log row_stroke_rate, dist_per_stroke, corrective-stroke rate, raw R-R intervals and rolling rMSSD — beat-to-beat HRV captured explicitly, regardless of the watch's Log HRV setting.
 
 BUILT-IN INTERVAL WORKOUT
 
