@@ -29,7 +29,9 @@ across the five reps, against **22 %** per blade movement — the drive count is
 the stable, physically meaningful unit for stroke-length and durability
 analysis, exactly in the low-rate sessions where rate discipline is the point.
 The difference between the two counts is itself useful: it measures
-boat-handling workload on a rough day.
+boat-handling workload on a rough day. StrongRow logs it live as a
+`corrective_rate` developer field (native blade-movement cadence minus drive
+rate, clamped at zero), plus a session-level `total_corrective_strokes`.
 
 (Native cadence also resets at every lap boundary and reads near zero for the
 first several seconds of each rep; StrongRow's rate carries straight through
@@ -66,9 +68,11 @@ laps.)
   rolling **rMSSD** (last ~90 artifact-filtered beat pairs, 30 % jump
   rejection) is computed on the watch. An **RR indicator** next to the GPS
   status turns green while intervals are streaming.
-- FIT developer fields written for offline analysis: `row_stroke_rate` (spm)
-  and `dist_per_stroke` (m), `rr_interval` (up to 4 raw ms values per record)
-  and `rmssd` (ms) per record, plus a session-level `avg_rmssd` (ms).
+- FIT developer fields written for offline analysis: `row_stroke_rate` (spm),
+  `dist_per_stroke` (m), `corrective_rate` (spm of blade movements that are
+  not drives), `rr_interval` (up to 4 raw ms values per record) and `rmssd`
+  (ms) per record, plus session-level `avg_rmssd` (ms) and
+  `total_corrective_strokes`.
 
 ### Why a watch app, not a data field
 
