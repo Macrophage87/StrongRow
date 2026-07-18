@@ -4,39 +4,44 @@ StrongRow is a rowing app built for slow, powerful strokes. If you row long, low
 
 HOW IT WORKS
 
-Instead of relying on the native cadence, StrongRow reads the watch's raw accelerometer at 25 Hz and detects every stroke itself. The acceleration signal is band-pass filtered to strip out gravity drift and hand jitter, then each catch/drive surge is picked out with an adaptive-envelope threshold, hysteresis, and a refractory window that rejects the smaller recovery peak. Your stroke rate is computed from the actual time between strokes and shown to a tenth of a stroke per minute — 16.4 spm, not "16" — with no artificial low-rate floor. Slow, deliberate strokes are resolved cleanly all the way down.
+StrongRow reads the watch's raw accelerometer at 25 Hz and detects every stroke itself. The signal is band-pass filtered on the dominant axis, an autocorrelation locks onto your true stroke-cycle period, and each catch/drive surge is timed against that lock — which rejects the recovery surge, non-rowing hand motion, and phantom readings. Stroke rate comes from the actual time between drives, shown to a tenth of a stroke per minute — 16.4 spm, not "16" — with no artificial low-rate floor.
 
-The computed rate is also written into the FIT file as a developer field (row_stroke_rate), so you can analyze your true low-rate cadence after the session in Garmin Connect or any FIT-aware tool.
+DRIVES, NOT BLADE MOVEMENTS
+
+On open water you take small corrective strokes — steering taps that keep the boat tracking in wind and chop. The native counter registers every blade movement; StrongRow's period lock counts only true drives. In a windy 5 x 4:00 field test the app counted 66–68 drives on every single rep while native cadence counted 89–109 blade movements, and distance per drive stroke was stable to 3.7% across the set against 22% per blade movement. For stroke-length and durability analysis, the drive count is the physically meaningful unit — and the gap between the two counts is your boat-handling workload.
+
+A COMPLETE SESSION IN THE FIT FILE
+
+GPS is on for the whole row: position, speed and distance are recorded, with the live /500 m split and metres per stroke on screen. Developer fields log row_stroke_rate, dist_per_stroke, raw R-R intervals and rolling rMSSD — beat-to-beat HRV captured explicitly, regardless of the watch's Log HRV setting.
 
 BUILT-IN INTERVAL WORKOUT
 
-StrongRow ships with a configurable low-rate interval session. Out of the box: 5 x 4:00 of work at 16–18 spm with 2:00 of rest, and a press-START gate after each rest so the next interval begins only when you are actually ready — no scrambling back onto the seat because a timer ran out.
+Out of the box: 5 x 4:00 of work at 16–18 spm with 2:00 of rest, and a press-START gate after each rest so the next interval begins only when you are ready. An untimed warmup and cooldown wrap the intervals, each ended by a START press, so launching and docking are captured on their own laps without eating into the work.
 
-During work intervals the large stroke-rate number is your coach: it turns GREEN when you are inside the target band and ORANGE when you drift outside it. Every work/rest transition vibrates and beeps, and each step is recorded as its own lap in the FIT file, so interval-by-interval review afterwards is effortless.
+During work intervals the large stroke-rate number is your coach: GREEN inside the target band, ORANGE outside it. Every transition vibrates and beeps, and each step is its own lap for effortless interval-by-interval review.
 
-Everything is adjustable from Garmin Connect app settings — no rebuild, no fuss:
+Everything is adjustable from Garmin Connect app settings — no rebuild:
 - Interval workout on/off (off = free row)
-- Number of intervals
-- Work length (minutes)
-- Rest length (minutes)
+- Number of intervals, work and rest length
 - Target band, low and high (spm)
 - Press-START gate after rest on/off
+- Warmup and cooldown steps on/off
 
-Prefer an unstructured session? Turn the workout off and StrongRow becomes a clean free-row recorder: live tenths-precision stroke rate, START to record, BACK to save.
+Prefer unstructured? Turn the workout off and StrongRow is a clean free-row recorder: live tenths-precision stroke rate, START to record, BACK to save.
 
 CONTROLS
 
-- START/STOP: begin the workout, pause/resume, continue past a rest gate
+- START/STOP: begin the workout, end warmup/cooldown, pause/resume, continue past a rest gate
 - BACK: save the row and exit
 
 WHY A WATCH APP (AND NOT A DATA FIELD)
 
-Connect IQ does not allow data fields to access the raw high-frequency accelerometer, so this cannot be done as a field inside Garmin's native rowing activity. As a watch app, StrongRow can read the 25 Hz sensor stream and records its own complete rowing session. It uses the watch's accelerometer on your wrist — external straps and pods are not required (and their accelerometers are not accessible to Connect IQ anyway).
+Connect IQ does not allow data fields to read the raw high-frequency accelerometer, so this cannot be a field inside the native rowing activity. As a watch app, StrongRow reads the 25 Hz stream and records its own complete session from the wrist — no external pods required.
 
 WHO IT IS FOR
 
 - Rowers and scullers doing low-rate strength work, technique paddles, or steady-state at full pressure
-- Indoor rowers who want honest sub-integer cadence instead of a rounded guess
-- Coaches and self-coached athletes who want each interval on its own lap with the real stroke rate in the file
+- Anyone who wants honest sub-integer cadence and true drive counts
+- Self-coached athletes who want each interval on its own lap with the real stroke rate in the file
 
-StrongRow does one thing carefully: it tells you your true stroke rate when you are rowing slow and strong, and it keeps you honest inside your target band. Created by Stephen Cieply, PhD. Open source under the MIT License.
+StrongRow does one thing carefully: it tells you your true stroke rate when you are rowing slow and strong. Created by Stephen Cieply, PhD. Open source under the MIT License.

@@ -14,6 +14,27 @@ unreliable below ~18–20 spm (on a real row, laps showed a cadence value but
 **zero** counted strokes). StrongRow ignores the native cadence and detects each
 catch/drive surge directly, so slow strokes are resolved with sub-1 spm precision.
 
+## Drives, not blade movements
+
+Field testing surfaced a second capability beyond low-rate accuracy: **StrongRow
+distinguishes true drive strokes from corrective strokes**, which the native
+Garmin activity cannot. On open water you take small steering taps to keep the
+boat tracking in wind and chop; the native detector registers every blade
+movement, while StrongRow's period lock counts only the periodic drive cycle.
+
+In a 5 × 4:00 session in wind and chop (tidal Potomac), StrongRow counted
+**66–68 drives on every rep** while native cadence counted 89–109 blade
+movements. Scored per drive stroke, distance per stroke was stable to **3.7 %**
+across the five reps, against **22 %** per blade movement — the drive count is
+the stable, physically meaningful unit for stroke-length and durability
+analysis, exactly in the low-rate sessions where rate discipline is the point.
+The difference between the two counts is itself useful: it measures
+boat-handling workload on a rough day.
+
+(Native cadence also resets at every lap boundary and reads near zero for the
+first several seconds of each rep; StrongRow's rate carries straight through
+laps.)
+
 ## How it works
 
 - Reads the wrist accelerometer at ~25 Hz.
