@@ -64,10 +64,14 @@ laps.)
   stroke**.
 - **R-R / HRV is logged explicitly**, without depending on the watch's
   "Log HRV" device setting: raw beat-to-beat intervals from the active
-  heart-rate source (strap or wrist OHR) are captured every second, and a
+  heart-rate source (strap or wrist OHR) are sampled every second, and a
   rolling **rMSSD** (last ~90 artifact-filtered beat pairs, 30 % jump
   rejection) is computed on the watch. An **RR indicator** next to the GPS
-  status turns green while intervals are streaming.
+  status turns green while intervals are streaming. Note the logged
+  `rr_interval` field is a **per-record sample, not a complete beat-to-beat
+  series**: it carries up to 4 intervals per record, so at higher heart rates
+  some beats are not written to the FIT (the on-watch rMSSD still uses them
+  all). Don't use it as a beat count or reconstruct HRV assuming completeness.
 - **Core temperature**: if a CORE (greenTEG) body-temperature pod is in range,
   StrongRow picks it up automatically over a generic ANT+ channel (the ANT+
   Core Body Temperature profile — Connect IQ has no built-in support for it,

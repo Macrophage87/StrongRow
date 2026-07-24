@@ -55,7 +55,8 @@ function buildRr(ivals) {
     return rrArrEq(buildRr([850, 810, 790, 770]), [850, 810, 790, 770], logger);
 }
 
-// A 5th valid beat is dropped (the RR_PER_REC cap -- a real gap, tracked in #14).
+// A 5th valid beat is dropped (the RR_PER_REC cap -- one of the two documented
+// rr_interval loss modes; see the #14 note in StrongRowView.handleRr).
 (:test) function test_rr_fiveDropsExtra(logger) {
     return rrArrEq(buildRr([850, 810, 790, 770, 750]), [850, 810, 790, 770], logger);
 }
@@ -91,4 +92,39 @@ function buildRr(ivals) {
     var f = StrongRowView.filterRr([249, 250, 2500, 2501, null, 900]);
     if (!(f.size() == 3)) { logger.error("filter size " + f.size() + " != 3"); return false; }
     return rrArrEq(f, [250, 2500, 900], logger);
+}
+
+// -------- #15 rMSSD-freshness / #16 gap-reset predicates (issue #32) --------
+// rrIsFresh(now, ts, thresh): strict `<`; never-seen (ts==0) is not fresh.
+(:test) function test_rr_isFresh_states(logger) {
+    var ok = true;
+    if (StrongRowView.rrIsFresh(10000, 9000, 5000) != true)  { logger.error("fresh 1s should be true");  ok = false; }
+    if (StrongRowView.rrIsFresh(10000, 4000, 5000) != false) { logger.error("stale 6s should be false"); ok = false; }
+    if (StrongRowView.rrIsFresh(10000, 5000, 5000) != false) { logger.error("boundary == thresh must be false (strict <)"); ok = false; }
+    if (StrongRowView.rrIsFresh(10000, 5001, 5000) != true)  { logger.error("just inside thresh should be true"); ok = false; }
+    if (StrongRowView.rrIsFresh(10000, 0,    5000) != false) { logger.error("never-seen (ts=0) must be false"); ok = false; }
+    return ok;
+}
+
+// The display RR pip was refactored from a hardcoded `< 5000` to
+// rrIsFresh(..., RR_FRESH_MS). Pin the const so that refactor stays
+// behavior-preserving: if someone retunes RR_FRESH_MS, this test flags that the
+// UI pip's timing changed too (they are deliberately coupled today).
+(:test) function test_rr_freshConstUnchanged(logger) {
+    if ($.RR_FRESH_MS != 5000) {
+        logger.error("RR_FRESH_MS changed to " + $.RR_FRESH_MS + "; display pip timing no longer matches the pre-refactor < 5000 test");
+        return false;
+    }
+    return true;
+}
+
+// rrGapExceeded(now, lastBeat, thresh): strict `>`; never-seen (lastBeat==0)
+// is not a gap (first beat just seeds mRrLast, no diff).
+(:test) function test_rr_gapExceeded_states(logger) {
+    var ok = true;
+    if (StrongRowView.rrGapExceeded(10000, 9000, 2500) != false) { logger.error("gap 1s within bound should be false"); ok = false; }
+    if (StrongRowView.rrGapExceeded(10000, 7400, 2500) != true)  { logger.error("gap 2.6s should be true");  ok = false; }
+    if (StrongRowView.rrGapExceeded(10000, 7500, 2500) != false) { logger.error("boundary == thresh must be false (strict >)"); ok = false; }
+    if (StrongRowView.rrGapExceeded(10000, 0,    2500) != false) { logger.error("never-seen (lastBeat=0) must be false"); ok = false; }
+    return ok;
 }
