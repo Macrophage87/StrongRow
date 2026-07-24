@@ -49,7 +49,12 @@ fi
 # which is precisely what this job exists to prevent.
 from_source="$(grep -hoE '^\(:test\) function [a-zA-Z0-9_]+' "${MC_FILES[@]}" \
                | sed 's/.*function //' | sort || true)"
-from_pin="$(grep -vE '^\s*(#|$)' "$PIN" | sort || true)"
+# Trim surrounding whitespace to match load_expected() in check_ciq_tests.py,
+# which strip()s every pin line. Without this the two disagree about a pin file
+# with a trailing space: the parser passes while this diff reds with two sides
+# that look identical on screen -- a false red with an invisible cause.
+from_pin="$(grep -vE '^[[:space:]]*(#|$)' "$PIN" \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort || true)"
 
 n_source="$(printf '%s\n' "$from_source" | grep -c . || true)"
 n_pin="$(printf '%s\n' "$from_pin" | grep -c . || true)"

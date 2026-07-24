@@ -124,10 +124,18 @@ GUARDS = [
 
 
 def classify(line):
-    for gid, pred in GUARDS:
-        if pred(line):
-            return gid
-    return None
+    """Classify one diagnostic line to its guard id.
+
+    Asserts DISJOINTNESS: a diagnostic matching two predicates would otherwise
+    silently credit whichever comes first in GUARDS, so a future rewording that
+    collides with another predicate would corrupt fired-sets without any case
+    noticing. Failing loudly here turns that into an immediate suite error."""
+    hits = [gid for gid, pred in GUARDS if pred(line)]
+    if len(hits) > 1:
+        raise AssertionError(
+            "diagnostic %r matches multiple guard predicates %s -- make GUARDS "
+            "disjoint before trusting any fired-set" % (line, hits))
+    return hits[0] if hits else None
 
 
 def real_green_log():
@@ -190,8 +198,13 @@ def run_checker(monkeydo_text, console_text="", expected_file=EXPECTED,
     with tempfile.TemporaryDirectory() as td:
         mlog = os.path.join(td, "monkeydo.log")
         clog = os.path.join(td, "console.log")
-        with open(mlog, "w", encoding="utf-8") as fh:
-            fh.write(monkeydo_text)
+        if monkeydo_text is None:
+            # A log FILE that never came to exist (harness died pre-redirect) --
+            # distinct from an empty file, and previously unexercised.
+            mlog = os.path.join(td, "never-written.log")
+        else:
+            with open(mlog, "w", encoding="utf-8") as fh:
+                fh.write(monkeydo_text)
         with open(clog, "w", encoding="utf-8") as fh:
             fh.write(console_text)
         extra = []
@@ -454,6 +467,15 @@ def _():
       ["hung and killed by timeout"])
 def _():
     return ""
+
+
+@case("a monkeydo log FILE that never existed fails like an empty one",
+      ["empty_log", "no_summary", "no_ran", "no_table"])
+def _():
+    # Harness died before the redirect ever created the file. read() treats a
+    # missing path as "", so this must behave exactly like empty content -- but
+    # the missing-FILE path itself was previously unexercised, so pin it.
+    return None
 
 
 @case("a harness breadcrumb replaces the guessed cause, it does not add to it",

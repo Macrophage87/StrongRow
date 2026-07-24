@@ -129,6 +129,19 @@ A count alone cannot see a substitution — delete one test, add a trivial one, 
 can never disagree. **Update that file in the same commit as any `(:test)`
 change**; the failure message names exactly what is missing and what is extra.
 
+**Adding or removing a test is exactly two edits, and nothing else:**
+
+1. add/remove the `(:test) function …` in the source (column 0);
+2. add/remove its line in `scripts/expected_tests.txt`.
+
+That is the whole procedure. The parser self-suite derives its name list and
+counts from the pin at import, and its fixture-based cases judge the committed
+capture against a pin derived *from the fixture itself* — so neither the
+self-suite nor `scripts/fixtures/monkeydo-green-run.log` needs touching when
+the test set changes. (An earlier version hardcoded both, so following this
+procedure reddened `test-tooling`; that is fixed and regression-checked by
+running the suite with a test added and one removed.)
+
 **And the pin is cross-checked against the source, in CI** —
 `scripts/check_expected_tests.sh`, in `test-tooling`. It derives the name set
 independently from the `.mc` sources and diffs it against the pin, so the two
