@@ -377,6 +377,10 @@ jobs:
 
       - name: Upload build artifacts (.prg + .iq, throwaway-signed)
         if: always()
+        # Same reasoning as run-tests' log upload: this job is required, so a
+        # blob-storage flake must not red a build whose 12 devices all compiled.
+        # Observed failing on its own in run 30129516247 attempt 2.
+        continue-on-error: true
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           # Throwaway-signed: a CI build sanity artifact, not a store upload.

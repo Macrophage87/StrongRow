@@ -55,27 +55,49 @@ CHECKER = os.path.join(HERE, "check_ciq_tests.py")
 EXPECTED = os.path.join(HERE, "expected_tests.txt")
 REAL_GREEN_LOG = os.path.join(HERE, "fixtures", "monkeydo-green-run.log")
 
-NAMES = [
-    "test_dsp_timeBaseInvariantToBatchSize",
-    "test_dsp_timeBaseIs25Hz",
-    "test_dsp_timeBaseSetAtInit",
-    "test_rr_oneValid",
-    "test_rr_twoValid",
-    "test_rr_threeValid",
-    "test_rr_exactlyFour",
-    "test_rr_fiveDropsExtra",
-    "test_rr_allInvalid",
-    "test_rr_boundaryInclusive",
-    "test_rr_interleavedPacksLow",
-    "test_rr_nullIvals",
-    "test_rr_emptyIvals",
-    "test_rr_filterInRangeOnly",
-    "test_rr_isFresh_states",
-    "test_rr_freshConstUnchanged",
-    "test_rr_gapExceeded_states",
-]
+# NAMES is DERIVED from the live pin, never hardcoded.
+#
+# It used to be a frozen 17-entry literal while run_checker passed the LIVE
+# expected_tests.txt as --expected-file. The two disagreed the moment anyone
+# added a (:test) -- doing exactly what docs/CI.md instructs took this suite
+# from 34/34 to 6/34, reddening `test-tooling` and therefore `ci-required`.
+# Adding a unit test must never break the test tooling.
+def _load_pin(path):
+    names = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                names.append(line)
+    return names
 
-SUMMARY_OK = "PASSED (passed=17, failed=0, errors=0)"
+
+NAMES = _load_pin(EXPECTED)
+N = len(NAMES)
+SUMMARY_OK = "PASSED (passed=%d, failed=0, errors=0)" % N
+
+
+def summ(passed=None, failed=0, errors=0, verdict="PASSED"):
+    """Summary line derived from the live pin size, so synthetic cases do
+    not hardcode a count that goes stale the moment a (:test) is added."""
+    return "%s (passed=%d, failed=%d, errors=%d)" % (
+        verdict, N if passed is None else passed, failed, errors)
+
+# The committed fixture is a FROZEN capture of one real run, so it can only ever
+# be green against the name set it actually contains. Judging it against the
+# live pin would red every fixture case the next time a test is added -- the
+# other half of the same defect. Cases built on the fixture therefore pass
+# "<fixture>" as their pin, and run_checker synthesises it from the fixture's
+# own RESULTS rows.
+_FIXTURE_ROW_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)[ \t]+[A-Z][A-Z0-9_]*[ \t]*$', re.M)
+
+
+def _fixture_names():
+    text = real_green_log()
+    header = re.search(r'^Test:\s+Status:\s*$', text, re.M)
+    body = text[header.end():] if header else text
+    body = body.split("Ran ")[0]
+    return _FIXTURE_ROW_RE.findall(body)
 
 # Guard id -> a predicate on one diagnostic line. Every diagnostic the checker
 # can print must classify to exactly one id; an unclassified line fails the
@@ -111,6 +133,17 @@ def classify(line):
 def real_green_log():
     with open(REAL_GREEN_LOG, "r", encoding="utf-8") as fh:
         return fh.read()
+
+
+def _fixture_summary():
+    """Summary line matching the FIXTURE's own test count, not the live pin."""
+    return "PASSED (passed=%d, failed=0, errors=0)" % len(_fixture_names())
+
+
+def fx(text, console=""):
+    """A case built on the frozen fixture: judge it against a fixture-derived
+    pin so it stays stable when the live pin gains or loses a test."""
+    return (text, console, "<fixture>")
 
 
 def transcript(statuses=None, ran=None, summary=None, extra_rows=(),
@@ -173,6 +206,12 @@ def run_checker(monkeydo_text, console_text="", expected_file=EXPECTED,
                 fh.write("# no names at all\n")
         elif expected_file == "<missing>":
             expected_file = os.path.join(td, "does-not-exist.txt")
+        elif expected_file == "<fixture>":
+            # Pin derived from the frozen fixture itself, so fixture cases stay
+            # stable when the live pin gains or loses a test.
+            expected_file = os.path.join(td, "fixture_pin.txt")
+            with open(expected_file, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(_fixture_names()) + "\n")
         proc = subprocess.run(
             [sys.executable, CHECKER, "--monkeydo-log", mlog,
              "--console-log", clog, "--expected-file", expected_file] + extra,
@@ -213,17 +252,17 @@ def case(name, guards, mentions=(), forbids=()):
 
 @case("REAL first-green-run monkeydo.log passes", [], ["OK: 17/17"])
 def _():
-    return real_green_log()
+    return fx(real_green_log())
 
 
 @case("real log with CRLF line endings passes", [])
 def _():
-    return real_green_log().replace("\n", "\r\n")
+    return fx(real_green_log().replace("\n", "\r\n"))
 
 
 @case("real log with a trailing blank-padded table passes", [])
 def _():
-    return real_green_log().replace("Ran 17 tests", "\nRan 17 tests")
+    return fx(real_green_log().replace("Ran 17 tests", "\nRan 17 tests"))
 
 
 @case("synthetic column-aligned transcript passes", [])
@@ -236,7 +275,7 @@ def _():
     # The summary must come from monkeydo; the table may be resolved across both.
     t = real_green_log()
     head, sep, tail = t.partition("=" * 78)
-    return (head + SUMMARY_OK + "\n", sep + tail)
+    return fx(head + _fixture_summary() + "\n", sep + tail)
 
 
 @case("table header in monkeydo but rows in console still passes", [])
@@ -245,7 +284,7 @@ def _():
     # absent, so a split table returned {} and reddened a green run.
     t = real_green_log()
     head, _sep, tail = t.partition("%-37s %s\n" % ("Test:", "Status:"))
-    return (head + "%-37s %s\n" % ("Test:", "Status:") + SUMMARY_OK + "\n", tail)
+    return fx(head + "%-37s %s\n" % ("Test:", "Status:") + _fixture_summary() + "\n", tail)
 
 
 @case("a non-row simulator notice inside the table does not red a green run", [])
@@ -254,49 +293,67 @@ def _():
     return transcript(noise=["WARNING: gc-pressure", "-- 3 warnings --"])
 
 
+# The row regex narrows BOTH halves (identifier-shaped name AND all-caps status).
+# The `gc-pressure` fixture above is rejected by EITHER half alone, so it cannot
+# tell the two apart: mutating one half back to `\S+` leaves it green. These two
+# cases isolate them -- each is rejected by exactly one half.
+@case("row-shaped noise with a valid status but non-identifier name stays green", [])
+def _():
+    # `WARNING:` is not identifier-shaped; `GC_PRESSURE` IS a valid status token,
+    # so only the NAME half of the regex rejects this row.
+    return transcript(noise=["WARNING: GC_PRESSURE"])
+
+
+@case("row-shaped noise with a valid name but lowercase status stays green", [])
+def _():
+    # `SIMULATOR` is identifier-shaped; `ready` is not an all-caps status token,
+    # so only the STATUS half rejects this row.
+    return transcript(noise=["SIMULATOR ready"])
+
+
 @case("ANSI-coloured status tokens do not red a green run", [])
 def _():
-    return real_green_log().replace("PASS", "\x1b[32mPASS\x1b[0m")
+    return fx(real_green_log().replace("PASS", "\x1b[32mPASS\x1b[0m"))
 
 
 @case("simulator chatter BEFORE the table header is not read as a row", [])
 def _():
     # Why the parse is scoped to the table at all: anything row-shaped that the
     # simulator prints on its way up would otherwise become a phantom test.
-    return "SIMULATOR READY\nDEVICE FR965\n" + real_green_log()
+    return fx("SIMULATOR READY\nDEVICE FR965\n" + real_green_log())
 
 
 @case("output AFTER the 'Ran N' tally is not read as a row", [])
 def _():
     # Why the parse stops at the tally: trailing shutdown chatter is row-shaped.
-    return real_green_log() + "SHUTDOWN OK\nSIMULATOR EXIT\n"
+    return fx(real_green_log() + "SHUTDOWN OK\nSIMULATOR EXIT\n")
 
 
 # ----------------------------------------------------- RED, one guard -------
 
 @case("a SKIP row with a clean 17/17 summary is caught", ["not_pass"],
-      ["test_rr_nullIvals=SKIP"])
+      ["%s=SKIP" % NAMES[-2]])
 def _():
     # The "executed but mis-tallied" case: the summary and the tally both still
     # claim a clean 17/17, and ONLY the per-test status disagrees. This is the
     # entire reason the not-PASS check exists, and nothing used to test it.
     st = {n: "PASS" for n in NAMES}
-    st["test_rr_nullIvals"] = "SKIP"
-    return transcript(st, ran=17, summary=SUMMARY_OK)
+    st[NAMES[-2]] = "SKIP"
+    return transcript(st, ran=N, summary=SUMMARY_OK)
 
 
 @case("a non-PASS ERROR row with a clean summary is caught", ["not_pass"],
-      ["test_rr_emptyIvals=ERROR"])
+      ["%s=ERROR" % NAMES[-1]])
 def _():
     st = {n: "PASS" for n in NAMES}
-    st["test_rr_emptyIvals"] = "ERROR"
-    return transcript(st, ran=17, summary=SUMMARY_OK)
+    st[NAMES[-1]] = "ERROR"
+    return transcript(st, ran=N, summary=SUMMARY_OK)
 
 
 @case("a stray FAILED line in the CONSOLE log vetoes a green monkeydo run",
       ["failed_veto"])
 def _():
-    return (real_green_log(), "FAILED (passed=15, failed=2, errors=0)\n")
+    return fx(real_green_log(), "FAILED (passed=15, failed=2, errors=0)\n")
 
 
 @case("the FAILED veto is whitespace-tolerant, not a literal substring",
@@ -304,7 +361,7 @@ def _():
 def _():
     # `FAILED  (passed=` with two spaces used to slip past the literal veto
     # even though SUMMARY_RE itself tolerates the extra space.
-    return (real_green_log(), "FAILED  (passed=15, failed=2, errors=0)\n")
+    return fx(real_green_log(), "FAILED  (passed=15, failed=2, errors=0)\n")
 
 
 @case("missing summary line, everything else intact", ["no_summary"],
@@ -325,55 +382,55 @@ def _():
 
 @case("summary reporting failed>0 is caught", ["failed_count"], ["failed=2"])
 def _():
-    return transcript(ran=17, summary="PASSED (passed=17, failed=2, errors=0)")
+    return transcript(ran=N, summary=summ(failed=2))
 
 
 @case("summary reporting errors>0 is caught", ["errors_count"], ["errors=2"])
 def _():
-    return transcript(ran=17, summary="PASSED (passed=17, failed=0, errors=2)")
+    return transcript(ran=N, summary=summ(errors=2))
 
 
 @case("summary passed count below the pin is caught", ["passed_count"],
-      ["passed=16 but 17 tests are expected"])
+      ["passed=%d but %d tests are expected" % (N - 1, N)])
 def _():
-    return transcript(ran=17, summary="PASSED (passed=16, failed=0, errors=0)")
+    return transcript(ran=N, summary=summ(N - 1))
 
 
 @case("missing 'Ran N tests' line is caught", ["no_ran"])
 def _():
-    return transcript(ran=None, summary=SUMMARY_OK).replace("Ran 17 tests\n", "")
+    return transcript(ran=None, summary=SUMMARY_OK).replace("Ran %d tests\n" % N, "")
 
 
 @case("'Ran N' disagreeing with the pin is caught", ["ran_mismatch"],
-      ["'Ran 16 tests' but 17 are expected"])
+      ["'Ran %d tests' but %d are expected" % (N - 1, N)])
 def _():
-    return transcript(ran=16, summary=SUMMARY_OK)
+    return transcript(ran=N - 1, summary=SUMMARY_OK)
 
 
 @case("missing RESULTS table header is caught", ["no_table"])
 def _():
-    return transcript(drop_header=True, ran=17, summary=SUMMARY_OK)
+    return transcript(drop_header=True, ran=N, summary=SUMMARY_OK)
 
 
 @case("a test in the pin but absent from the table is caught", ["missing"],
-      ["test_rr_allInvalid"])
+      [NAMES[0]])
 def _():
-    return transcript(drop_rows=("test_rr_allInvalid",), ran=17, summary=SUMMARY_OK)
+    return transcript(drop_rows=(NAMES[0],), ran=N, summary=SUMMARY_OK)
 
 
 @case("a test in the table but not in the pin is caught", ["unexpected"],
       ["test_rr_brandNew"])
 def _():
     return transcript(extra_rows=["%-37s %s" % ("test_rr_brandNew", "PASS")],
-                      ran=17, summary=SUMMARY_OK)
+                      ran=N, summary=SUMMARY_OK)
 
 
 @case("a renamed/substituted test is caught as both missing and extra",
       ["missing", "unexpected"],
-      ["test_rr_boundaryInclusive", "test_rr_somethingElse"])
+      [NAMES[1], "test_rr_somethingElse"])
 def _():
-    return transcript(ran=17, summary=SUMMARY_OK).replace(
-        "test_rr_boundaryInclusive", "test_rr_somethingElse  ")
+    return transcript(ran=N, summary=SUMMARY_OK).replace(
+        NAMES[1], "test_rr_somethingElse" + " " * max(1, len(NAMES[1]) - 21))
 
 
 @case("an empty pin file can never reach a pass", ["empty_pin"])
@@ -412,7 +469,7 @@ def _():
 
 @case("truncated mid-run", ["no_summary", "no_ran", "no_table"])
 def _():
-    return "\n".join(real_green_log().splitlines()[:8]) + "\n"
+    return fx("\n".join(real_green_log().splitlines()[:8]) + "\n")
 
 
 @case("FAILED glued onto the end of a PASSED line",

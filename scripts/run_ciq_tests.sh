@@ -98,7 +98,9 @@ echo "::group::Compile --unit-test for ${DEVICE}"
 # -w warnings on, but NO -l: this codebase is deliberately untyped.
 build_rc=0
 {
-    openssl genrsa -out developer_key.pem 4096 2>/dev/null &&
+    # NOT silenced: openssl is present only transitively in this image, so if
+    # it ever disappears its own error message is the fastest diagnosis.
+    openssl genrsa -out developer_key.pem 4096 &&
     openssl pkcs8 -topk8 -inform PEM -outform DER \
         -in developer_key.pem -out developer_key.der -nocrypt &&
     monkeyc -f monkey.jungle -o "$PRG" -y developer_key.der -d "$DEVICE" --unit-test -w
@@ -165,13 +167,24 @@ for _ in $(seq 1 25); do
     # (tracked in #51 -- gated on more than one green run, not just run 1).
     #
     # pgrep comes from `procps`, which the image installs only TRANSITIVELY (it
-    # is not in the upstream Dockerfile's apt list). Guard the call so an SDK
-    # bump that drops it degrades to kill -0 alone rather than having a
-    # `command not found` 127 silently read as "process is gone".
-    if ! kill -0 "$sim_pid" 2>/dev/null \
-       && ! { command -v pgrep >/dev/null 2>&1 && pgrep -f simulator >/dev/null 2>&1; }; then
-        echo "simulator appears to have exited (both kill -0 and pgrep agree)"
-        port_state=sim_gone; break
+    # is not in the upstream Dockerfile's apt list).
+    #
+    # Note the `command -v` guard is NOT a behaviour change: an absent pgrep
+    # exits 127, which this condition already treats exactly as "found nothing".
+    # It is here to make that intent explicit, and -- more usefully -- so the
+    # message below does not claim pgrep concurred when it was never consulted.
+    if ! kill -0 "$sim_pid" 2>/dev/null; then
+        if command -v pgrep >/dev/null 2>&1; then
+            if ! pgrep -f simulator >/dev/null 2>&1; then
+                echo "simulator appears to have exited (kill -0 and pgrep agree)"
+                port_state=sim_gone; break
+            fi
+            # else: pgrep still sees one, so $sim_pid was not the whole story.
+            # Keep waiting rather than calling it dead on one signal.
+        else
+            echo "simulator appears to have exited (kill -0 only; pgrep unavailable)"
+            port_state=sim_gone; break
+        fi
     fi
     sleep 1
 done
@@ -201,7 +214,14 @@ echo "::group::Run monkeydo"
 # precisely the case where a short leash converts a slow pass into a false red.
 # (Observed: the whole job took 46 s with the port open on the first probe, so
 # 180 s is already ~17x headroom on the happy path; the job timeout is 20 min.)
-if [[ "$port_state" == "open" ]]; then md_timeout=180; else md_timeout=300; fi
+case "$port_state" in
+    open)     md_timeout=180 ;;   # proven path; ~17x observed headroom
+    sim_gone) md_timeout=30  ;;   # simulator already known dead -- nothing
+                                  # to be patient FOR; fail fast instead of
+                                  # burning 5 min on a conclusive case
+    *)        md_timeout=300 ;;   # timeout: usually a slow/busy runner,
+                                  # which is when patience actually helps
+esac
 rc=0
 timeout -k 10 "$md_timeout" monkeydo "$PRG" "$DEVICE" -t > "$MONKEYDO_LOG" 2>&1 || rc=$?
 status monkeydo_rc "$rc"

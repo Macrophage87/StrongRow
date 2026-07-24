@@ -129,15 +129,26 @@ A count alone cannot see a substitution — delete one test, add a trivial one, 
 can never disagree. **Update that file in the same commit as any `(:test)`
 change**; the failure message names exactly what is missing and what is extra.
 
-**And the pin is cross-checked against the source, in CI.** That the pin cannot
-disagree with itself is exactly what made it bypassable: deleting a `(:test)`
-function *and* its pin line in the same commit was fully green, coverage shrank,
-and nothing noticed. `scripts/check_expected_tests.sh` (in `test-tooling`)
-derives the name set independently from `source/*.mc` and diffs it against the
-pin, so the two can't silently diverge — the same guarantee `manifest-lint`
-gives `list_devices.sh` against a real XML parse. It also fails loudly if a
-`(:test)` declaration is indented past the column-0 grep, and refuses to pass on
-an empty extraction rather than matching two empty lists.
+**And the pin is cross-checked against the source, in CI** —
+`scripts/check_expected_tests.sh`, in `test-tooling`. It derives the name set
+independently from the `.mc` sources and diffs it against the pin, so the two
+cannot **drift**. It also names any `(:test)` declaration indented past the
+column-0 extractor (the simulator runs those, so leaving them invisible
+deadlocks this check against the parser), and refuses to pass on an empty
+extraction rather than matching two empty lists.
+
+> ⚠️ **What it does *not* close: coordinated shrinkage.** An earlier version of
+> this section claimed otherwise, and that was wrong. Both sides of the diff are
+> derived from files the *same commit* may edit, so deleting a `(:test)`
+> function **and** its pin line together shrinks both lists identically and the
+> check passes. Measured: dropping 5 of 17 tests with their pin lines still
+> prints `OK: 12 … match … exactly` and `OK: 12/12`, both rc=0.
+>
+> Closing that needs an anchor **outside** the commit — a count compared against
+> `git merge-base`, or a floor that only ratchets upward. Tracked in **#52**;
+> not implemented. What catches it today is a human reading the diff, which
+> shows both deletions. So the honest summary is: the pin makes a *silent*
+> shrink impossible to do *by accident*, not impossible.
 
 **The parser is proven on every PR without a container**, in `test-tooling`.
 What `scripts/test_check_ciq_tests.py` establishes, precisely:
