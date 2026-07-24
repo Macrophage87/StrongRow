@@ -43,6 +43,20 @@ using Toybox.Lang;
 // external chest strap's accelerometer (HRM 600 etc.), so stroke detection is
 // wrist-based.
 //
+// R-R / HRV constants shared between StrongRowView and its static, (:test)-able
+// helpers filterRr()/packRr(). At module (global) scope because a Monkey C class
+// `const` is an instance member -- unreachable from a static method or via the
+// class name -- whereas a module const resolves from static, instance, and test
+// code alike.
+const RR_MIN_MS  = 250;    // physiological beat interval range (ms), inclusive
+const RR_MAX_MS  = 2500;
+const RR_PER_REC = 4;      // raw intervals logged per FIT record
+// FIT "no data" sentinel for the rr_interval field. Bound to that field's
+// DATA_TYPE_UINT16 base type (0xFFFF is the UINT16 invalid value) AND to the
+// field having no :scale/:offset (see mFitRr creation), so a stored 0xFFFF is
+// emitted verbatim as "no data". Revisit if the base type, scale, or offset change.
+const RR_INVALID = 0xFFFF;
+
 class StrongRowView extends Ui.View {
 
     // step types
@@ -86,21 +100,12 @@ class StrongRowView extends Ui.View {
     hidden const AC_MIN_CONF = 0.35;  // below this: no period lock
     hidden const AC_SUB_K    = 0.50;  // subharmonic must reach this vs best
     hidden const REFRACT_FRAC = 0.72; // fraction of locked period a peak is ignored
-    // R-R / HRV
-    // These four are non-hidden so the static helpers filterRr()/packRr() and the
-    // unit tests can reference them as StrongRowView.<CONST> (a static method has
-    // no instance `self`, so a bare name can't resolve a member const).
-    const RR_MIN_MS = 250;            // physiological beat interval range
-    const RR_MAX_MS = 2500;
+    // R-R / HRV. RR_MIN_MS/RR_MAX_MS/RR_PER_REC/RR_INVALID live at module scope
+    // (top of file) so the static helpers filterRr()/packRr() and the unit tests
+    // can reference them -- a Monkey C class `const` is an instance member, not
+    // reachable from a static method or via the class name.
     hidden const RR_ART_K  = 0.30;    // reject successive jumps > 30% as artifacts
     hidden const RR_NDIFF  = 90;      // rMSSD window: last ~90 beat pairs
-    const RR_PER_REC = 4;             // raw intervals logged per record
-    // FIT "no data" sentinel for the rr_interval field. Bound to that field's
-    // DATA_TYPE_UINT16 base type (0xFFFF is the UINT16 invalid value) AND to the
-    // field having no :scale/:offset (see mFitRr creation), so a stored 0xFFFF is
-    // emitted verbatim as "no data". Revisit if the base type, scale, or offset
-    // ever change. Non-hidden so the static packRr() and the tests can reference it.
-    const RR_INVALID = 0xFFFF;
 
     hidden var mDt;
     hidden var mAlphaSlow;
@@ -605,7 +610,7 @@ class StrongRowView extends Ui.View {
             var rr = ivals[i];
             if (rr == null) { continue; }
             rr = rr.toNumber();
-            if (rr >= StrongRowView.RR_MIN_MS && rr <= StrongRowView.RR_MAX_MS) { out.add(rr); }
+            if (rr >= $.RR_MIN_MS && rr <= $.RR_MAX_MS) { out.add(rr); }
         }
         return out;
     }
@@ -614,9 +619,9 @@ class StrongRowView extends Ui.View {
     // array, padding the rest with RR_INVALID. Extras beyond RR_PER_REC are
     // dropped (a real gap in the raw series -- tracked separately in #14).
     static function packRr(valid) {
-        var cap = StrongRowView.RR_PER_REC;
+        var cap = $.RR_PER_REC;
         var arr = new [cap];
-        for (var j = 0; j < cap; j++) { arr[j] = StrongRowView.RR_INVALID; }
+        for (var j = 0; j < cap; j++) { arr[j] = $.RR_INVALID; }
         var k = valid.size();
         if (k > cap) { k = cap; }
         for (var j = 0; j < k; j++) { arr[j] = valid[j]; }
@@ -773,7 +778,7 @@ class StrongRowView extends Ui.View {
                     // as the UINT16 "no data" sentinel (see handleRr / RR_INVALID).
                     mFitRr = mSession.createField(
                         "rr_interval", 2, Fit.DATA_TYPE_UINT16,
-                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "ms", :count => RR_PER_REC });
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "ms", :count => $.RR_PER_REC });
                     mFitRmssd = mSession.createField(
                         "rmssd", 3, Fit.DATA_TYPE_FLOAT,
                         { :mesgType => Fit.MESG_TYPE_RECORD, :units => "ms" });
