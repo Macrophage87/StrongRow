@@ -183,6 +183,14 @@ wrong, and the implementation deliberately reverses them:
 | launch via the `connectiq` launcher | launch `simulator` directly | There is no such launcher in this image; upstream backgrounds `simulator` itself. Direct launch also makes `$!` the correct PID. |
 | one teed `sim-run.log` | separate `monkeydo.log` and `sim-console.log` | Merged streams can produce two RESULTS blocks, which the "exactly one summary" rule would then **refuse on a green run**. |
 
+The one deliberate deviation that remains is the `tcp/1234` wait, which
+**degrades and proceeds** on timeout rather than aborting, because upstream just
+`sleep 5`s and gave no evidence the port is the right readiness signal. Every
+green run so far records `port_wait=open` on the first probe, so that premise is
+now retired by evidence — converting the wait to a hard abort is tracked in
+**#51**, deliberately gated on more than one observation so a required check
+doesn't acquire a flake.
+
 The advisory-until-proven rule still stands, but note it refers to a **free-run
 "boot smoke"** — an open-ended does-it-launch check — not to this deterministic
 suite runner, which is required.

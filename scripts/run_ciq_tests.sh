@@ -161,7 +161,8 @@ for _ in $(seq 1 25); do
     fi
     # Liveness is ADVISORY only. `ps -ef` above now shows `simulator` really is
     # a single long-lived process, so `$!` is the right PID -- but this stays
-    # advisory until the degrade-on-timeout path itself becomes a hard abort.
+    # advisory until the degrade-on-timeout path itself becomes a hard abort
+    # (tracked in #51 -- gated on more than one green run, not just run 1).
     #
     # pgrep comes from `procps`, which the image installs only TRANSITIVELY (it
     # is not in the upstream Dockerfile's apt list). Guard the call so an SDK
