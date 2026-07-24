@@ -92,3 +92,26 @@ function buildRr(ivals) {
     if (!(f.size() == 3)) { logger.error("filter size " + f.size() + " != 3"); return false; }
     return rrArrEq(f, [250, 2500, 900], logger);
 }
+
+// -------- #15 rMSSD-freshness / #16 gap-reset predicates (issue #32) --------
+// rrIsFresh(now, ts, thresh): strict `<`; never-seen (ts==0) is not fresh.
+(:test) function test_rr_isFresh_states(logger) {
+    var ok = true;
+    if (StrongRowView.rrIsFresh(10000, 9000, 5000) != true)  { logger.error("fresh 1s should be true");  ok = false; }
+    if (StrongRowView.rrIsFresh(10000, 4000, 5000) != false) { logger.error("stale 6s should be false"); ok = false; }
+    if (StrongRowView.rrIsFresh(10000, 5000, 5000) != false) { logger.error("boundary == thresh must be false (strict <)"); ok = false; }
+    if (StrongRowView.rrIsFresh(10000, 5001, 5000) != true)  { logger.error("just inside thresh should be true"); ok = false; }
+    if (StrongRowView.rrIsFresh(10000, 0,    5000) != false) { logger.error("never-seen (ts=0) must be false"); ok = false; }
+    return ok;
+}
+
+// rrGapExceeded(now, lastBeat, thresh): strict `>`; never-seen (lastBeat==0)
+// is not a gap (first beat just seeds mRrLast, no diff).
+(:test) function test_rr_gapExceeded_states(logger) {
+    var ok = true;
+    if (StrongRowView.rrGapExceeded(10000, 9000, 2500) != false) { logger.error("gap 1s within bound should be false"); ok = false; }
+    if (StrongRowView.rrGapExceeded(10000, 7400, 2500) != true)  { logger.error("gap 2.6s should be true");  ok = false; }
+    if (StrongRowView.rrGapExceeded(10000, 7500, 2500) != false) { logger.error("boundary == thresh must be false (strict >)"); ok = false; }
+    if (StrongRowView.rrGapExceeded(10000, 0,    2500) != false) { logger.error("never-seen (lastBeat=0) must be false"); ok = false; }
+    return ok;
+}

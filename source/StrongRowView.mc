@@ -56,6 +56,10 @@ const RR_PER_REC = 4;      // raw intervals logged per FIT record
 // field having no :scale/:offset (see mFitRr creation), so a stored 0xFFFF is
 // emitted verbatim as "no data". Revisit if the base type, scale, or offset change.
 const RR_INVALID = 0xFFFF;
+// R-R freshness window (ms). Used both by the display "RR streaming" indicator
+// (keyed off batch arrival, mLastRrMs) and by the rMSSD logging gate (keyed off
+// the last ACCEPTED beat, mLastBeatMs) so a dropout stops polluting avg_rmssd.
+const RR_FRESH_MS = 5000;
 
 class StrongRowView extends Ui.View {
 
@@ -142,7 +146,8 @@ class StrongRowView extends Ui.View {
 
     // R-R / HRV state
     hidden var mRrOk;
-    hidden var mLastRrMs;
+    hidden var mLastRrMs;     // last R-R BATCH arrival (display indicator)
+    hidden var mLastBeatMs;   // last ACCEPTED beat (rMSSD freshness + gap reset)
     hidden var mRrLast;
     hidden var mDiffSq;
     hidden var mDiffIdx;
@@ -200,6 +205,7 @@ class StrongRowView extends Ui.View {
         mMaxCore    = 0.0;
         mRrOk       = false;
         mLastRrMs   = 0;
+        mLastBeatMs = 0;
         mRrLast     = 0;
         mDiffSq     = new [RR_NDIFF];
         mDiffIdx    = 0;
@@ -314,10 +320,16 @@ class StrongRowView extends Ui.View {
         if (mStarted && !mPaused) {
             if (mFitRate != null) { mFitRate.setData(outputRate()); }
             if (mFitDps != null)  { mFitDps.setData(distPerStroke(currentSpeed())); }
-            if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }
-            if (mRmssd > 0.0) {
-                mRmssdSum += mRmssd;
-                mRmssdN++;
+            // #15: only log/accumulate rMSSD while beats are actually fresh
+            // (keyed off the last ACCEPTED beat, not batch arrival). During a
+            // dropout, skip the write -- a gap in the trace, not a frozen value --
+            // and skip the average so avg_rmssd isn't biased by stale data.
+            if (rrIsFresh(System.getTimer(), mLastBeatMs, $.RR_FRESH_MS)) {
+                if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }
+                if (mRmssd > 0.0) {
+                    mRmssdSum += mRmssd;
+                    mRmssdN++;
+                }
             }
             if (mFitCorr != null) {
                 var cr = correctiveRate();
@@ -595,11 +607,18 @@ class StrongRowView extends Ui.View {
     // before logging: undecodable (negative after toNumber) and non-physiological
     // values are dropped so they can never land in the UINT16 rr_interval field,
     // and unused slots are padded with RR_INVALID (0xFFFF, the FIT "no data"
-    // sentinel) rather than a fake 0 ms. The logged stream is otherwise raw --
-    // the extra artifact-rejection gate (RR_ART_K) is applied ONLY to the
-    // on-watch rMSSD, so offline HRV tools still receive every in-range beat to
-    // clean themselves. filterRr() is the single range gate shared by both paths
-    // so the recorded stream and the rMSSD input can never diverge.
+    // sentinel) rather than a fake 0 ms. The extra artifact-rejection gate
+    // (RR_ART_K) is applied ONLY to the on-watch rMSSD, not to the logged values.
+    // filterRr() is the single range gate shared by the record and rMSSD paths.
+    //
+    // NOTE (#14): the rr_interval field is NOT a complete raw R-R stream. It is a
+    // fixed-count developer RECORD field, so per ~1 Hz record it carries only the
+    // first up-to-RR_PER_REC in-range intervals of the LATEST batch before the
+    // record commits. Two beats are therefore lost silently: any past RR_PER_REC
+    // within a batch (see packRr), and every earlier batch whose setData() is
+    // overwritten by a later handleRr in the same record window. A watch app
+    // can't carry the full stream -- FitContributor exposes only developer
+    // fields, and the native FIT hrv message (#78) is not writable from CIQ.
 
     // Pure: the encodable, in-range intervals from `ivals`, as Numbers, in
     // arrival order. No instance state, so it is (:test)-able without a Session.
@@ -617,7 +636,8 @@ class StrongRowView extends Ui.View {
 
     // Pure: pack the first RR_PER_REC valid intervals into a fixed-length record
     // array, padding the rest with RR_INVALID. Extras beyond RR_PER_REC are
-    // dropped (a real gap in the raw series -- tracked separately in #14).
+    // dropped -- one of the two documented rr_interval loss modes (see #14 note
+    // above); the field is a per-record sample, not the complete raw series.
     static function packRr(valid) {
         var cap = $.RR_PER_REC;
         var arr = new [cap];
@@ -628,10 +648,32 @@ class StrongRowView extends Ui.View {
         return arr;
     }
 
+    // Pure: is a timestamp `tsMs` fresh at `nowMs` within `threshMs`? Strict `<`
+    // so it is behavior-preserving for the display indicator's old `< 5000` test.
+    // A never-seen stamp (0) is not fresh.
+    static function rrIsFresh(nowMs, tsMs, threshMs) {
+        return tsMs > 0 && (nowMs - tsMs) < threshMs;
+    }
+
+    // Pure: has the gap since the last accepted beat exceeded `threshMs`, so the
+    // next beat cannot be its consecutive successor? Strict `>` (gap == thresh is
+    // not a gap). A never-seen stamp (0) is not a gap -- the first beat just seeds.
+    static function rrGapExceeded(nowMs, lastBeatMs, threshMs) {
+        return lastBeatMs > 0 && (nowMs - lastBeatMs) > threshMs;
+    }
+
     hidden function handleRr(ivals) {
         if (ivals == null) { return; }
         if (ivals.size() <= 0) { return; }
-        mLastRrMs = System.getTimer();
+        var now = System.getTimer();
+        mLastRrMs = now;   // batch-arrival stamp (drives the display indicator)
+
+        // #16: if the gap since the last ACCEPTED beat exceeds one max interval,
+        // a beat was missed -- the next beat is not a consecutive successor, so
+        // drop the stale reference (using the OLD mLastBeatMs, before this batch
+        // restamps it). The `if (mRrLast > 0)` guard below then makes the first
+        // post-gap beat seed only, injecting no bogus rMSSD difference.
+        if (rrGapExceeded(now, mLastBeatMs, $.RR_MAX_MS)) { mRrLast = 0; }
 
         var valid = filterRr(ivals);   // single in-range source for both paths
 
@@ -649,6 +691,7 @@ class StrongRowView extends Ui.View {
                 }
             }
             mRrLast = rr;
+            mLastBeatMs = now;   // #15/#16: last ACCEPTED beat (all batch beats share `now`)
         }
 
         // FIT record: first RR_PER_REC valid intervals, padded with RR_INVALID.
@@ -1008,7 +1051,7 @@ class StrongRowView extends Ui.View {
         dc.drawText(w * 0.36, h * 0.045, Gfx.FONT_XTINY, "GPS", Gfx.TEXT_JUSTIFY_CENTER);
         // RR: green while beat intervals are streaming in
         var rcol = Gfx.COLOR_DK_GRAY;
-        if (mRrOk && mLastRrMs > 0 && (System.getTimer() - mLastRrMs) < 5000) {
+        if (mRrOk && rrIsFresh(System.getTimer(), mLastRrMs, $.RR_FRESH_MS)) {
             rcol = Gfx.COLOR_GREEN;
         }
         dc.setColor(rcol, Gfx.COLOR_TRANSPARENT);
