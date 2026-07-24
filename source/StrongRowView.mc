@@ -92,6 +92,12 @@ class StrongRowView extends Ui.View {
     hidden const RR_ART_K  = 0.30;    // reject successive jumps > 30% as artifacts
     hidden const RR_NDIFF  = 90;      // rMSSD window: last ~90 beat pairs
     hidden const RR_PER_REC = 4;      // raw intervals logged per record
+    // FIT "no data" sentinel for the rr_interval field. Bound to that field's
+    // DATA_TYPE_UINT16 base type (0xFFFF is the UINT16 invalid value) AND to the
+    // field having no :scale/:offset (see mFitRr creation), so a stored 0xFFFF is
+    // emitted verbatim as "no data". Revisit if the base type, scale, or offset
+    // ever change.
+    hidden const RR_INVALID = 0xFFFF;
 
     hidden var mDt;
     hidden var mAlphaSlow;
@@ -577,37 +583,70 @@ class StrongRowView extends Ui.View {
     }
 
     // ================= R-R / HRV ===========================================
-    // Raw beat-to-beat intervals go into the FIT unfiltered (offline tools do
-    // their own cleaning); the on-watch rMSSD uses only artifact-free pairs.
-    hidden function handleRr(ivals) {
-        if (ivals == null) { return; }
-        var n = ivals.size();
-        if (n <= 0) { return; }
-        mLastRrMs = System.getTimer();
+    // Beat-to-beat intervals are range-validated to [RR_MIN_MS, RR_MAX_MS]
+    // before logging: undecodable (negative after toNumber) and non-physiological
+    // values are dropped so they can never land in the UINT16 rr_interval field,
+    // and unused slots are padded with RR_INVALID (0xFFFF, the FIT "no data"
+    // sentinel) rather than a fake 0 ms. The logged stream is otherwise raw --
+    // the extra artifact-rejection gate (RR_ART_K) is applied ONLY to the
+    // on-watch rMSSD, so offline HRV tools still receive every in-range beat to
+    // clean themselves. filterRr() is the single range gate shared by both paths
+    // so the recorded stream and the rMSSD input can never diverge.
 
-        var arr = new [RR_PER_REC];
-        for (var j = 0; j < RR_PER_REC; j++) { arr[j] = 0; }
-        var k = 0;
-        for (var i = 0; i < n; i++) {
+    // Pure: the encodable, in-range intervals from `ivals`, as Numbers, in
+    // arrival order. No instance state, so it is (:test)-able without a Session.
+    static function filterRr(ivals) {
+        var out = [];
+        if (ivals == null) { return out; }
+        for (var i = 0; i < ivals.size(); i++) {
             var rr = ivals[i];
             if (rr == null) { continue; }
             rr = rr.toNumber();
-            if (k < RR_PER_REC) { arr[k] = rr; k++; }
-            if (rr >= RR_MIN_MS && rr <= RR_MAX_MS) {
-                if (mRrLast > 0) {
-                    var d = rr - mRrLast;
-                    if (d < 0) { d = -d; }
-                    if (d <= RR_ART_K * mRrLast) {
-                        mDiffSq[mDiffIdx] = (d * 1.0) * d;
-                        mDiffIdx = (mDiffIdx + 1) % RR_NDIFF;
-                        if (mDiffCount < RR_NDIFF) { mDiffCount++; }
-                    }
-                }
-                mRrLast = rr;
-            }
+            if (rr >= RR_MIN_MS && rr <= RR_MAX_MS) { out.add(rr); }
         }
-        if (k > 0 && mFitRr != null && mStarted && !mPaused) {
-            mFitRr.setData(arr);
+        return out;
+    }
+
+    // Pure: pack the first RR_PER_REC valid intervals into a fixed-length record
+    // array, padding the rest with RR_INVALID. Extras beyond RR_PER_REC are
+    // dropped (a real gap in the raw series -- tracked separately in #14).
+    static function packRr(valid) {
+        var arr = new [RR_PER_REC];
+        for (var j = 0; j < RR_PER_REC; j++) { arr[j] = RR_INVALID; }
+        var k = valid.size();
+        if (k > RR_PER_REC) { k = RR_PER_REC; }
+        for (var j = 0; j < k; j++) { arr[j] = valid[j]; }
+        return arr;
+    }
+
+    hidden function handleRr(ivals) {
+        if (ivals == null) { return; }
+        if (ivals.size() <= 0) { return; }
+        mLastRrMs = System.getTimer();
+
+        var valid = filterRr(ivals);   // single in-range source for both paths
+
+        // rMSSD: same in-range set, plus the artifact gate (rMSSD-only). Runs
+        // regardless of recording state; only the FIT write below is gated.
+        for (var i = 0; i < valid.size(); i++) {
+            var rr = valid[i];
+            if (mRrLast > 0) {
+                var d = rr - mRrLast;
+                if (d < 0) { d = -d; }
+                if (d <= RR_ART_K * mRrLast) {
+                    mDiffSq[mDiffIdx] = (d * 1.0) * d;
+                    mDiffIdx = (mDiffIdx + 1) % RR_NDIFF;
+                    if (mDiffCount < RR_NDIFF) { mDiffCount++; }
+                }
+            }
+            mRrLast = rr;
+        }
+
+        // FIT record: first RR_PER_REC valid intervals, padded with RR_INVALID.
+        // An all-invalid batch (valid empty) writes nothing, leaving the field
+        // absent for that record rather than emitting fictitious data.
+        if (valid.size() > 0 && mFitRr != null && mStarted && !mPaused) {
+            mFitRr.setData(packRr(valid));
         }
         recomputeRmssd();
     }
@@ -726,6 +765,8 @@ class StrongRowView extends Ui.View {
                 // explicit R-R / HRV logging, independent of the watch's
                 // "Log HRV" device setting
                 try {
+                    // No :scale/:offset: RR_INVALID (0xFFFF) is emitted verbatim
+                    // as the UINT16 "no data" sentinel (see handleRr / RR_INVALID).
                     mFitRr = mSession.createField(
                         "rr_interval", 2, Fit.DATA_TYPE_UINT16,
                         { :mesgType => Fit.MESG_TYPE_RECORD, :units => "ms", :count => RR_PER_REC });
