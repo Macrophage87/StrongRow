@@ -23,6 +23,27 @@ update the comment together.
 SDK, the compile job fails with an unknown-device error. Bump to a newer
 `connectiq-tester` tag that ships that device and repin the digest.
 
+**When you bump, re-verify the three undeclared binaries.** The upstream
+Dockerfile's `apt-get install` list is exactly `openjdk-17-jre-headless`,
+`libwebkit2gtk-4.0-37`, `libusb-1.0-0`, `libsm6`, `xvfb`. CI additionally relies
+on **`openssl`** (throwaway key; it appears only in a Dockerfile *comment*),
+**`python3`** (the fail-closed verdict step, which runs `if: always()` on a
+required check), and — advisory only — **`procps`** for `ps`/`pgrep`. All three
+are present today as *transitive* packages, frozen by the digest pin, so this is
+not a live risk. But nothing declares them, so after changing the digest confirm
+in the new image that all three still resolve:
+
+```sh
+docker run --rm --entrypoint sh <new-digest> -c 'command -v openssl python3 ps pgrep'
+```
+
+`openssl` and `python3` are load-bearing: without them the job cannot produce a
+verdict at all. `run_ciq_tests.sh` now aborts with `exit 2` and a named
+`harness_error` breadcrumb if the key/compile block fails for any reason
+(including a missing `openssl`), and its `pgrep` call is guarded by
+`command -v`, so a dropped `procps` degrades to `kill -0` instead of letting a
+`command not found` read as "the simulator is gone".
+
 ## Signing key
 
 `monkeyc` needs a developer key even for a test build, so each SDK job generates
@@ -42,6 +63,7 @@ deliberately does not perform.
 | Job | Container? | Required? | What it does |
 |---|---|---|---|
 | `manifest-lint` | no | yes | Fail-closed check that the manifest app id is a real 32-hex id (not a placeholder/template), the app has an entry/name/known type, and at least one device is listed. Also cross-checks `list_devices.sh` against the XML parse (see below). A bad id still compiles and still passes tests but the store rejects it — the SDK jobs can't catch this class. |
+| `test-tooling` | no | yes | Runner-free proof of the two things that decide whether `run-tests` can catch anything. (1) `scripts/check_expected_tests.sh` cross-checks the pin file against the `(:test)` functions declared in `source/*.mc`. (2) `scripts/test_check_ciq_tests.py` runs the parser's RED/GREEN suite. Its own job rather than a step in `manifest-lint`: a parser-fixture regression reporting under a check named "manifest-lint" misnames its own cause. |
 | `compile-unit-test` | yes | yes | Compiles the `--unit-test` build for **every** manifest device in one job (image pulls once). Enumerates devices fail-closed (zero devices ⇒ the job fails, never a green empty build), collects a per-device rc, and fails if any device fails. `-w` shows warnings but does not fail the build — this codebase is intentionally untyped, so no `-l` typecheck level is passed. |
 | `run-tests` | yes | yes | **Executes** the `(:test)` suites headlessly in the simulator on one device (`fr965`), via `scripts/run_ciq_tests.sh`, and judges the output with the fail-closed `scripts/check_ciq_tests.py`. Separate from `compile-unit-test` so a sim flake can't mask a compile regression. Uploads `monkeydo.log` / `sim-console.log` / `xvfb.log` / `harness-status.txt`. |
 | `release-build` | yes | yes | Compiles the shipping (non-unit-test) `.prg` for every device and exports the `.iq`. A device whose static image exceeds its memory limit makes `monkeyc` exit non-zero, so the compile itself is the budget gate. Uploads the `.prg`/`.iq` as the `strongrow-build-unsigned` artifact — **throwaway-signed, a build-sanity artifact, not a store upload** (a real submission is re-signed with the account-bound key). |
@@ -79,8 +101,19 @@ real regression, stayed green forever — which was this pipeline's main gap.
    dies instantly. Wait for the X socket, **aborting** on timeout;
 5. launch `/connectiq/bin/simulator` **directly** and keep its PID;
 6. **wait** (not "check") for `tcp/1234`, then run `monkeydo <prg> <device> -t`
-   under a hard `timeout`, capturing its exit code without ever acting on it;
+   under a hard `timeout`, capturing its exit code without ever acting on it.
+   The **degraded** path (port never opened) gets the *longer* leash — 300 s vs
+   180 s — because reaching it means a slow or busy runner, which is exactly
+   when a short leash converts a slow pass into a false red;
 7. `check_ciq_tests.py` renders the verdict.
+
+**Every pre-`monkeydo` failure exits 2 with a breadcrumb.** The key generation,
+the compile and the `.prg` check are wrapped so a failure writes
+`harness_error=<cause>` to `harness-status.txt`, closes the open `::group::` (so
+the forensics aren't folded away exactly where they matter) and exits **2** —
+rather than `set -e` aborting on `monkeyc`'s own 1/3/5 with no breadcrumb, which
+made the verdict step blame the simulator for a run in which the simulator was
+never launched.
 
 **The parser is the sole verdict.** `monkeydo` returns non-zero *even when tests
 pass* (documented in the image's own `tester.sh`), and a broken run can exit 0 —
@@ -96,9 +129,38 @@ A count alone cannot see a substitution — delete one test, add a trivial one, 
 can never disagree. **Update that file in the same commit as any `(:test)`
 change**; the failure message names exactly what is missing and what is extra.
 
-**The parser is proven on every PR without a container.** `manifest-lint` runs
-`scripts/test_check_ciq_tests.py`, whose fixtures are the real PASSED and FAILED
-transcripts from #44 plus truncated / empty / duplicate / glued-line inputs.
+**And the pin is cross-checked against the source, in CI.** That the pin cannot
+disagree with itself is exactly what made it bypassable: deleting a `(:test)`
+function *and* its pin line in the same commit was fully green, coverage shrank,
+and nothing noticed. `scripts/check_expected_tests.sh` (in `test-tooling`)
+derives the name set independently from `source/*.mc` and diffs it against the
+pin, so the two can't silently diverge — the same guarantee `manifest-lint`
+gives `list_devices.sh` against a real XML parse. It also fails loudly if a
+`(:test)` declaration is indented past the column-0 grep, and refuses to pass on
+an empty extraction rather than matching two empty lists.
+
+**The parser is proven on every PR without a container**, in `test-tooling`.
+What `scripts/test_check_ciq_tests.py` establishes, precisely:
+
+- the GREEN fixture is the **real `monkeydo.log`** from the first green
+  `run-tests` run (run `30127716562`, commit `5eb2187`), committed at
+  `scripts/fixtures/monkeydo-green-run.log`. It is the authoritative shape:
+  `Executing test X...` and `PASS` on **separate** lines. Two other shapes exist
+  in the record — #44's published transcript (one line, column-aligned) and this
+  suite's synthetic builder (one line, unpadded) — and the parser survives all
+  three only because it scopes to the RESULTS block. **No verbatim #44
+  transcript is committed anywhere**, so no fixture here is described as one;
+- every case declares the **exact set of guards** it must trip, keyed off the
+  checker's own diagnostic text, and green cases must trip none. Asserting only
+  the exit code was too weak to be evidence: mutation-testing the parser against
+  the earlier suite left most guards deletable with the suite still fully green,
+  because one malformed transcript trips several guards at once and any one of
+  them yields rc=1. Guards that no transcript can isolate get a case built to
+  isolate them — notably a `SKIP` row under a summary that still reads
+  `PASSED (passed=17, failed=0, errors=0)` with `Ran 17`, which is the entire
+  reason the not-`PASS` check exists;
+- a parser that **raises instead of rendering a verdict** now fails the suite,
+  because a traceback produces no diagnostics to classify.
 
 #### What this does and does not buy
 
@@ -115,8 +177,8 @@ wrong, and the implementation deliberately reverses them:
 
 | Earlier recipe | Now | Why |
 |---|---|---|
-| `apt-get install xvfb x11-utils iproute2 procps openssl` | no `apt-get` at all | `xvfb`/`openssl` are already in the image; the other three are avoided by using `/dev/tcp`, `kill -0` and `test -S`. Keeps `archive.ubuntu.com` off a required check's critical path. (It also omitted `apt-get update`, so it would have failed anyway.) |
-| poll with `ss`/`pgrep` | bash `/dev/tcp` connect | Tests connectability, strictly stronger than seeing a LISTEN, and needs no package. |
+| `apt-get install xvfb x11-utils iproute2 procps openssl` | no `apt-get` at all | `xvfb` is in the image's apt list and `openssl` is present transitively; `x11-utils` and `iproute2` are genuinely avoided by using `test -S` and `/dev/tcp`. **`procps` is not avoided** — the script uses `ps -ef` for topology (`\|\| true`) and `pgrep` as a *secondary* liveness opinion, both non-load-bearing and the `pgrep` call `command -v`-guarded. Keeps `archive.ubuntu.com` off a required check's critical path. (The recipe also omitted `apt-get update`, so it would have failed anyway.) |
+| poll with `ss`/`pgrep` | bash `/dev/tcp` connect | Tests connectability, strictly stronger than seeing a LISTEN, and needs no package. `pgrep` survives only as an advisory cross-check of `kill -0`, never as the probe. |
 | `pkill` stale simulators at entry | dropped | Meaningless in a fresh container, and returns 1 when nothing matches — an immediate `set -e` abort. |
 | launch via the `connectiq` launcher | launch `simulator` directly | There is no such launcher in this image; upstream backgrounds `simulator` itself. Direct launch also makes `$!` the correct PID. |
 | one teed `sim-run.log` | separate `monkeydo.log` and `sim-console.log` | Merged streams can produce two RESULTS blocks, which the "exactly one summary" rule would then **refuse on a green run**. |

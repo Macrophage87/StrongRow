@@ -37,11 +37,29 @@ SUMMARY_RE = re.compile(
     r'^(PASSED|FAILED)\s*\(passed=(\d+),\s*failed=(\d+),\s*errors=(\d+)\)[ \t]*\r?$',
     re.M,
 )
+# The standalone veto. Whitespace-tolerant on purpose: SUMMARY_RE already
+# tolerates `FAILED  (passed=`, so a literal substring veto would be the WEAKER
+# of the two and a double-spaced console line would slip past it.
+FAILED_VETO_RE = re.compile(r'FAILED\s*\(passed=')
 RAN_RE = re.compile(r'^Ran (\d+) tests?\b', re.M)
 # The RESULTS table header, e.g. "Test:                    Status:"
 RESULTS_HEADER_RE = re.compile(r'^Test:\s+Status:\s*\r?$', re.M)
-# A row inside the RESULTS table: a name and a status token, nothing else.
-RESULTS_ROW_RE = re.compile(r'^(\S+)[ \t]+(\S+)[ \t]*\r?$')
+# A row inside the RESULTS table: an identifier-shaped NAME and an ALL-CAPS
+# status token, nothing else.
+#
+# Both halves are deliberately narrow. With the old `(\S+)[ \t]+(\S+)` shape any
+# stray two-token line inside the table window became a fake row -- a simulator
+# notice like `WARNING: gc-pressure` was read as test `WARNING:` with status
+# `gc-pressure` and reddened an otherwise green run. Anchoring the name to an
+# identifier and the status to `[A-Z][A-Z0-9_]*` rejects both halves of that.
+#
+# The status alphabet is NOT pinned to PASS|FAIL|ERROR: an undocumented token
+# such as SKIP must still be captured so the "executed but mis-tallied" check
+# below can call it out by name. Anything that is not exactly PASS is a failure.
+RESULTS_ROW_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)[ \t]+([A-Z][A-Z0-9_]*)[ \t]*\r?$')
+# Terminal colour, if the simulator ever emits it, must not turn `PASS` into an
+# unparseable token (which would red a green run). Stripped on read.
+ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 
 
 def read(path):
@@ -50,25 +68,48 @@ def read(path):
     if not path or not os.path.exists(path):
         return ""
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        return fh.read()
+        return ANSI_RE.sub("", fh.read())
 
 
 def load_expected(path):
+    """Return the pinned names, or None if the pin file cannot be read.
+
+    None rather than a traceback: `read()` documents that a required check must
+    always render a verdict, and a missing --expected-file is exactly the case
+    where a traceback would replace the diagnostic with a stack dump.
+    """
     names = []
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                names.append(line)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    names.append(line)
+    except OSError:
+        return None
     return names
 
 
 def parse_results_table(text):
     """Return {name: status} from the RESULTS table only.
 
-    Scoping to the table matters: every test name also appears earlier as
-    `Executing test <name>... PASS`, so a whole-file scan double-counts every
-    test (34 entries for a 17-test run) and would red a green run.
+    None  = no table header anywhere (caller may retry a wider stream).
+    {}    = header present but no rows under it.
+
+    Why the parse is scoped to the block, corrected against the real transcript:
+    an earlier note here claimed a whole-file scan double-counts every test
+    (34 rows for a 17-test run) because each name recurs as
+    `Executing test <name>... PASS`. Measured against the committed fixture that
+    is FALSE -- the simulator puts `Executing test <name>...` and `PASS` on
+    SEPARATE lines, and even #44's one-line variant carries four tokens, so no
+    row regex matches either. A whole-file scan of the real log yields 18, not
+    34: the 17 real rows plus the `Test: Status:` header itself.
+
+    Scoping still earns its place, for the reasons actually observed: it drops
+    that header row, and it confines the parse to a window so that row-shaped
+    simulator chatter before the table (`SIMULATOR READY`) or after the tally
+    (`SHUTDOWN OK`) cannot become a phantom test and red a green run. Both are
+    covered by GREEN cases in the self-test suite.
     """
     header = RESULTS_HEADER_RE.search(text)
     if not header:
@@ -114,26 +155,45 @@ def main():
     # Harness breadcrumbs first: on a degraded path this is the only thing that
     # explains WHY there is no summary, so print it before any verdict.
     status = read(args.harness_status).strip()
+    harness_error = ""
     if status:
         print("Harness status:")
         for line in status.splitlines():
             print("  " + line)
+            key, _, val = line.partition("=")
+            if key.strip() == "harness_error":
+                harness_error = val.strip()
         print()
 
     expected = load_expected(expected_file)
-    n_expected = len(expected)
-    if n_expected == 0:
+    if expected is None:
+        problems.append(
+            "expected test list %r could not be read -- refusing to pass without a pin"
+            % expected_file)
+        expected = []
+    elif len(expected) == 0:
         problems.append(
             "expected test list %r is empty -- a zero pin can never pass" % expected_file)
+    n_expected = len(expected)
 
     if not monkeydo.strip():
-        problems.append(
-            "monkeydo log %r is empty or missing: the simulator produced no output "
-            "(hung and killed by timeout, crashed at launch, or never started)"
-            % args.monkeydo_log)
+        # Defer to the harness's own breadcrumb when there is one. Guessing
+        # "hung / crashed at launch / never started" is actively misleading on a
+        # path where the harness aborted before the simulator was ever started
+        # (a failed compile, say) -- all three suggested causes would be wrong.
+        if harness_error:
+            problems.append(
+                "monkeydo log %r is empty or missing: the harness aborted before "
+                "monkeydo could run (harness_error=%s)"
+                % (args.monkeydo_log, harness_error))
+        else:
+            problems.append(
+                "monkeydo log %r is empty or missing: the simulator produced no output "
+                "(hung and killed by timeout, crashed at launch, or never started)"
+                % args.monkeydo_log)
 
     # --- Standalone veto -----------------------------------------------------
-    if "FAILED (passed=" in monkeydo or "FAILED (passed=" in console:
+    if FAILED_VETO_RE.search(monkeydo) or FAILED_VETO_RE.search(console):
         problems.append("a 'FAILED (passed=' line is present -- tests failed")
 
     # --- Summary line --------------------------------------------------------
@@ -175,9 +235,15 @@ def main():
             % (ran.group(1), n_expected, expected_file))
 
     # --- Test-name set -------------------------------------------------------
+    # Widen the fallback past "header entirely absent": if the header lands in
+    # monkeydo.log but the rows land in sim-console.log, the monkeydo-only parse
+    # returns an EMPTY dict, not None -- which used to skip the fallback and red
+    # a green run with a bogus "missing tests" list. `not rows` covers both.
     rows = parse_results_table(monkeydo)
-    if rows is None:
-        rows = parse_results_table(combined)
+    if not rows:
+        alt = parse_results_table(combined)
+        if alt:
+            rows = alt
     if rows is None:
         problems.append("no RESULTS table found in either log")
     else:

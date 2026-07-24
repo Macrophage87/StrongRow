@@ -1,0 +1,75 @@
+------------------------------------------------------------------------------
+Executing test test_dsp_timeBaseInvariantToBatchSize...
+PASS
+------------------------------------------------------------------------------
+Executing test test_dsp_timeBaseIs25Hz...
+PASS
+------------------------------------------------------------------------------
+Executing test test_dsp_timeBaseSetAtInit...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_oneValid...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_twoValid...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_threeValid...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_exactlyFour...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_fiveDropsExtra...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_allInvalid...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_boundaryInclusive...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_interleavedPacksLow...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_nullIvals...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_emptyIvals...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_filterInRangeOnly...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_isFresh_states...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_freshConstUnchanged...
+PASS
+------------------------------------------------------------------------------
+Executing test test_rr_gapExceeded_states...
+PASS
+
+==============================================================================
+RESULTS
+Test:                                 Status:
+test_dsp_timeBaseInvariantToBatchSize PASS
+test_dsp_timeBaseIs25Hz               PASS
+test_dsp_timeBaseSetAtInit            PASS
+test_rr_oneValid                      PASS
+test_rr_twoValid                      PASS
+test_rr_threeValid                    PASS
+test_rr_exactlyFour                   PASS
+test_rr_fiveDropsExtra                PASS
+test_rr_allInvalid                    PASS
+test_rr_boundaryInclusive             PASS
+test_rr_interleavedPacksLow           PASS
+test_rr_nullIvals                     PASS
+test_rr_emptyIvals                    PASS
+test_rr_filterInRangeOnly             PASS
+test_rr_isFresh_states                PASS
+test_rr_freshConstUnchanged           PASS
+test_rr_gapExceeded_states            PASS
+Ran 17 tests
+
+PASSED (passed=17, failed=0, errors=0)

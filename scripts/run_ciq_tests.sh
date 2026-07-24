@@ -15,8 +15,16 @@
 #         scripts/check_ciq_tests.py. This includes monkeydo timing out or
 #         exiting non-zero (it returns non-zero even on success, by design).
 #   2  -> the harness failed BEFORE monkeydo could run (X never came up, the
-#         simulator died, the .prg or device bits are missing). No verdict is
-#         possible; the parser will also fail, but this exit code says why.
+#         simulator died, the compile or key generation failed, the .prg or the
+#         device bits are missing). No verdict is possible; the parser will also
+#         fail, but this exit code says why, and a `harness_error` breadcrumb is
+#         ALWAYS written first so the verdict step can explain itself.
+#
+# Every pre-monkeydo failure must go through `fail_harness`. A bare command
+# aborting on `set -e` would exit with ITS OWN code (1/3/5...), write no
+# breadcrumb, and leave the verdict step printing "the simulator produced no
+# output (hung, crashed at launch, or never started)" -- all three causes wrong,
+# because the simulator was never launched at all.
 set -euo pipefail
 
 DEVICE="${1:-fr965}"
@@ -42,6 +50,16 @@ mkdir -p "$OUT_DIR" "$LOG_DIR"
 : > "$STATUS_FILE"
 status() { echo "$1=$2" >> "$STATUS_FILE"; }
 
+# The ONLY way out before monkeydo. Closes the open ::group:: first -- otherwise
+# the forensics that explain the failure are folded into a collapsed group,
+# exactly where a reader needs them expanded.
+fail_harness() {
+    echo "::endgroup::"
+    echo "::error::$2"
+    status harness_error "$1"
+    exit 2
+}
+
 sim_pid=""
 xvfb_pid=""
 # Capture the real exit code FIRST: without this, a fully successful run exits
@@ -64,24 +82,33 @@ if [[ ! -d "/root/.Garmin/ConnectIQ/Devices/${DEVICE}" ]]; then
     # monkeyc resolving a device proves the COMPILER's definitions exist; the
     # simulator needs per-device assets in this path. Fail here with a precise
     # message rather than letting the sim die mysteriously later.
-    echo "::error::device '${DEVICE}' is not installed at /root/.Garmin/ConnectIQ/Devices"
-    status harness_error "device_bits_missing:${DEVICE}"
-    exit 2
+    fail_harness "device_bits_missing:${DEVICE}" \
+        "device '${DEVICE}' is not installed at /root/.Garmin/ConnectIQ/Devices"
 fi
 echo "::endgroup::"
 
 echo "::group::Compile --unit-test for ${DEVICE}"
 # Throwaway key, same as the other CI jobs: monkeyc needs one even for a test
 # build. Never committed, never a secret.
-openssl genrsa -out developer_key.pem 4096 2>/dev/null
-openssl pkcs8 -topk8 -inform PEM -outform DER \
-    -in developer_key.pem -out developer_key.der -nocrypt
+#
+# Grouped behind `|| rc=$?` so a compile or key failure exits 2 WITH a
+# breadcrumb instead of `set -e` aborting on monkeyc's own exit code. Without
+# this the `prg_missing` branch below is unreachable dead code, because a failed
+# monkeyc kills the script before it is ever evaluated.
 # -w warnings on, but NO -l: this codebase is deliberately untyped.
-monkeyc -f monkey.jungle -o "$PRG" -y developer_key.der -d "$DEVICE" --unit-test -w
+build_rc=0
+{
+    openssl genrsa -out developer_key.pem 4096 2>/dev/null &&
+    openssl pkcs8 -topk8 -inform PEM -outform DER \
+        -in developer_key.pem -out developer_key.der -nocrypt &&
+    monkeyc -f monkey.jungle -o "$PRG" -y developer_key.der -d "$DEVICE" --unit-test -w
+} || build_rc=$?
+if [[ "$build_rc" != "0" ]]; then
+    fail_harness "compile_failed:${build_rc}" \
+        "key generation or monkeyc --unit-test failed (rc=${build_rc}); monkeydo never ran"
+fi
 if [[ ! -f "$PRG" ]]; then
-    echo "::error::compile produced no $PRG"
-    status harness_error "prg_missing"
-    exit 2
+    fail_harness "prg_missing" "compile reported success but produced no $PRG"
 fi
 ls -l "$PRG" "${PRG}.debug.xml" 2>/dev/null || true   # debug.xml aids symbolization
 echo "::endgroup::"
@@ -100,17 +127,14 @@ xvfb_pid=$!    # captured immediately; any other background job would clobber $!
 x_ready=no
 for _ in $(seq 1 30); do
     if ! kill -0 "$xvfb_pid" 2>/dev/null; then
-        echo "::error::Xvfb died during startup; see $XVFB_LOG"
-        status harness_error "xvfb_died"
-        exit 2
+        cat "$XVFB_LOG" 2>/dev/null || true
+        fail_harness "xvfb_died" "Xvfb died during startup; see $XVFB_LOG"
     fi
     if [[ -S "$X_SOCKET" ]]; then x_ready=yes; break; fi
     sleep 1
 done
 if [[ "$x_ready" != "yes" ]]; then
-    echo "::error::Xvfb socket $X_SOCKET never appeared"
-    status harness_error "xvfb_no_socket"
-    exit 2
+    fail_harness "xvfb_no_socket" "Xvfb socket $X_SOCKET never appeared"
 fi
 status xvfb ready
 
@@ -135,10 +159,16 @@ for _ in $(seq 1 25); do
     if (exec 3<>/dev/tcp/127.0.0.1/1234) 2>/dev/null; then
         port_state=open; break
     fi
-    # Liveness is ADVISORY only. We have no evidence about whether `simulator`
-    # is itself the long-lived process or a wrapper that execs/forks one, so a
-    # hard abort here risks failing at ~1s on a healthy sim with a wrong story.
-    if ! kill -0 "$sim_pid" 2>/dev/null && ! pgrep -f simulator >/dev/null 2>&1; then
+    # Liveness is ADVISORY only. `ps -ef` above now shows `simulator` really is
+    # a single long-lived process, so `$!` is the right PID -- but this stays
+    # advisory until the degrade-on-timeout path itself becomes a hard abort.
+    #
+    # pgrep comes from `procps`, which the image installs only TRANSITIVELY (it
+    # is not in the upstream Dockerfile's apt list). Guard the call so an SDK
+    # bump that drops it degrades to kill -0 alone rather than having a
+    # `command not found` 127 silently read as "process is gone".
+    if ! kill -0 "$sim_pid" 2>/dev/null \
+       && ! { command -v pgrep >/dev/null 2>&1 && pgrep -f simulator >/dev/null 2>&1; }; then
         echo "simulator appears to have exited (both kill -0 and pgrep agree)"
         port_state=sim_gone; break
     fi
@@ -147,9 +177,12 @@ done
 status port_wait "$port_state"
 if [[ "$port_state" != "open" ]]; then
     echo "::error::simulator not reachable on tcp/1234 (state=$port_state); proceeding anyway -- monkeydo decides"
-    # Retire the port premise on run 1: decode listening ports with no packages.
+    # Decode LISTENING ports with no packages. `$4=="0A"` is TCP_LISTEN --
+    # without it this prints every socket's local port under a "listening"
+    # label, which is worse than no diagnostic. (IPv4 only; /proc/net/tcp6
+    # would need the same treatment if the simulator ever binds v6-only.)
     echo "--- listening TCP ports (local_address hex -> decimal) ---"
-    awk 'NR>1 {split($2,a,":"); print a[2]}' /proc/net/tcp 2>/dev/null \
+    awk 'NR>1 && $4=="0A" {split($2,a,":"); print a[2]}' /proc/net/tcp 2>/dev/null \
         | sort -u | while read -r hexport; do
               [[ -n "$hexport" ]] && printf '  0x%s = %d\n' "$hexport" "$((16#$hexport))"
           done || true
@@ -161,11 +194,20 @@ echo "::group::Run monkeydo"
 # non-zero even when tests pass. Capture it for diagnostics only, and never let
 # it kill this script (which is why there is no `tee` here either: with
 # pipefail, upstream's own bug would abort every green run).
-if [[ "$port_state" == "open" ]]; then md_timeout=180; else md_timeout=60; fi
+#
+# The degraded path gets MORE patience, not less. It was the other way round,
+# which is backwards: a port that never opened means a slow or busy runner --
+# precisely the case where a short leash converts a slow pass into a false red.
+# (Observed: the whole job took 46 s with the port open on the first probe, so
+# 180 s is already ~17x headroom on the happy path; the job timeout is 20 min.)
+if [[ "$port_state" == "open" ]]; then md_timeout=180; else md_timeout=300; fi
 rc=0
 timeout -k 10 "$md_timeout" monkeydo "$PRG" "$DEVICE" -t > "$MONKEYDO_LOG" 2>&1 || rc=$?
 status monkeydo_rc "$rc"
-[[ "$rc" == "124" ]] && status monkeydo timed_out
+# 124 = TERM took effect; 137 = 128+SIGKILL, i.e. `-k 10` had to escalate. Both
+# are timeouts, and recording only 124 lets an escalated kill look like a plain
+# non-zero exit.
+if [[ "$rc" == "124" || "$rc" == "137" ]]; then status monkeydo timed_out; fi
 if kill -0 "$sim_pid" 2>/dev/null; then status sim_alive yes; else status sim_alive no; fi
 echo "--- monkeydo output (also uploaded as an artifact) ---"
 cat "$MONKEYDO_LOG" || true

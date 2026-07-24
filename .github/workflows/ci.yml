@@ -50,14 +50,38 @@ jobs:
         # Also cross-checks scripts/list_devices.sh (used by the container build
         # jobs) against the XML parse, so a device-extractor divergence fails here.
         run: python3 scripts/check_manifest_appid.py manifest.xml
+
+  # 2) Runner-free proof of the TEST TOOLING itself — the two things that decide
+  #    whether run-tests can actually catch a regression. Split out of
+  #    manifest-lint on purpose: a parser-fixture regression reporting under a
+  #    check named "manifest-lint" misnames its own cause, and a pin-vs-source
+  #    divergence is not a manifest problem either. Needs no container (pure
+  #    Python + grep), so it is the cheapest and fastest signal in the run.
+  test-tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Cross-check expected_tests.txt against source/*.mc
+        # Closes the silent-shrink bypass. check_ciq_tests.py derives the
+        # expected COUNT from the pin file's own length, so the pin cannot
+        # disagree with itself: deleting a (:test) function AND its pin line in
+        # one commit was fully green while coverage shrank. This anchors the pin
+        # to the source, exactly as manifest-lint anchors list_devices.sh to a
+        # real XML parse. Must be bash — process substitution.
+        shell: bash
+        run: bash scripts/check_expected_tests.sh
       - name: Parser self-test (runner-free RED/GREEN)
         # check_ciq_tests.py is the sole verdict for run-tests, and it is pure
         # Python -- so it can be proven here with no container, no SDK and no
-        # Xvfb. Fixtures are the real transcripts from issue #44 plus the
-        # degenerate inputs a fail-closed parser must reject.
+        # Xvfb. Fixtures: the REAL monkeydo.log from the first green run-tests
+        # run, plus synthetic transcripts perturbed one guard at a time. Each
+        # case asserts the exact set of guards that must fire, not just rc.
         run: python3 scripts/test_check_ciq_tests.py
 
-  # 2) Compile the unit-test build for EVERY manifest device in ONE job, so the
+  # 3) Compile the unit-test build for EVERY manifest device in ONE job, so the
   #    SDK image is pulled once (not once per device via a matrix). A per-device
   #    rc is collected; the job fails if any single device fails to compile.
   compile-unit-test:
@@ -149,7 +173,7 @@ jobs:
           fi
           exit $rc_total
 
-  # 3) run-tests: EXECUTE the (:test) suites headlessly in the simulator.
+  # 4) run-tests: EXECUTE the (:test) suites headlessly in the simulator.
   #    Separate from compile-unit-test on purpose, so a simulator flake can never
   #    mask a compile regression. Deliberately has NO `needs:` (it would only
   #    serialise the two for nothing) and NO job-level `if:` (a `skipped` result
@@ -167,6 +191,29 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Resolve SDK toolchain onto PATH
+        # Same fallback the two sibling container jobs carry. Without it an
+        # image bump that relocates the binaries self-heals those two and hard-
+        # fails this one at exit 127 with no breadcrumb. monkeydo and simulator
+        # live in the same bin dir as monkeyc, so resolving one resolves all.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v monkeyc >/dev/null 2>&1; then
+            for d in /connectiq /opt/connectiq /root/connectiq /sdk /opt/garmin; do
+              b=$(find "$d" -name monkeyc -type f 2>/dev/null | head -1 || true)
+              if [ -n "$b" ]; then
+                dir="$(dirname "$b")"
+                echo "$dir" >> "$GITHUB_PATH"   # subsequent steps
+                export PATH="$dir:$PATH"        # this step's assertion
+                break
+              fi
+            done
+          fi
+          command -v monkeyc
+          command -v monkeydo
+          command -v simulator
+
       - name: Assert the test device is in the manifest
         shell: bash
         run: |
@@ -179,9 +226,15 @@ jobs:
           fi
 
       - name: Compile and run the (:test) suites in the simulator
-        # No apt-get: xvfb and openssl are already in this image (verified in its
-        # Dockerfile), and the port/liveness/X probes are package-free by design,
-        # which keeps archive.ubuntu.com off a required check's critical path.
+        # No apt-get, so archive.ubuntu.com stays off a required check's
+        # critical path, and the port/liveness/X probes are package-free by
+        # design. Accuracy note: the upstream Dockerfile's apt list is
+        # openjdk-17-jre-headless, libwebkit2gtk-4.0-37, libusb-1.0-0, libsm6
+        # and xvfb — so `xvfb` IS declared, but `openssl` appears only in a
+        # Dockerfile COMMENT and is present transitively. It is frozen by the
+        # digest pin today; the script now aborts with a named breadcrumb (exit
+        # 2, harness_error=compile_failed) rather than a bare 127 if a future
+        # bump drops it. See the SDK-bump checklist in docs/CI.md.
         # Must be bash — the script uses /dev/tcp, [[ ]] and pipefail.
         shell: bash
         run: bash scripts/run_ciq_tests.sh fr965
@@ -192,6 +245,18 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set -euo pipefail
+          # python3 is NOT in the upstream Dockerfile's apt list — it is present
+          # transitively and frozen only by the digest pin. This step is the
+          # verdict for a required check AND runs `if: always()`, so a bump that
+          # drops it would die with a bare "command not found" on every path.
+          # Say so explicitly instead.
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "::error::python3 is missing from the SDK image — the run-tests"
+            echo "::error::verdict cannot be rendered. Re-verify the SDK-bump"
+            echo "::error::checklist in docs/CI.md (python3 / procps / openssl)."
+            exit 1
+          fi
           python3 scripts/check_ciq_tests.py \
             --monkeydo-log monkeydo.log \
             --console-log sim-console.log \
@@ -200,6 +265,12 @@ jobs:
 
       - name: Upload simulator logs
         if: always()
+        # continue-on-error: the verdict is already rendered by the step above.
+        # Without this, a blob-storage flake in the upload reds a REQUIRED check
+        # with all 17 tests passing — an availability dependency on the merge
+        # gate that buys nothing. Losing the logs is a diagnostics loss, not a
+        # correctness signal.
+        continue-on-error: true
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: ciq-test-logs
@@ -212,7 +283,7 @@ jobs:
           # mask its own failure behind an artifact-upload error.
           if-no-files-found: warn
 
-  # 4) release-build: compile the NON-unit-test RELEASE artifact (the build that
+  # 5) release-build: compile the NON-unit-test RELEASE artifact (the build that
   #    actually ships) for every device, then export the store .iq package.
   #    monkeyc exits non-zero if a device's static image blows its memory limit,
   #    so a non-zero exit is the assertion — the per-device compile IS the gate.
@@ -315,7 +386,7 @@ jobs:
             bin/*.iq
           if-no-files-found: error
 
-  # 4) Single stable status name to require in branch protection. Add new
+  # 6) Single stable status name to require in branch protection. Add new
   #    required jobs to `needs` here rather than to branch protection.
   #
   #    `if: always()` matters: with the default `if: success()`, a failing
@@ -325,7 +396,7 @@ jobs:
   #    skip) on any upstream failure/cancel/skip, so it truly gates the merge.
   ci-required:
     if: ${{ always() }}
-    needs: [manifest-lint, compile-unit-test, run-tests, release-build]
+    needs: [manifest-lint, test-tooling, compile-unit-test, run-tests, release-build]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every required job succeeded
@@ -333,9 +404,10 @@ jobs:
         run: |
           echo "::error::A required job did not succeed:"
           echo "  manifest-lint     = ${{ needs.manifest-lint.result }}"
+          echo "  test-tooling      = ${{ needs.test-tooling.result }}"
           echo "  compile-unit-test = ${{ needs.compile-unit-test.result }}"
           echo "  run-tests         = ${{ needs.run-tests.result }}"
           echo "  release-build     = ${{ needs.release-build.result }}"
           exit 1
       - name: All required CI jobs passed
-        run: echo "manifest-lint + compile-unit-test + run-tests + release-build all succeeded."
+        run: echo "manifest-lint + test-tooling + compile-unit-test + run-tests + release-build all succeeded."
