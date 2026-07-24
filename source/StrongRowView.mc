@@ -150,6 +150,11 @@ class StrongRowView extends Ui.View {
     hidden var mFitCorr;
     hidden var mFitCorrTotal;
     hidden var mCorrAccum;
+    hidden var mCoreSensor;
+    hidden var mFitCore;
+    hidden var mFitSkin;
+    hidden var mFitMaxCore;
+    hidden var mMaxCore;
     hidden var mStartMs;
 
     hidden var mSteps;
@@ -174,6 +179,11 @@ class StrongRowView extends Ui.View {
         mFitCorr    = null;
         mFitCorrTotal = null;
         mCorrAccum  = 0.0;
+        mCoreSensor = null;
+        mFitCore    = null;
+        mFitSkin    = null;
+        mFitMaxCore = null;
+        mMaxCore    = 0.0;
         mRrOk       = false;
         mLastRrMs   = 0;
         mRrLast     = 0;
@@ -281,6 +291,7 @@ class StrongRowView extends Ui.View {
     function onLayout(dc) {
         startSensor();
         startGps();
+        mCoreSensor = new CoreTempSensor();
         mTimer = new Timer.Timer();
         mTimer.start(method(:onTick), 250, true);
     }
@@ -299,6 +310,12 @@ class StrongRowView extends Ui.View {
                 mFitCorr.setData(cr);
                 mCorrAccum += cr / 240.0;   // spm integrated over a 250 ms tick
             }
+            if (mFitCore != null) {
+                var ct = mCoreSensor.coreTemp();
+                mFitCore.setData(ct);
+                if (ct > mMaxCore) { mMaxCore = ct; }
+            }
+            if (mFitSkin != null) { mFitSkin.setData(mCoreSensor.skinTemp()); }
         }
         if (mWorkoutEnabled && mStarted && !mPaused) {
             var st = mSteps[mStepIdx];
@@ -739,6 +756,27 @@ class StrongRowView extends Ui.View {
                     mFitCorrTotal = null;
                 }
                 mCorrAccum = 0.0;
+                // core temperature: only declare the fields when a CORE pod
+                // has actually been heard, so podless rows carry no empty
+                // developer fields
+                if (mCoreSensor != null && mCoreSensor.everSeen()) {
+                    try {
+                        mFitCore = mSession.createField(
+                            "core_temperature", 7, Fit.DATA_TYPE_FLOAT,
+                            { :mesgType => Fit.MESG_TYPE_RECORD, :units => "C" });
+                        mFitSkin = mSession.createField(
+                            "skin_temperature", 8, Fit.DATA_TYPE_FLOAT,
+                            { :mesgType => Fit.MESG_TYPE_RECORD, :units => "C" });
+                        mFitMaxCore = mSession.createField(
+                            "max_core_temperature", 9, Fit.DATA_TYPE_FLOAT,
+                            { :mesgType => Fit.MESG_TYPE_SESSION, :units => "C" });
+                    } catch (e) {
+                        mFitCore = null;
+                        mFitSkin = null;
+                        mFitMaxCore = null;
+                    }
+                    mMaxCore = 0.0;
+                }
             } catch (e) {
                 mSession = null;
             }
@@ -829,6 +867,9 @@ class StrongRowView extends Ui.View {
             if (mFitCorrTotal != null) {
                 mFitCorrTotal.setData((mCorrAccum + 0.5).toNumber());
             }
+            if (mFitMaxCore != null && mMaxCore > 0.0) {
+                mFitMaxCore.setData(mMaxCore);
+            }
             mSession.save();
             mSession = null;
             mFitRate = null;
@@ -838,6 +879,9 @@ class StrongRowView extends Ui.View {
             mFitAvgRmssd = null;
             mFitCorr = null;
             mFitCorrTotal = null;
+            mFitCore = null;
+            mFitSkin = null;
+            mFitMaxCore = null;
         }
         mStarted = false;
     }
@@ -848,6 +892,7 @@ class StrongRowView extends Ui.View {
             try { Sensor.unregisterSensorDataListener(); } catch (e) {}
         }
         try { Position.enableLocationEvents(Position.LOCATION_DISABLE, method(:onPosition)); } catch (e) {}
+        if (mCoreSensor != null) { mCoreSensor.close(); }
         stopAndSave();
     }
 
@@ -910,14 +955,21 @@ class StrongRowView extends Ui.View {
         if (mGpsQual >= 3)      { col = Gfx.COLOR_GREEN;  }   // usable / good
         else if (mGpsQual == 2) { col = Gfx.COLOR_YELLOW; }   // poor
         dc.setColor(col, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(w * 0.42, h * 0.045, Gfx.FONT_XTINY, "GPS", Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(w * 0.36, h * 0.045, Gfx.FONT_XTINY, "GPS", Gfx.TEXT_JUSTIFY_CENTER);
         // RR: green while beat intervals are streaming in
         var rcol = Gfx.COLOR_DK_GRAY;
         if (mRrOk && mLastRrMs > 0 && (System.getTimer() - mLastRrMs) < 5000) {
             rcol = Gfx.COLOR_GREEN;
         }
         dc.setColor(rcol, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(w * 0.60, h * 0.045, Gfx.FONT_XTINY, "RR", Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(w * 0.52, h * 0.045, Gfx.FONT_XTINY, "RR", Gfx.TEXT_JUSTIFY_CENTER);
+        // CT: green while a CORE pod's data is fresh
+        var ccol = Gfx.COLOR_DK_GRAY;
+        if (mCoreSensor != null && mCoreSensor.isFresh()) {
+            ccol = Gfx.COLOR_GREEN;
+        }
+        dc.setColor(ccol, Gfx.COLOR_TRANSPARENT);
+        dc.drawText(w * 0.66, h * 0.045, Gfx.FONT_XTINY, "CT", Gfx.TEXT_JUSTIFY_CENTER);
     }
 
     hidden function drawRate(dc, w, h, col) {
