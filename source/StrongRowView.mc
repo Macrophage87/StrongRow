@@ -116,7 +116,6 @@ class StrongRowView extends Ui.View {
     hidden var mAlphaFast;
     hidden var mAlphaEnv;
     hidden var mAlphaVar;
-    hidden var mCoeffReady;
     // per-axis filter state (gravity, band-pass, activity variance)
     hidden var mGravX; hidden var mGravY; hidden var mGravZ;
     hidden var mLpX;   hidden var mLpY;   hidden var mLpZ;
@@ -186,7 +185,10 @@ class StrongRowView extends Ui.View {
     function initialize() {
         View.initialize();
         resetDetector();
-        mCoeffReady = false;
+        // #8: the time base is now a pure function of compile-time constants,
+        // computed once here. It can never be derived from runtime data again.
+        // Must run AFTER resetDetector(), which owns the rest of the DSP state.
+        computeCoeffs();
         mSensorOk   = false;
         mGpsQual    = 0;
         mSession    = null;
@@ -295,8 +297,10 @@ class StrongRowView extends Ui.View {
         mPCount      = 0;
         mRate        = 0.0;
         mStrokeCount = 0;
-        mDecim       = 5;
-        mAcDt        = 0.2;
+        // mDecim / mAcDt deliberately NOT seeded here (#8): computeCoeffs() is
+        // their single source of truth and runs immediately after this in
+        // initialize(). The old hardcoded 5 / 0.2 duplicated computeCoeffs(25)
+        // exactly, and duplicated constants are what drift.
         mAcBuf       = new [AC_BUF];
         for (var i = 0; i < AC_BUF; i++) { mAcBuf[i] = 0.0; }
         mAcIdx       = 0;
@@ -406,16 +410,26 @@ class StrongRowView extends Ui.View {
         }
     }
 
-    hidden function computeCoeffs(rate) {
-        mDt = 1.0 / rate;
+    // Derive the DSP time base from REQ_RATE -- the rate the accelerometer is
+    // CONFIGURED to deliver (see accOpt), which is the only trustworthy source:
+    // CIQ exposes no achieved-sample-rate field, and a batch's size is a delivery
+    // artifact of :period => 1, not a rate.
+    //
+    // Deliberately NO parameter (#8). This used to take a `rate` argument and was
+    // called as computeCoeffs(n) with n = the first batch's SAMPLE COUNT, which
+    // silently rescaled the entire synthetic clock for the whole session. With no
+    // parameter, reintroducing that call is an arity error caught at compile time
+    // by the 12-device compile-unit-test job -- a guard that actually runs, unlike
+    // the (:test) suite, which CI compiles but does not execute.
+    hidden function computeCoeffs() {
+        mDt = 1.0 / REQ_RATE;
         mAlphaSlow = mDt / (mDt + 1.0 / (2.0 * Math.PI * FC_SLOW));
         mAlphaFast = mDt / (mDt + 1.0 / (2.0 * Math.PI * FC_FAST));
         mAlphaEnv  = mDt / (mDt + 1.0 / (2.0 * Math.PI * FC_ENV));
         mAlphaVar  = mDt / (mDt + 1.0 / (2.0 * Math.PI * FC_VAR));
-        mDecim = (rate / AC_HZ + 0.5).toNumber();
+        mDecim = (REQ_RATE / AC_HZ + 0.5).toNumber();
         if (mDecim < 1) { mDecim = 1; }
         mAcDt = mDt * mDecim;
-        mCoeffReady = true;
     }
 
     function onSensorData(sensorData as Sensor.SensorData) as Void {
@@ -430,7 +444,8 @@ class StrongRowView extends Ui.View {
         if (xs == null) { return; }
         var n = xs.size();
         if (n <= 0) { return; }
-        if (!mCoeffReady) { computeCoeffs(n); }
+        // NOTE (#8): `n` is a batch SIZE and must never reach computeCoeffs().
+        // The time base is fixed at init; nothing here may recompute it.
 
         // dynamic refractory: once the autocorrelation has locked the cycle
         // period, a new peak within REFRACT_FRAC of it is the recovery surge
