@@ -68,11 +68,18 @@ laps.)
   rolling **rMSSD** (last ~90 artifact-filtered beat pairs, 30 % jump
   rejection) is computed on the watch. An **RR indicator** next to the GPS
   status turns green while intervals are streaming.
+- **Core temperature**: if a CORE (greenTEG) body-temperature pod is in range,
+  StrongRow picks it up automatically over a generic ANT+ channel (the ANT+
+  Core Body Temperature profile — Connect IQ has no built-in support for it,
+  and a watch app can't host the official CORE data field) and logs core and
+  skin temperature. A **CT indicator** joins GPS/RR and turns green while pod
+  data is fresh. No pod → no empty fields, no errors.
 - FIT developer fields written for offline analysis: `row_stroke_rate` (spm),
   `dist_per_stroke` (m), `corrective_rate` (spm of blade movements that are
-  not drives), `rr_interval` (up to 4 raw ms values per record) and `rmssd`
-  (ms) per record, plus session-level `avg_rmssd` (ms) and
-  `total_corrective_strokes`.
+  not drives), `rr_interval` (up to 4 raw ms values per record), `rmssd` (ms),
+  `core_temperature` and `skin_temperature` (°C, when a pod is present) per
+  record, plus session-level `avg_rmssd` (ms), `total_corrective_strokes`
+  and `max_core_temperature`.
 
 ### Why a watch app, not a data field
 
