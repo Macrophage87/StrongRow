@@ -1,4 +1,5 @@
 using Toybox.Test;
+using Toybox.Sensor;
 
 // Regression tests for issue #8: the DSP time base must be a function of the
 // configured sample RATE (REQ_RATE), never of an accelerometer batch's SIZE.
@@ -18,10 +19,15 @@ using Toybox.Test;
 // `monkeydo <prg> <device> -t`.
 
 // -- Stubs -------------------------------------------------------------------
-// Duck-typed stand-ins for Sensor.SensorData / AccelerometerData. onSensorData
-// is declared `(sensorData as Sensor.SensorData)`, but Monkey C only enforces
-// that under a typecheck level, and this codebase compiles untyped (no -l), so
-// a structurally compatible object is accepted.
+// Duck-typed stand-ins for Sensor.SensorData / AccelerometerData.
+//
+// onSensorData is declared `(sensorData as Sensor.SensorData)`, and monkeyc
+// enforces that parameter type EVEN WITH NO -l typecheck level -- passing a
+// structurally compatible object is rejected with
+// "Invalid '$.FakeSensorData' passed as parameter 1". So each call site casts
+// the stub with `as Sensor.SensorData`. The cast is erased at runtime, where
+// only duck typing applies, so the stub just needs the members onSensorData
+// actually reads: accelerometerData.x/.y/.z (and heartRateData, below).
 
 class FakeAccel {
     var x; var y; var z;
@@ -77,8 +83,8 @@ function dspAlmostEq(a, b) {
     var shortBatch = new DspProbe();
     var fullBatch  = new DspProbe();
 
-    shortBatch.onSensorData(new FakeSensorData(3));
-    fullBatch.onSensorData(new FakeSensorData(25));
+    shortBatch.onSensorData(new FakeSensorData(3) as Sensor.SensorData);
+    fullBatch.onSensorData(new FakeSensorData(25) as Sensor.SensorData);
 
     var ok = true;
     if (!dspAlmostEq(shortBatch.dt(), fullBatch.dt())) {
@@ -100,7 +106,7 @@ function dspAlmostEq(a, b) {
 // every stroke period. Tolerance rather than == because these are floats.
 (:test) function test_dsp_timeBaseIs25Hz(logger) {
     var p = new DspProbe();
-    p.onSensorData(new FakeSensorData(3));
+    p.onSensorData(new FakeSensorData(3) as Sensor.SensorData);
 
     var ok = true;
     if (!dspAlmostEq(p.dt(), 0.04)) {
