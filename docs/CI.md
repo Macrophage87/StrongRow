@@ -57,16 +57,23 @@ yields zero devices fails the build instead of passing green), and
 `check_manifest_appid.py` **cross-checks the shell extractor against a real XML
 parse** in `manifest-lint`, so the two can't silently diverge.
 
-### No `run-tests` job (yet)
+### No `run-tests` job (yet) — ⚠️ tests exist but are never executed
 
-The design also specifies a headless-simulator `run-tests` job — but only *if
-the repo has `(:test)` functions*. **StrongRow currently has none**, so that job
-and its helpers are intentionally omitted rather than shipped as untested,
-hang-prone dead code.
+The design also specifies a headless-simulator `run-tests` job. When CI was
+first built the repo had no `(:test)` functions, so the job was omitted rather
+than shipped as untested, hang-prone dead code.
 
-**To enable it when you add tests:** add source functions annotated `(:test)`,
-then add a `run-tests` job (in a container, separate from `compile-unit-test` so
-a sim flake can't mask a compile regression) that:
+**That is now the main gap in this pipeline.** `(:test)` suites landed with #12
+(`RrRecordTest.mc`), #32 and #8 (`DspTimeBaseTest.mc`), so the repo *does* have
+tests — but with no `run-tests` job they are only **compiled** (across all 12
+devices by `compile-unit-test`), never **run**. A test whose assertions are
+wrong, or which regresses, stays green in CI. Until the job below exists, the
+tests are a compile-time contract guard plus a *local* check via
+`monkeydo <prg> <device> -t`, and any PR relying on them should say so.
+
+**To enable it:** the `(:test)` functions are already there, so add a
+`run-tests` job (in a container, separate from `compile-unit-test` so a sim
+flake can't mask a compile regression) that:
 
 1. `apt-get install`s `xvfb x11-utils iproute2 procps openssl` (guarded — skip
    if already present);

@@ -85,6 +85,29 @@ laps.)
   record, plus session-level `avg_rmssd` (ms), `total_corrective_strokes`
   and `max_core_temperature`.
 
+### ⚠️ Stroke-rate timing fix — older sessions are not comparable
+
+A defect in the DSP time base (issue #8) meant the sample rate was taken from
+the size of the *first* accelerometer batch instead of the configured 25 Hz.
+When that first batch arrived short, the internal clock ran fast for the whole
+session, and every timing-derived metric was scaled by roughly the same factor.
+
+Sessions recorded **before** this fix are therefore **not directly comparable**
+to later ones:
+
+- `row_stroke_rate` read **low** (a short first batch of 13 samples made it read
+  roughly half true rate), and `dist_per_stroke` correspondingly **high**.
+- `corrective_rate` and `total_corrective_strokes` were **inflated**, because
+  corrective rate is measured against the (understated) drive rate.
+- Strokes slower than roughly 11–12 spm could be **rejected outright** by the
+  period-validity window — the low-rate work this app is built for was the case
+  most affected.
+
+The error magnitude **varied from session to session**, since it depended on how
+many samples happened to arrive in that first callback. There is no reliable
+correction factor to apply retroactively; treat pre-fix sessions as a separate
+series rather than rescaling them.
+
 ### Why a watch app, not a data field
 
 Connect IQ forbids raw high-frequency accelerometer access from data fields
