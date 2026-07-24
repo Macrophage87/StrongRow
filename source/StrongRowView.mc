@@ -321,9 +321,20 @@ class StrongRowView extends Ui.View {
             if (mFitRate != null) { mFitRate.setData(outputRate()); }
             if (mFitDps != null)  { mFitDps.setData(distPerStroke(currentSpeed())); }
             // #15: only log/accumulate rMSSD while beats are actually fresh
-            // (keyed off the last ACCEPTED beat, not batch arrival). During a
-            // dropout, skip the write -- a gap in the trace, not a frozen value --
-            // and skip the average so avg_rmssd isn't biased by stale data.
+            // (keyed off the last ACCEPTED beat, not batch arrival).
+            //
+            // What this definitively fixes: avg_rmssd. The accumulator is pure
+            // in-app arithmetic, so a dropout contributes nothing to the mean.
+            //
+            // What it does NOT claim: a gap in the per-record rmssd trace.
+            // A FitContributor record field has no "unset" -- it is understood to
+            // retain its last setData value and re-emit it on subsequent records,
+            // so skipping the write likely re-emits the last pre-dropout value
+            // rather than leaving the field absent. Skipping is still the right
+            // call (it is no worse, and writing 0.0 would be an in-band lie), but
+            // the trace half of #15 is UNVERIFIED pending a simulator dropout run.
+            // NOTE: merged #12 relies on the same assumption for mFitRr; one sim
+            // run settles both. Do not restate the "gap" claim until it is proven.
             if (rrIsFresh(System.getTimer(), mLastBeatMs, $.RR_FRESH_MS)) {
                 if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }
                 if (mRmssd > 0.0) {
@@ -614,9 +625,11 @@ class StrongRowView extends Ui.View {
     // NOTE (#14): the rr_interval field is NOT a complete raw R-R stream. It is a
     // fixed-count developer RECORD field, so per ~1 Hz record it carries only the
     // first up-to-RR_PER_REC in-range intervals of the LATEST batch before the
-    // record commits. Two beats are therefore lost silently: any past RR_PER_REC
-    // within a batch (see packRr), and every earlier batch whose setData() is
-    // overwritten by a later handleRr in the same record window. A watch app
+    // record commits. Beats are therefore lost silently in TWO WAYS, and the
+    // number lost is UNBOUNDED (it grows with heart rate and callback frequency):
+    // any beat past RR_PER_REC within a batch (see packRr), and every beat of an
+    // earlier batch whose setData() is overwritten by a later handleRr in the
+    // same record window. Do not treat this field as a beat count. A watch app
     // can't carry the full stream -- FitContributor exposes only developer
     // fields, and the native FIT hrv message (#78) is not writable from CIQ.
 

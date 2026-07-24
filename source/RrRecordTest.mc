@@ -55,7 +55,8 @@ function buildRr(ivals) {
     return rrArrEq(buildRr([850, 810, 790, 770]), [850, 810, 790, 770], logger);
 }
 
-// A 5th valid beat is dropped (the RR_PER_REC cap -- a real gap, tracked in #14).
+// A 5th valid beat is dropped (the RR_PER_REC cap -- one of the two documented
+// rr_interval loss modes; see the #14 note in StrongRowView.handleRr).
 (:test) function test_rr_fiveDropsExtra(logger) {
     return rrArrEq(buildRr([850, 810, 790, 770, 750]), [850, 810, 790, 770], logger);
 }
@@ -103,6 +104,18 @@ function buildRr(ivals) {
     if (StrongRowView.rrIsFresh(10000, 5001, 5000) != true)  { logger.error("just inside thresh should be true"); ok = false; }
     if (StrongRowView.rrIsFresh(10000, 0,    5000) != false) { logger.error("never-seen (ts=0) must be false"); ok = false; }
     return ok;
+}
+
+// The display RR pip was refactored from a hardcoded `< 5000` to
+// rrIsFresh(..., RR_FRESH_MS). Pin the const so that refactor stays
+// behavior-preserving: if someone retunes RR_FRESH_MS, this test flags that the
+// UI pip's timing changed too (they are deliberately coupled today).
+(:test) function test_rr_freshConstUnchanged(logger) {
+    if ($.RR_FRESH_MS != 5000) {
+        logger.error("RR_FRESH_MS changed to " + $.RR_FRESH_MS + "; display pip timing no longer matches the pre-refactor < 5000 test");
+        return false;
+    }
+    return true;
 }
 
 // rrGapExceeded(now, lastBeat, thresh): strict `>`; never-seen (lastBeat==0)
