@@ -1,0 +1,39 @@
+# Expected (:test) functions, one per line. Blank lines and #-comments ignored.
+#
+# This file is the pin for the run-tests CI job: scripts/check_ciq_tests.py
+# requires the simulator's RESULTS table to contain EXACTLY this set of test
+# names, all PASS. The count is simply the length of this list, so the name set
+# and the expected count can never disagree.
+#
+# Pinning names rather than a bare count catches disappearance, substitution AND
+# addition -- a count alone cannot see a test being swapped for a different one.
+#
+# When you add or remove a (:test) function, update this file in the same commit.
+# The failure message names exactly what is missing and what is unexpected.
+#
+# Keep in sync with:
+#   grep -rhoE '^\(:test\) function [a-zA-Z0-9_]+' source/*.mc | sed 's/.*function //'
+#
+# NOTE: it does NOT prove the tests are meaningful. Shared-helper rot (rrArrEq is
+# the entire assertion for 11 of the 14 RR tests) leaves this list unchanged.
+
+# source/DspTimeBaseTest.mc
+test_dsp_timeBaseInvariantToBatchSize
+test_dsp_timeBaseIs25Hz
+test_dsp_timeBaseSetAtInit
+
+# source/RrRecordTest.mc
+test_rr_oneValid
+test_rr_twoValid
+test_rr_threeValid
+test_rr_exactlyFour
+test_rr_fiveDropsExtra
+test_rr_allInvalid
+test_rr_boundaryInclusive
+test_rr_interleavedPacksLow
+test_rr_nullIvals
+test_rr_emptyIvals
+test_rr_filterInRangeOnly
+test_rr_isFresh_states
+test_rr_freshConstUnchanged
+test_rr_gapExceeded_states
