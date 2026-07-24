@@ -1,0 +1,221 @@
+name: CI
+
+# Runner-free Connect IQ CI: everything runs on stock GitHub-hosted
+# ubuntu-latest. The Garmin SDK is NOT downloaded — the SDK-dependent jobs run
+# inside a pre-built Connect IQ Docker image as the job `container`, so there is
+# no self-hosted runner and no SDK install step. See docs/CI.md.
+
+on:
+  push:
+    branches: [main]
+    # Skip CI on pushes that only touch listing assets or docs — they can't
+    # break the build. (Build artifacts like bin/ and *.prg/*.iq are gitignored,
+    # so they never land in a commit in the first place.)
+    paths-ignore:
+      - 'store/**'
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+  # No paths-ignore on pull_request ON PURPOSE: a required status check must
+  # post a result on EVERY PR, or "Require branches to be up to date" blocks
+  # merges forever when a PR happens to touch only ignored paths.
+  pull_request: {}
+
+# One in-flight run per ref; a new push cancels the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: CI only reads the repo. No write scopes are needed to
+# compile, and none are granted.
+permissions:
+  contents: read
+
+# The SDK container is pinned by digest in each job's `container.image` below.
+# v2.8.0 = Connect IQ SDK 9.2.0; the digest IS the pin, the tag is a comment.
+# (`container.image` can't read workflow `env`, so the digest lives inline —
+#  keep the two copies in sync when bumping. See docs/CI.md.)
+jobs:
+  # 1) Runner-free manifest sanity check. A bad/placeholder app id still
+  #    compiles and still passes tests, but the store rejects it — the SDK jobs
+  #    cannot catch that class, so this tiny check does.
+  manifest-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate manifest app id and shape
+        run: python3 scripts/check_manifest_appid.py manifest.xml
+
+  # 2) Compile the unit-test build for EVERY manifest device in ONE job, so the
+  #    SDK image is pulled once (not once per device via a matrix). A per-device
+  #    rc is collected; the job fails if any single device fails to compile.
+  compile-unit-test:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f # v2.8.0 = SDK 9.2.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve SDK toolchain onto PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The image is meant to put monkeyc on PATH; if a future tag doesn't,
+          # find it and register the dir both for this step and later steps.
+          if ! command -v monkeyc >/dev/null 2>&1; then
+            for d in /connectiq /opt/connectiq /root/connectiq /sdk /opt/garmin; do
+              b=$(find "$d" -name monkeyc -type f 2>/dev/null | head -1 || true)
+              if [ -n "$b" ]; then
+                dir="$(dirname "$b")"
+                echo "$dir" >> "$GITHUB_PATH"   # subsequent steps
+                export PATH="$dir:$PATH"        # this step's assertion
+                break
+              fi
+            done
+          fi
+          command -v monkeyc
+          monkeyc --version || true
+
+      - name: Generate a throwaway developer key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # monkeyc requires a developer key even for a test build. This key is
+          # generated per job, never committed, and never a repo secret — a
+          # store-submittable .iq needs the account-bound key, which is a
+          # release step CI deliberately does not perform.
+          openssl genrsa -out developer_key.pem 4096
+          openssl pkcs8 -topk8 -inform PEM -outform DER \
+            -in developer_key.pem -out developer_key.der -nocrypt
+
+      - name: Compile --unit-test for every manifest device
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p bin
+          rc_total=0
+          failed=""
+          # -w raises warnings but does NOT fail the build: this codebase is
+          # intentionally untyped, so no -l typecheck level is passed and the
+          # only failure signal is a non-zero monkeyc exit.
+          while read -r dev; do
+            [ -z "$dev" ] && continue
+            echo "::group::compile (unit-test) $dev"
+            if monkeyc -f monkey.jungle \
+                       -o "bin/StrongRow-test-$dev.prg" \
+                       -y developer_key.der \
+                       -d "$dev" \
+                       --unit-test -w; then
+              echo "$dev: OK"
+            else
+              rc=$?
+              echo "::error::$dev failed monkeyc (rc=$rc)"
+              failed="$failed $dev"
+              rc_total=1
+            fi
+            echo "::endgroup::"
+          done < <(sh scripts/list_devices.sh)
+          if [ -n "$failed" ]; then
+            echo "Devices that failed to compile:$failed"
+          fi
+          exit $rc_total
+
+  # 3) release-build: compile the NON-unit-test RELEASE artifact (the build that
+  #    actually ships) for every device, then export the store .iq package.
+  #    monkeyc exits non-zero if a device's static image blows its memory limit,
+  #    so a non-zero exit is the assertion — the per-device compile IS the gate.
+  release-build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f # v2.8.0 = SDK 9.2.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve SDK toolchain onto PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v monkeyc >/dev/null 2>&1; then
+            for d in /connectiq /opt/connectiq /root/connectiq /sdk /opt/garmin; do
+              b=$(find "$d" -name monkeyc -type f 2>/dev/null | head -1 || true)
+              if [ -n "$b" ]; then
+                dir="$(dirname "$b")"
+                echo "$dir" >> "$GITHUB_PATH"
+                export PATH="$dir:$PATH"
+                break
+              fi
+            done
+          fi
+          command -v monkeyc
+          monkeyc --version || true
+
+      - name: Generate a throwaway developer key
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl genrsa -out developer_key.pem 4096
+          openssl pkcs8 -topk8 -inform PEM -outform DER \
+            -in developer_key.pem -out developer_key.der -nocrypt
+
+      - name: Compile the release .prg for every device
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p bin
+          rc_total=0
+          failed=""
+          while read -r dev; do
+            [ -z "$dev" ] && continue
+            echo "::group::release compile $dev"
+            if monkeyc -f monkey.jungle \
+                       -o "bin/StrongRow-$dev.prg" \
+                       -y developer_key.der \
+                       -d "$dev" -w; then
+              echo "$dev: OK"
+            else
+              rc=$?
+              echo "::error::$dev release compile failed (rc=$rc)"
+              failed="$failed $dev"
+              rc_total=1
+            fi
+            echo "::endgroup::"
+          done < <(sh scripts/list_devices.sh)
+          if [ -n "$failed" ]; then
+            echo "Devices that failed release compile:$failed"
+          fi
+          exit $rc_total
+
+      - name: Export the store package (.iq)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::export StrongRow.iq"
+          monkeyc -e -f monkey.jungle \
+                  -o "bin/StrongRow.iq" \
+                  -y developer_key.der -w
+          echo "::endgroup::"
+          ls -l bin/StrongRow.iq
+
+      - name: Upload build artifacts (.prg + .iq)
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: strongrow-build
+          path: |
+            bin/*.prg
+            bin/*.iq
+          if-no-files-found: error
+
+  # 4) Single stable status name to require in branch protection. It `needs` all
+  #    required jobs; if any of them fails or is skipped, THIS job is skipped
+  #    (never "success"), so a required `ci-required` context blocks the merge.
+  #    Add new required jobs to `needs` here rather than to branch protection.
+  ci-required:
+    needs: [manifest-lint, compile-unit-test, release-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required CI jobs passed
+        run: echo "manifest-lint + compile-unit-test + release-build all green."
