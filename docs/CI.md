@@ -41,14 +41,21 @@ deliberately does not perform.
 
 | Job | Container? | Required? | What it does |
 |---|---|---|---|
-| `manifest-lint` | no | yes | Fail-closed check that the manifest app id is a real 32-hex id (not a placeholder/template), the app has an entry/name/known type, and at least one device is listed. A bad id still compiles and still passes tests but the store rejects it — the SDK jobs can't catch this class. |
-| `compile-unit-test` | yes | yes | Compiles the `--unit-test` build for **every** manifest device in one job (image pulls once). Collects a per-device rc and fails if any device fails. `-w` shows warnings but does not fail the build — this codebase is intentionally untyped, so no `-l` typecheck level is passed. |
-| `release-build` | yes | yes | Compiles the shipping (non-unit-test) `.prg` for every device and exports the store `.iq`. A device whose static image exceeds its memory limit makes `monkeyc` exit non-zero, so the compile itself is the budget gate. Uploads the `.prg`/`.iq` as the `strongrow-build` artifact. |
-| `ci-required` | no | — | Aggregator. `needs` all required jobs and just echoes success. **This is the single status name to require in branch protection.** |
+| `manifest-lint` | no | yes | Fail-closed check that the manifest app id is a real 32-hex id (not a placeholder/template), the app has an entry/name/known type, and at least one device is listed. Also cross-checks `list_devices.sh` against the XML parse (see below). A bad id still compiles and still passes tests but the store rejects it — the SDK jobs can't catch this class. |
+| `compile-unit-test` | yes | yes | Compiles the `--unit-test` build for **every** manifest device in one job (image pulls once). Enumerates devices fail-closed (zero devices ⇒ the job fails, never a green empty build), collects a per-device rc, and fails if any device fails. `-w` shows warnings but does not fail the build — this codebase is intentionally untyped, so no `-l` typecheck level is passed. |
+| `release-build` | yes | yes | Compiles the shipping (non-unit-test) `.prg` for every device and exports the `.iq`. A device whose static image exceeds its memory limit makes `monkeyc` exit non-zero, so the compile itself is the budget gate. Uploads the `.prg`/`.iq` as the `strongrow-build-unsigned` artifact — **throwaway-signed, a build-sanity artifact, not a store upload** (a real submission is re-signed with the account-bound key). |
+| `ci-required` | no | — | Aggregator. Runs with `if: always()` and **fails** unless every needed job succeeded. **This is the single status name to require in branch protection.** |
+
+### Why `ci-required` runs `always()` and asserts, instead of just `needs:`
+
+A naive aggregator (`needs: [...]` with the default `if: success()`) is a **footgun**: when an upstream needed job *fails*, the aggregator is *skipped* — and GitHub branch protection treats a **skipped** required check as **satisfied**, so a red build would merge. `ci-required` therefore runs on every outcome (`if: always()`) and its first step fails the job if any dependency's result is `failure`, `cancelled`, or `skipped`. That way the required `ci-required` context reports **failure** (which blocks), not skip (which wouldn't), whenever anything upstream breaks.
 
 The CI **device matrix equals the manifest product list** — `scripts/list_devices.sh`
 reads it straight from `manifest.xml`, so editing `<iq:products>` re-shapes CI
-with no workflow change.
+with no workflow change. The list is enumerated **fail-closed** (a manifest that
+yields zero devices fails the build instead of passing green), and
+`check_manifest_appid.py` **cross-checks the shell extractor against a real XML
+parse** in `manifest-lint`, so the two can't silently diverge.
 
 ### No `run-tests` job (yet)
 

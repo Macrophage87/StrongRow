@@ -44,7 +44,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Validate manifest app id and shape
+        # Also cross-checks scripts/list_devices.sh (used by the container build
+        # jobs) against the XML parse, so a device-extractor divergence fails here.
         run: python3 scripts/check_manifest_appid.py manifest.xml
 
   # 2) Compile the unit-test build for EVERY manifest device in ONE job, so the
@@ -53,10 +57,15 @@ jobs:
   compile-unit-test:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f # v2.8.0 = SDK 9.2.0
+      # Digest is single-sourced via the &ciq_image YAML anchor and aliased in
+      # release-build, so a bump can't leave the two jobs on different SDKs.
+      image: &ciq_image ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f # v2.8.0 = SDK 9.2.0
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Don't leave GITHUB_TOKEN in .git/config inside the third-party container.
+          persist-credentials: false
 
       - name: Resolve SDK toolchain onto PATH
         shell: bash
@@ -95,6 +104,18 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p bin
+          # Fail-closed device enumeration. Capture the list and assert it is
+          # non-empty BEFORE looping: `list_devices.sh` exits non-zero on zero
+          # devices, but `done < <(...)` process substitution would swallow that
+          # exit code, so we capture-then-check instead of streaming.
+          if ! devices="$(sh scripts/list_devices.sh)"; then
+            echo "::error::device enumeration failed"; exit 1
+          fi
+          count=$(printf '%s\n' "$devices" | grep -c . || true)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no devices to compile — refusing to pass green"; exit 1
+          fi
+          echo "Compiling --unit-test for $count device(s)."
           rc_total=0
           failed=""
           # -w raises warnings but does NOT fail the build: this codebase is
@@ -116,7 +137,7 @@ jobs:
               rc_total=1
             fi
             echo "::endgroup::"
-          done < <(sh scripts/list_devices.sh)
+          done <<< "$devices"
           if [ -n "$failed" ]; then
             echo "Devices that failed to compile:$failed"
           fi
@@ -129,10 +150,12 @@ jobs:
   release-build:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f # v2.8.0 = SDK 9.2.0
+      image: *ciq_image # same digest as compile-unit-test (v2.8.0 = SDK 9.2.0)
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Resolve SDK toolchain onto PATH
         shell: bash
@@ -165,6 +188,15 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p bin
+          # Fail-closed device enumeration (see compile-unit-test for rationale).
+          if ! devices="$(sh scripts/list_devices.sh)"; then
+            echo "::error::device enumeration failed"; exit 1
+          fi
+          count=$(printf '%s\n' "$devices" | grep -c . || true)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no devices to build — refusing to pass green"; exit 1
+          fi
+          echo "Release-compiling $count device(s)."
           rc_total=0
           failed=""
           while read -r dev; do
@@ -182,7 +214,7 @@ jobs:
               rc_total=1
             fi
             echo "::endgroup::"
-          done < <(sh scripts/list_devices.sh)
+          done <<< "$devices"
           if [ -n "$failed" ]; then
             echo "Devices that failed release compile:$failed"
           fi
@@ -193,29 +225,47 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::export StrongRow.iq"
+          # NOTE: this .iq is signed with the per-job THROWAWAY key, so it is a
+          # structurally valid package that proves the export path compiles — it
+          # is NOT store-submittable. A real submission must be re-signed with the
+          # account-bound developer key (a manual release step, not done in CI).
           monkeyc -e -f monkey.jungle \
                   -o "bin/StrongRow.iq" \
                   -y developer_key.der -w
           echo "::endgroup::"
           ls -l bin/StrongRow.iq
 
-      - name: Upload build artifacts (.prg + .iq)
+      - name: Upload build artifacts (.prg + .iq, throwaway-signed)
         if: always()
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
-          name: strongrow-build
+          # Throwaway-signed: a CI build sanity artifact, not a store upload.
+          name: strongrow-build-unsigned
           path: |
             bin/*.prg
             bin/*.iq
           if-no-files-found: error
 
-  # 4) Single stable status name to require in branch protection. It `needs` all
-  #    required jobs; if any of them fails or is skipped, THIS job is skipped
-  #    (never "success"), so a required `ci-required` context blocks the merge.
-  #    Add new required jobs to `needs` here rather than to branch protection.
+  # 4) Single stable status name to require in branch protection. Add new
+  #    required jobs to `needs` here rather than to branch protection.
+  #
+  #    `if: always()` matters: with the default `if: success()`, a failing
+  #    upstream job would SKIP this job — and branch protection treats a skipped
+  #    required check as SATISFIED, silently letting a red build merge. Running
+  #    always and asserting every dependency succeeded makes THIS job fail (not
+  #    skip) on any upstream failure/cancel/skip, so it truly gates the merge.
   ci-required:
+    if: ${{ always() }}
     needs: [manifest-lint, compile-unit-test, release-build]
     runs-on: ubuntu-latest
     steps:
+      - name: Fail unless every required job succeeded
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: |
+          echo "::error::A required job did not succeed:"
+          echo "  manifest-lint     = ${{ needs.manifest-lint.result }}"
+          echo "  compile-unit-test = ${{ needs.compile-unit-test.result }}"
+          echo "  release-build     = ${{ needs.release-build.result }}"
+          exit 1
       - name: All required CI jobs passed
-        run: echo "manifest-lint + compile-unit-test + release-build all green."
+        run: echo "manifest-lint + compile-unit-test + release-build all succeeded."

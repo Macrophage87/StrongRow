@@ -16,7 +16,9 @@ It verifies, from manifest.xml alone (no SDK, no network):
 Exit code 0 = OK, 1 = a problem was found. Every failure prints WHY.
 """
 
+import os
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -55,6 +57,11 @@ def main():
         fail(f"could not parse {MANIFEST!r}: {exc}")
 
     root = tree.getroot()
+    # findall() (direct children) for <application> because there must be
+    # exactly one. iter() (any depth) is used for <product> below so products
+    # are found wherever they nest under <iq:products>. Do NOT "simplify" that
+    # iter() into findall(): findall would look only one level down and report
+    # zero products.
     apps = root.findall(f"{{{IQ_NS}}}application")
     if len(apps) != 1:
         fail(f"expected exactly one <iq:application>, found {len(apps)}")
@@ -103,6 +110,30 @@ def main():
     ]
     if not products:
         fail("no <iq:product> devices listed — the app targets no device")
+
+    # Cross-check the shell device extractor (list_devices.sh, which the
+    # container build jobs use because python may be absent in the SDK image)
+    # against this XML parse. If a manifest reformat ever made the line-anchored
+    # regex disagree with the parser, THIS required job goes red — closing the
+    # "green while compiling the wrong/zero device set" gap. Ordered comparison
+    # is intentional: both sources emit products in document order.
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "list_devices.sh")
+    if os.path.exists(helper):
+        try:
+            out = subprocess.run(
+                ["sh", helper, MANIFEST],
+                capture_output=True, text=True, check=True,
+            ).stdout
+        except subprocess.CalledProcessError as exc:
+            fail(f"list_devices.sh failed: {exc.stderr.strip() or exc}")
+        shell_devices = [d for d in out.splitlines() if d.strip()]
+        if shell_devices != products:
+            fail(
+                "device extractor disagrees with the XML parse — the CI matrix "
+                "would not equal the manifest:\n"
+                f"  manifest.xml products : {products}\n"
+                f"  list_devices.sh       : {shell_devices}"
+            )
 
     print("OK: manifest looks store-shaped")
     print(f"  app id : {app_id}")
