@@ -64,13 +64,15 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Cross-check expected_tests.txt against source/*.mc
-        # Closes the silent-shrink bypass. check_ciq_tests.py derives the
-        # expected COUNT from the pin file's own length, so the pin cannot
-        # disagree with itself: deleting a (:test) function AND its pin line in
-        # one commit was fully green while coverage shrank. This anchors the pin
-        # to the source, exactly as manifest-lint anchors list_devices.sh to a
-        # real XML parse. Must be bash — process substitution.
+      - name: Cross-check expected_tests.txt against the sources
+        # Closes DRIFT (the pin and the sources disagreeing) -- NOT the
+        # coordinated-shrink bypass: deleting a (:test) function AND its pin
+        # line in one commit shrinks both sides identically and still passes.
+        # That needs an anchor outside the commit (#52). Extraction is the
+        # comment- and form-aware scripts/list_tests.py, so an indented or
+        # own-line or multi-annotation declaration is pinned like any other
+        # instead of deadlocking this check against the parser.
+        # Must be bash — process substitution.
         shell: bash
         run: bash scripts/check_expected_tests.sh
       - name: Parser self-test (runner-free RED/GREEN)

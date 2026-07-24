@@ -161,10 +161,14 @@ for _ in $(seq 1 25); do
     if (exec 3<>/dev/tcp/127.0.0.1/1234) 2>/dev/null; then
         port_state=open; break
     fi
-    # Liveness is ADVISORY only. `ps -ef` above now shows `simulator` really is
-    # a single long-lived process, so `$!` is the right PID -- but this stays
-    # advisory until the degrade-on-timeout path itself becomes a hard abort
-    # (tracked in #51 -- gated on more than one green run, not just run 1).
+    # Liveness never decides the VERDICT (that is the parser's alone) and never
+    # aborts the harness -- but it is load-bearing for one thing: sim_gone
+    # selects the short monkeydo leash below (30 s vs 300 s), because a
+    # simulator both kill -0 and pgrep agree is dead will not come back. A
+    # merely slow simulator keeps kill -0 succeeding and so reaches `timeout`
+    # and the patient leash, never this branch. `ps -ef` above shows `simulator`
+    # is a single long-lived process, so `$!` is the right PID; the hard-abort
+    # conversion of the whole wait is tracked in #51.
     #
     # pgrep comes from `procps`, which the image installs only TRANSITIVELY (it
     # is not in the upstream Dockerfile's apt list).
@@ -216,9 +220,11 @@ echo "::group::Run monkeydo"
 # 180 s is already ~17x headroom on the happy path; the job timeout is 20 min.)
 case "$port_state" in
     open)     md_timeout=180 ;;   # proven path; ~17x observed headroom
-    sim_gone) md_timeout=30  ;;   # simulator already known dead -- nothing
-                                  # to be patient FOR; fail fast instead of
-                                  # burning 5 min on a conclusive case
+    sim_gone) md_timeout=30  ;;   # both liveness signals agree the sim died;
+                                  # nothing to be patient FOR -- fail fast
+                                  # rather than burn 5 min. (The one place
+                                  # liveness is load-bearing: budget, not
+                                  # verdict.)
     *)        md_timeout=300 ;;   # timeout: usually a slow/busy runner,
                                   # which is when patience actually helps
 esac

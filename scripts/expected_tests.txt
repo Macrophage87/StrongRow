@@ -12,7 +12,9 @@
 # The failure message names exactly what is missing and what is unexpected.
 #
 # Keep in sync with:
-#   grep -rhoE '^\(:test\) function [a-zA-Z0-9_]+' source/*.mc | sed 's/.*function //'
+#   python3 scripts/list_tests.py
+# (comment-aware and recursive; the old column-0 grep missed indented, own-line
+# and multi-annotation declarations, and false-matched commented-out code)
 #
 # NOTE: it does NOT prove the tests are meaningful. Shared-helper rot (rrArrEq is
 # the entire assertion for 11 of the 14 RR tests) leaves this list unchanged.

@@ -52,7 +52,9 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHECKER = os.path.join(HERE, "check_ciq_tests.py")
-EXPECTED = os.path.join(HERE, "expected_tests.txt")
+# CIQ_TEST_PIN: used by the pin-perturbation meta-check below to re-run this
+# suite under a modified pin without touching the tree. Not for normal use.
+EXPECTED = os.environ.get("CIQ_TEST_PIN") or os.path.join(HERE, "expected_tests.txt")
 REAL_GREEN_LOG = os.path.join(HERE, "fixtures", "monkeydo-green-run.log")
 
 # NAMES is DERIVED from the live pin, never hardcoded.
@@ -73,8 +75,40 @@ def _load_pin(path):
 
 
 NAMES = _load_pin(EXPECTED)
+if len(NAMES) < 3:
+    # The suite indexes NAMES[0], NAMES[1], NAMES[-1], NAMES[-2] and slices
+    # NAMES[:-2]; below three names those collide or raise. Render a verdict
+    # instead of a traceback -- same rule the checker documents for itself.
+    sys.exit("expected_tests.txt pins only %d name(s); the parser self-suite "
+             "needs at least 3 to build its cases." % len(NAMES))
 N = len(NAMES)
 SUMMARY_OK = "PASSED (passed=%d, failed=0, errors=0)" % N
+
+# The 17 names run 1 actually reported, frozen. Giving fixture cases a
+# fixture-DERIVED pin fixed the add/remove coupling but silently removed the
+# only tie between the committed capture and reality: substituting every row
+# name in the fixture file still passed the whole suite. This literal restores
+# identity; it changes ONLY when the fixture file itself is regenerated from a
+# new CI run's artifact.
+FIXTURE_NAMES_FROZEN = [
+    "test_dsp_timeBaseInvariantToBatchSize",
+    "test_dsp_timeBaseIs25Hz",
+    "test_dsp_timeBaseSetAtInit",
+    "test_rr_oneValid",
+    "test_rr_twoValid",
+    "test_rr_threeValid",
+    "test_rr_exactlyFour",
+    "test_rr_fiveDropsExtra",
+    "test_rr_allInvalid",
+    "test_rr_boundaryInclusive",
+    "test_rr_interleavedPacksLow",
+    "test_rr_nullIvals",
+    "test_rr_emptyIvals",
+    "test_rr_filterInRangeOnly",
+    "test_rr_isFresh_states",
+    "test_rr_freshConstUnchanged",
+    "test_rr_gapExceeded_states",
+]
 
 
 def summ(passed=None, failed=0, errors=0, verdict="PASSED"):
@@ -263,6 +297,22 @@ def case(name, guards, mentions=(), forbids=()):
 
 # ---------------------------------------------------------------- GREEN -----
 
+@case("committed fixture still contains EXACTLY run 1's test names", [])
+def _():
+    # Identity, not just shape: with fixture cases self-pinned, substituting
+    # every row name in the committed capture kept the whole suite green.
+    # This ties the fixture file to the frozen literal of what run 1 reported.
+    got = _fixture_names()
+    if sorted(got) != sorted(FIXTURE_NAMES_FROZEN):
+        raise AssertionError(
+            "scripts/fixtures/monkeydo-green-run.log rows no longer match the "
+            "frozen run-1 names; if the fixture was legitimately regenerated, "
+            "update FIXTURE_NAMES_FROZEN in the same commit. missing=%s extra=%s"
+            % (sorted(set(FIXTURE_NAMES_FROZEN) - set(got)),
+               sorted(set(got) - set(FIXTURE_NAMES_FROZEN))))
+    return fx(real_green_log())
+
+
 @case("REAL first-green-run monkeydo.log passes", [], ["OK: 17/17"])
 def _():
     return fx(real_green_log())
@@ -322,6 +372,46 @@ def _():
     # `SIMULATOR` is identifier-shaped; `ready` is not an all-caps status token,
     # so only the STATUS half rejects this row.
     return transcript(noise=["SIMULATOR ready"])
+
+
+# ---- Anchor pins. Independent mutation testing showed the survivors cluster
+# on regex anchors: RAN_RE's ^ and \b, RESULTS_HEADER_RE's ^ and its (formerly
+# newline-spanning) separator, FAILED_VETO's (formerly newline-spanning) gap,
+# and RESULTS_ROW_RE's tail. Each case below stays green with the anchor intact
+# and reds if it is loosened -- turning "anchoring makes the parser
+# trustworthy" from a thesis into an assertion.
+
+@case("mid-line and prefixed 'Ran N tests' chatter is not the tally", [])
+def _():
+    # Kills: RAN_RE without ^ (matches inside "Also Ran 3 tests...") and
+    # without \b (matches the "tests" prefix of "testsuites").
+    return transcript(noise=["Also Ran 3 tests earlier in this session",
+                             "Ran 99 testsuites in total today"])
+
+
+@case("a 'Pre-Test: Status:' line and a split Test:/Status: pair are not headers", [])
+def _():
+    # Kills: RESULTS_HEADER_RE without ^ (tail-matches "Pre-Test: Status:") and
+    # with a newline-spanning separator (a "Test:" line followed by a "Status:"
+    # line formed a PHANTOM header before the real one, promoting the chatter
+    # between them to phantom rows).
+    t = transcript()
+    return ("Pre-Test: Status:\nSIMULATOR PASS\nTest:\nStatus:\nWIDGET LOADED\n" + t)
+
+
+@case("prose 'FAILED' at line end + '(passed=' at next line start is not a veto", [])
+def _():
+    # Kills: FAILED_VETO_RE with \s* instead of [ \t]* -- \s spans the newline
+    # and vetoed a green run over two adjacent prose lines in the console log.
+    return fx(real_green_log(),
+              "the previous attempt FAILED\n(passed= counts shown above)\n")
+
+
+@case("a row followed by trailing words is not a row", [])
+def _():
+    # Kills: RESULTS_ROW_RE without its end anchor -- "nothing else" is the
+    # comment's whole claim, and without the tail this line becomes a row.
+    return transcript(noise=["testish_extra PASS but with trailing words"])
 
 
 @case("ANSI-coloured status tokens do not red a green run", [])
@@ -480,7 +570,11 @@ def _():
 
 @case("a harness breadcrumb replaces the guessed cause, it does not add to it",
       ["empty_log", "no_summary", "no_ran", "no_table"],
-      mentions=["harness_error=compile_failed:3", "aborted before"],
+      # The parenthesised form appears ONLY in the diagnostic bullet's
+      # interpolation; the bare form is also printed by the Harness-status echo
+      # block above the verdict, so a bare mention was satisfied without the
+      # diagnostic ever interpolating the breadcrumb (reproduced in review).
+      mentions=["(harness_error=compile_failed:3)", "aborted before"],
       forbids=["hung and killed by timeout", "crashed at launch"])
 def _():
     # The pre-monkeydo abort paths. Guessing "hung / crashed at launch / never
@@ -504,32 +598,46 @@ def _():
 
 @case("a genuine two-test failure run",
       ["failed_veto", "verdict", "failed_count", "passed_count", "not_pass"],
-      ["test_dsp_timeBaseInvariantToBatchSize=FAIL",
-       "test_dsp_timeBaseIs25Hz=FAIL",
-       "summary verdict is FAILED"])
+      ["%s=FAIL" % NAMES[0], "%s=FAIL" % NAMES[1], "summary verdict is FAILED"])
 def _():
+    # Positional, like the SKIP/ERROR cases: hardcoding two specific test names
+    # here meant REMOVING either of those tests (with its pin line, exactly as
+    # documented) silently dropped its row while the summary still counted it,
+    # reddening this case for an unrelated-looking reason.
     st = {n: "PASS" for n in NAMES}
-    st["test_dsp_timeBaseInvariantToBatchSize"] = "FAIL"
-    st["test_dsp_timeBaseIs25Hz"] = "FAIL"
+    st[NAMES[0]] = "FAIL"
+    st[NAMES[1]] = "FAIL"
     return transcript(st)
 
 
 @case("fewer tests run than pinned",
       ["passed_count", "ran_mismatch", "missing"])
 def _():
-    return transcript({n: "PASS" for n in NAMES[:15]})
+    # NAMES[:-2], never a fixed slice: `NAMES[:15]` was "all of them" the moment
+    # the pin shrank to 15, so the transcript was complete, the checker correctly
+    # passed, and this rc=1 case reddened test-tooling on ANY two-test removal.
+    return transcript({n: "PASS" for n in NAMES[:-2]})
 
 
 def main():
     failures = 0
     for name, want_guards, mentions, forbids, fn in CASES:
-        produced = fn()
-        if isinstance(produced, tuple):
-            rc, out = run_checker(*produced)
-        else:
-            rc, out = run_checker(produced)
-
-        got_guards, unknown = fired_guards(out)
+        # A case (or classify()'s disjointness assertion) that raises must
+        # become a clean FAIL line with the message, never a traceback that
+        # replaces the score -- the same always-render-a-verdict rule the
+        # checker documents for itself.
+        try:
+            produced = fn()
+            if isinstance(produced, tuple):
+                rc, out = run_checker(*produced)
+            else:
+                rc, out = run_checker(produced)
+            got_guards, unknown = fired_guards(out)
+        except Exception as exc:
+            print("FAIL %s" % name)
+            print("      ! raised %s: %s" % (type(exc).__name__, exc))
+            failures += 1
+            continue
         want_rc = 1 if want_guards else 0
         errs = []
         if rc != want_rc:
@@ -555,7 +663,46 @@ def main():
                 print("      | " + line)
 
     print("\n%d/%d parser self-tests passed." % (len(CASES) - failures, len(CASES)))
-    return 1 if failures else 0
+    if failures:
+        return 1
+
+    # ---- Pin-perturbation meta-check -------------------------------------
+    # The whole suite must be PIN-AGNOSTIC: adding or removing a (:test) is
+    # documented as "two edits, nothing else", and that property was declared
+    # verified -- manually -- twice, and was wrong both times (a frozen NAMES
+    # list, then a frozen slice and two frozen name strings). So it is now
+    # asserted mechanically on every run: re-run this suite under a pin with a
+    # name appended and a pin with two names removed; both must pass. Skipped
+    # when we ARE the perturbed run (CIQ_TEST_PIN set), so it cannot recurse.
+    if not os.environ.get("CIQ_TEST_PIN"):
+        with tempfile.TemporaryDirectory() as td:
+            variants = [
+                ("added", NAMES + ["test_meta_pinPerturbationProbe"]),
+                ("removed-two", NAMES[:-2]),
+                # Fully synthetic names, same count: the strongest probe. Any
+                # case hardcoding a REAL test name (the second half of the
+                # round-3 blocker -- a middle-of-the-list literal survives the
+                # removed-two variant) references a name absent from this pin
+                # and reds immediately.
+                ("renamed", ["test_meta_synth_%02d" % i
+                             for i in range(len(NAMES))]),
+            ]
+            for label, pin_names in variants:
+                pin = os.path.join(td, "pin-%s.txt" % label)
+                with open(pin, "w", encoding="utf-8") as fh:
+                    fh.write("\n".join(pin_names) + "\n")
+                env = dict(os.environ, CIQ_TEST_PIN=pin)
+                proc = subprocess.run([sys.executable, os.path.abspath(__file__)],
+                                      capture_output=True, text=True, env=env)
+                if proc.returncode != 0:
+                    print("META-FAIL: suite is not pin-agnostic -- reruns red "
+                          "under a pin with a test %s. Adding/removing a (:test) "
+                          "would red test-tooling again. Output tail:" % label)
+                    for line in (proc.stdout + proc.stderr).splitlines()[-15:]:
+                        print("      | " + line)
+                    return 1
+            print("pin-perturbation meta-check: suite green under +1, -2 and all-renamed pins.")
+    return 0
 
 
 if __name__ == "__main__":

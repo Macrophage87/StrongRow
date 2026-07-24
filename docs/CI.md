@@ -40,9 +40,11 @@ docker run --rm --entrypoint sh <new-digest> -c 'command -v openssl python3 ps p
 `openssl` and `python3` are load-bearing: without them the job cannot produce a
 verdict at all. `run_ciq_tests.sh` now aborts with `exit 2` and a named
 `harness_error` breadcrumb if the key/compile block fails for any reason
-(including a missing `openssl`), and its `pgrep` call is guarded by
-`command -v`, so a dropped `procps` degrades to `kill -0` instead of letting a
-`command not found` read as "the simulator is gone".
+(including a missing `openssl`). Its `pgrep` call carries a `command -v` guard
+for the message's honesty, not for behaviour: a `command not found` exit 127
+already reads exactly as "pgrep found nothing", so a dropped `procps` degrades
+to `kill -0` either way — the guard just stops the log claiming pgrep concurred
+when it was never consulted.
 
 ## Signing key
 
@@ -63,7 +65,7 @@ deliberately does not perform.
 | Job | Container? | Required? | What it does |
 |---|---|---|---|
 | `manifest-lint` | no | yes | Fail-closed check that the manifest app id is a real 32-hex id (not a placeholder/template), the app has an entry/name/known type, and at least one device is listed. Also cross-checks `list_devices.sh` against the XML parse (see below). A bad id still compiles and still passes tests but the store rejects it — the SDK jobs can't catch this class. |
-| `test-tooling` | no | yes | Runner-free proof of the two things that decide whether `run-tests` can catch anything. (1) `scripts/check_expected_tests.sh` cross-checks the pin file against the `(:test)` functions declared in `source/*.mc`. (2) `scripts/test_check_ciq_tests.py` runs the parser's RED/GREEN suite. Its own job rather than a step in `manifest-lint`: a parser-fixture regression reporting under a check named "manifest-lint" misnames its own cause. |
+| `test-tooling` | no | yes | Runner-free proof of the two things that decide whether `run-tests` can catch anything. (1) `scripts/check_expected_tests.sh` cross-checks the pin file against the `(:test)` functions actually declared under `source/` (extraction is the comment- and form-aware `scripts/list_tests.py`, so indented/own-line/multi-annotation declarations are pinned like any other and commented-out code is not). (2) `scripts/test_check_ciq_tests.py` runs the parser's RED/GREEN suite. Its own job rather than a step in `manifest-lint`: a parser-fixture regression reporting under a check named "manifest-lint" misnames its own cause. |
 | `compile-unit-test` | yes | yes | Compiles the `--unit-test` build for **every** manifest device in one job (image pulls once). Enumerates devices fail-closed (zero devices ⇒ the job fails, never a green empty build), collects a per-device rc, and fails if any device fails. `-w` shows warnings but does not fail the build — this codebase is intentionally untyped, so no `-l` typecheck level is passed. |
 | `run-tests` | yes | yes | **Executes** the `(:test)` suites headlessly in the simulator on one device (`fr965`), via `scripts/run_ciq_tests.sh`, and judges the output with the fail-closed `scripts/check_ciq_tests.py`. Separate from `compile-unit-test` so a sim flake can't mask a compile regression. Uploads `monkeydo.log` / `sim-console.log` / `xvfb.log` / `harness-status.txt`. |
 | `release-build` | yes | yes | Compiles the shipping (non-unit-test) `.prg` for every device and exports the `.iq`. A device whose static image exceeds its memory limit makes `monkeyc` exit non-zero, so the compile itself is the budget gate. Uploads the `.prg`/`.iq` as the `strongrow-build-unsigned` artifact — **throwaway-signed, a build-sanity artifact, not a store upload** (a real submission is re-signed with the account-bound key). |
@@ -83,8 +85,10 @@ parse** in `manifest-lint`, so the two can't silently diverge.
 ### `run-tests` — the suites are actually executed
 
 Landed for #42. `compile-unit-test` proves the `(:test)` suites *compile* on all
-12 devices; `run-tests` proves they *pass*. Without it a wrong assertion, or a
-real regression, stayed green forever — which was this pipeline's main gap.
+12 devices; `run-tests` proves they *pass*. What that buys, precisely: a test
+that fails, errors, disappears, is renamed, or is added unpinned now reds CI,
+where before it stayed green forever. (It does **not** prove the assertions are
+*meaningful* — see "What this does and does not buy" below.)
 
 **How it works** (`scripts/run_ciq_tests.sh`, then `scripts/check_ciq_tests.py`):
 
@@ -201,7 +205,7 @@ wrong, and the implementation deliberately reverses them:
 
 | Earlier recipe | Now | Why |
 |---|---|---|
-| `apt-get install xvfb x11-utils iproute2 procps openssl` | no `apt-get` at all | `xvfb` is in the image's apt list and `openssl` is present transitively; `x11-utils` and `iproute2` are genuinely avoided by using `test -S` and `/dev/tcp`. **`procps` is not avoided** — the script uses `ps -ef` for topology (`\|\| true`) and `pgrep` as a *secondary* liveness opinion, both non-load-bearing and the `pgrep` call `command -v`-guarded. Keeps `archive.ubuntu.com` off a required check's critical path. (The recipe also omitted `apt-get update`, so it would have failed anyway.) |
+| `apt-get install xvfb x11-utils iproute2 procps openssl` | no `apt-get` at all | `xvfb` is in the image's apt list and `openssl` is present transitively; `x11-utils` and `iproute2` are genuinely avoided by using `test -S` and `/dev/tcp`. **`procps` is not avoided** — the script uses `ps -ef` for topology (`\|\| true`) and `pgrep` as a *secondary* liveness opinion. Liveness never decides the verdict, but a both-signals-dead `sim_gone` does select the short 30 s monkeydo leash — load-bearing for the timeout budget only. The `pgrep` call is `command -v`-guarded for message honesty (127 already reads as "no match"). Keeps `archive.ubuntu.com` off a required check's critical path. (The recipe also omitted `apt-get update`, so it would have failed anyway.) |
 | poll with `ss`/`pgrep` | bash `/dev/tcp` connect | Tests connectability, strictly stronger than seeing a LISTEN, and needs no package. `pgrep` survives only as an advisory cross-check of `kill -0`, never as the probe. |
 | `pkill` stale simulators at entry | dropped | Meaningless in a fresh container, and returns 1 when nothing matches — an immediate `set -e` abort. |
 | launch via the `connectiq` launcher | launch `simulator` directly | There is no such launcher in this image; upstream backgrounds `simulator` itself. Direct launch also makes `$!` the correct PID. |

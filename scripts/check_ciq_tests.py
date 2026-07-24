@@ -37,13 +37,18 @@ SUMMARY_RE = re.compile(
     r'^(PASSED|FAILED)\s*\(passed=(\d+),\s*failed=(\d+),\s*errors=(\d+)\)[ \t]*\r?$',
     re.M,
 )
-# The standalone veto. Whitespace-tolerant on purpose: SUMMARY_RE already
-# tolerates `FAILED  (passed=`, so a literal substring veto would be the WEAKER
-# of the two and a double-spaced console line would slip past it.
-FAILED_VETO_RE = re.compile(r'FAILED\s*\(passed=')
+# The standalone veto. Whitespace-tolerant WITHIN a line on purpose: SUMMARY_RE
+# already tolerates `FAILED  (passed=`, so a literal substring veto would be the
+# weaker of the two. But [ \t]*, never \s* -- \s spans newlines, and prose that
+# happens to end one line with FAILED and start the next with (passed= must not
+# veto a green run (reproduced in review).
+FAILED_VETO_RE = re.compile(r'FAILED[ \t]*\(passed=')
 RAN_RE = re.compile(r'^Ran (\d+) tests?\b', re.M)
-# The RESULTS table header, e.g. "Test:                    Status:"
-RESULTS_HEADER_RE = re.compile(r'^Test:\s+Status:\s*\r?$', re.M)
+# The RESULTS table header, e.g. "Test:                    Status:".
+# [ \t]+, never \s+: \s spans newlines, so a "Test:" line followed by a
+# "Status:" line anywhere in the chatter formed a PHANTOM header earlier than
+# the real one, after which arbitrary output became phantom rows.
+RESULTS_HEADER_RE = re.compile(r'^Test:[ \t]+Status:[ \t]*\r?$', re.M)
 # A row inside the RESULTS table: an identifier-shaped NAME and an ALL-CAPS
 # status token, nothing else.
 #
@@ -67,7 +72,10 @@ def read(path):
     into a traceback instead of a verdict."""
     if not path or not os.path.exists(path):
         return ""
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    # newline="" so CRLF actually REACHES the regexes: with default universal
+    # newlines Python translates \r\n -> \n before any pattern runs, which made
+    # every \r?$ in this file dead code and its CRLF test vacuous.
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as fh:
         return ANSI_RE.sub("", fh.read())
 
 
@@ -82,7 +90,10 @@ def load_expected(path):
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                line = line.strip()
+                # ASCII whitespace only, matching check_expected_tests.sh's sed
+                # trim exactly -- a bare strip() also eats U+00A0 etc., which the
+                # shell does not, and the two sides must agree on the pin.
+                line = line.strip(" \t\r\n")
                 if line and not line.startswith("#"):
                     names.append(line)
     except OSError:
