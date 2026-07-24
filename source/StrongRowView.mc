@@ -87,17 +87,20 @@ class StrongRowView extends Ui.View {
     hidden const AC_SUB_K    = 0.50;  // subharmonic must reach this vs best
     hidden const REFRACT_FRAC = 0.72; // fraction of locked period a peak is ignored
     // R-R / HRV
-    hidden const RR_MIN_MS = 250;     // physiological beat interval range
-    hidden const RR_MAX_MS = 2500;
+    // These four are non-hidden so the static helpers filterRr()/packRr() and the
+    // unit tests can reference them as StrongRowView.<CONST> (a static method has
+    // no instance `self`, so a bare name can't resolve a member const).
+    const RR_MIN_MS = 250;            // physiological beat interval range
+    const RR_MAX_MS = 2500;
     hidden const RR_ART_K  = 0.30;    // reject successive jumps > 30% as artifacts
     hidden const RR_NDIFF  = 90;      // rMSSD window: last ~90 beat pairs
-    hidden const RR_PER_REC = 4;      // raw intervals logged per record
+    const RR_PER_REC = 4;             // raw intervals logged per record
     // FIT "no data" sentinel for the rr_interval field. Bound to that field's
     // DATA_TYPE_UINT16 base type (0xFFFF is the UINT16 invalid value) AND to the
     // field having no :scale/:offset (see mFitRr creation), so a stored 0xFFFF is
     // emitted verbatim as "no data". Revisit if the base type, scale, or offset
-    // ever change.
-    hidden const RR_INVALID = 0xFFFF;
+    // ever change. Non-hidden so the static packRr() and the tests can reference it.
+    const RR_INVALID = 0xFFFF;
 
     hidden var mDt;
     hidden var mAlphaSlow;
@@ -602,7 +605,7 @@ class StrongRowView extends Ui.View {
             var rr = ivals[i];
             if (rr == null) { continue; }
             rr = rr.toNumber();
-            if (rr >= RR_MIN_MS && rr <= RR_MAX_MS) { out.add(rr); }
+            if (rr >= StrongRowView.RR_MIN_MS && rr <= StrongRowView.RR_MAX_MS) { out.add(rr); }
         }
         return out;
     }
@@ -611,10 +614,11 @@ class StrongRowView extends Ui.View {
     // array, padding the rest with RR_INVALID. Extras beyond RR_PER_REC are
     // dropped (a real gap in the raw series -- tracked separately in #14).
     static function packRr(valid) {
-        var arr = new [RR_PER_REC];
-        for (var j = 0; j < RR_PER_REC; j++) { arr[j] = RR_INVALID; }
+        var cap = StrongRowView.RR_PER_REC;
+        var arr = new [cap];
+        for (var j = 0; j < cap; j++) { arr[j] = StrongRowView.RR_INVALID; }
         var k = valid.size();
-        if (k > RR_PER_REC) { k = RR_PER_REC; }
+        if (k > cap) { k = cap; }
         for (var j = 0; j < k; j++) { arr[j] = valid[j]; }
         return arr;
     }
