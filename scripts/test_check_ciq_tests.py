@@ -277,6 +277,15 @@ def run_checker(monkeydo_text, console_text="", expected_file=EXPECTED,
                 fh.write("# no names at all\n")
         elif expected_file == "<missing>":
             expected_file = os.path.join(td, "does-not-exist.txt")
+        elif expected_file == "<nbsp-fixture>":
+            # The fixture pin with U+00A0 appended to its first name. NBSP is
+            # NOT in load_expected's POSIX strip set, so it must survive into
+            # the pinned name and make it mismatch the table.
+            expected_file = os.path.join(td, "nbsp_pin.txt")
+            fnames = _fixture_names()
+            fnames[0] += "\u00a0"
+            with open(expected_file, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(fnames) + "\n")
         elif expected_file == "<fixture>":
             # Pin derived from the frozen fixture itself, so fixture cases stay
             # stable when the live pin gains or loses a test.
@@ -391,9 +400,31 @@ def _():
 def _():
     # Regression: the old fallback only fired when the header was ENTIRELY
     # absent, so a split table returned {} and reddened a green run.
+    #
+    # UNREPRESENTATIVE on purpose, kept anyway: this monkeydo half omits the
+    # `Ran N tests` line monkeydo actually prints, which is what let it pass
+    # for four rounds while the realistic variant below was a false red. It
+    # still isolates the `not rows` (vs `rows is None`) half of the fallback,
+    # which the variant below cannot, so the pair covers both halves.
     t = real_green_log()
     head, _sep, tail = t.partition("%-37s %s\n" % ("Test:", "Status:"))
     return fx(head + "%-37s %s\n" % ("Test:", "Status:") + _fixture_summary() + "\n", tail)
+
+
+@case("split table where monkeydo KEEPS its own 'Ran N tests' line passes", [])
+def _():
+    # Variant B -- the shape monkeydo actually produces (found in review,
+    # round 5): the case above proved the {} fallback FIRES without proving it
+    # WORKS. With monkeydo's own tally line present, parsing the combined text
+    # anchored on monkeydo's header used to break at that tally before ever
+    # reaching the console rows -- {} again, and a fully green run reported as
+    # "missing tests: <all of them>" on a required check.
+    t = real_green_log()
+    hdr = "%-37s %s\n" % ("Test:", "Status:")
+    head, _sep, tail = t.partition(hdr)
+    monkeydo_half = (head + hdr + "Ran %d tests\n" % len(_fixture_names())
+                     + _fixture_summary() + "\n")
+    return fx(monkeydo_half, tail)
 
 
 @case("a non-row simulator notice inside the table does not red a green run", [])
@@ -499,14 +530,17 @@ def _():
     return transcript(st, ran=N, summary=SUMMARY_OK)
 
 
-@case("duplicate rows for one test are ambiguous and fail, in either order",
-      ["not_pass"], ["DUPLICATE_ROW"])
+@case("duplicate rows for one test are ambiguous and fail",
+      ["not_pass"], ["DUPLICATE_ROW(FAIL,PASS)"])
 def _():
-    # With a plain dict overwrite, `x FAIL` then `x PASS` resolved GREEN while
-    # the reverse order red -- order-dependent ambiguity resolved in the passing
-    # direction, in a parser whose contract is that ambiguity fails. The second
-    # row now marks the name DUPLICATE_ROW, which is not PASS, in both orders.
+    # FAIL first, PASS second -- the exact order a plain dict overwrite used to
+    # resolve GREEN, in a parser whose contract is that ambiguity fails. (The
+    # fix is order-independent; this case builds the dangerous order, and its
+    # earlier name claimed "in either order" while building only one -- called
+    # out in review.) The composite status names both conflicting rows, so the
+    # diagnostic is actionable rather than a bare marker.
     st = {n: "PASS" for n in NAMES}
+    st[NAMES[0]] = "FAIL"
     return transcript(st, ran=N, summary=SUMMARY_OK,
                       extra_rows=["%-37s %s" % (NAMES[0], "PASS")])
 
@@ -606,6 +640,18 @@ def _():
       ["bad_pin", "unexpected"], ["could not be read"])
 def _():
     return (real_green_log(), "", "<missing>")
+
+
+@case("a pin name with a trailing U+00A0 is preserved, not silently trimmed",
+      ["missing", "unexpected"], ["\u00a0"])
+def _():
+    # Pins load_expected's POSIX-exact strip set, asserted byte-identical to
+    # the shell's [[:space:]] trim in three separate comments and -- until this
+    # case -- tested by zero of them (found in review, round 5). With a bare
+    # .strip() the NBSP is eaten, the doctored pin silently matches the table,
+    # and this case reds because neither guard fires. The mention pins the
+    # NBSP surviving into the diagnostic itself, where the mismatch is visible.
+    return (real_green_log(), "", "<nbsp-fixture>")
 
 
 # --------------------------------------------- RED, deliberately compound ---

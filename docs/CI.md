@@ -16,8 +16,11 @@ ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a3
 ```
 
 The image is **pinned by digest** — the digest is the real pin; the `v2.8.0`
-tag lives in a trailing comment for humans. To move SDKs, change the digest and
-update the comment together.
+tag lives in a trailing comment for humans. In the workflow the digest appears
+**once**, as the `&ciq_image` YAML anchor, aliased by every container job. The
+only other copy is the one quoted above in this file, and **nothing
+cross-checks it** — to move SDKs, change the anchor, update its tag comment,
+and update this document, all together.
 
 **When to bump:** if a device in `manifest.xml` is not defined in the current
 SDK, the compile job fails with an unknown-device error. Bump to a newer
@@ -27,8 +30,8 @@ SDK, the compile job fails with an unknown-device error. Bump to a newer
 Dockerfile's `apt-get install` list is exactly `openjdk-17-jre-headless`,
 `libwebkit2gtk-4.0-37`, `libusb-1.0-0`, `libsm6`, `xvfb`. CI additionally relies
 on **`openssl`** (throwaway key; it appears only in a Dockerfile *comment*),
-**`python3`** (the fail-closed verdict step, which runs `if: always()` on a
-required check), and — advisory only — **`procps`** for `ps`/`pgrep`. All three
+**`python3`** (the fail-closed verdict step, which runs `if: ${{ !cancelled() }}`
+on a required check), and — advisory only — **`procps`** for `ps`/`pgrep`. All three
 are present today as *transitive* packages, frozen by the digest pin, so this is
 not a live risk. But nothing declares them, so after changing the digest confirm
 in the new image that all three still resolve:
@@ -86,9 +89,11 @@ parse** in `manifest-lint`, so the two can't silently diverge.
 
 Landed for #42. `compile-unit-test` proves the `(:test)` suites *compile* on all
 12 devices; `run-tests` proves they *pass*. What that buys, precisely: a test
-that fails, errors, disappears, is renamed, or is added unpinned now reds CI,
-where before it stayed green forever. (It does **not** prove the assertions are
-*meaningful* — see "What this does and does not buy" below.)
+that fails, errors, is renamed, or is added unpinned now reds CI, where before
+it stayed green forever. A test that *disappears* reds CI **only if its pin
+line survives** — delete both together and everything passes (the
+coordinated-shrinkage caveat below; #52). It also does **not** prove the
+assertions are *meaningful* — see "What this does and does not buy" below.
 
 **How it works** (`scripts/run_ciq_tests.sh`, then `scripts/check_ciq_tests.py`):
 

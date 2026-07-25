@@ -142,7 +142,12 @@ def parse_results_table(text):
     for line in text[header.end():].splitlines():
         if not line.strip():
             continue
-        if RAN_RE.match(line):          # end of table
+        if RAN_RE.match(line) and rows:
+            # End of table -- but only once at least one row has been seen.
+            # An unconditional break re-created the split-table false red one
+            # level down: parsing the COMBINED text anchored on monkeydo's
+            # header stopped at monkeydo's own `Ran N tests` line before ever
+            # reaching the console's rows, returning {} for a green run.
             break
         m = RESULTS_ROW_RE.match(line)
         if not m:
@@ -154,8 +159,10 @@ def parse_results_table(text):
             # Two rows for one test is ambiguity, and ambiguity fails: with a
             # plain overwrite, `x FAIL` then `x PASS` resolved GREEN while the
             # reverse order red -- order-dependent, in the passing direction.
-            # DUPLICATE_ROW is not PASS, so the not-PASS check names it.
-            rows[name] = "DUPLICATE_ROW"
+            # The composite is not PASS, so the not-PASS check fails it, and
+            # it carries both original statuses so the diagnostic says what
+            # the conflicting rows actually claimed.
+            rows[name] = "DUPLICATE_ROW(%s,%s)" % (rows[name], status)
         else:
             rows[name] = status
     return rows
@@ -266,15 +273,22 @@ def main():
             % (ran.group(1), n_expected, expected_file))
 
     # --- Test-name set -------------------------------------------------------
-    # Widen the fallback past "header entirely absent": if the header lands in
+    # The fallback past "header entirely absent": if the header lands in
     # monkeydo.log but the rows land in sim-console.log, the monkeydo-only parse
-    # returns an EMPTY dict, not None -- which used to skip the fallback and red
-    # a green run with a bogus "missing tests" list. `not rows` covers both.
+    # returns an EMPTY dict, not None. Two subtleties, each a reproduced false
+    # red on a fully green run:
+    #   * `not rows`, never `rows is None`: {} must also trigger the fallback;
+    #   * EVERY header position in the combined text is tried, not just the
+    #     first: anchoring on the first header parsed monkeydo's header-only
+    #     window and returned {} again (see the break condition in
+    #     parse_results_table), so the fallback existed without working.
     rows = parse_results_table(monkeydo)
     if not rows:
-        alt = parse_results_table(combined)
-        if alt:
-            rows = alt
+        for h in RESULTS_HEADER_RE.finditer(combined):
+            alt = parse_results_table(combined[h.start():])
+            if alt:
+                rows = alt
+                break
     if rows is None:
         problems.append("no RESULTS table found in either log")
     else:

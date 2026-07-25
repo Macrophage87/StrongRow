@@ -28,10 +28,24 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# LC_ALL=C makes the byte-for-byte parity claim below TRUE rather than
+# approximate: under glibc's C.UTF-8 (the runner default), [[:space:]] also
+# matches U+2000-200A, U+3000 etc., which Python's six-char strip set does
+# not. C pins sed's [[:space:]] to exactly " \t\r\n\v\f" -- and makes the two
+# `sort`s byte-ordered, so the diff labels can't shift with the locale.
+export LC_ALL=C
+
 PIN="scripts/expected_tests.txt"
 
 if ! command -v python3 >/dev/null 2>&1; then
     echo "::error::python3 is unavailable -- the extractor cannot run."
+    exit 1
+fi
+
+if [ ! -f "$PIN" ]; then
+    # Without this, a deleted pin leaked a raw `grep: ... No such file` and
+    # then mislabelled the cause as "lists no test names".
+    echo "::error::$PIN does not exist -- the pin file itself was deleted or moved."
     exit 1
 fi
 
