@@ -66,11 +66,19 @@ REAL_GREEN_LOG = os.path.join(HERE, "fixtures", "monkeydo-green-run.log")
 # Adding a unit test must never break the test tooling.
 def _load_pin(path):
     names = []
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                names.append(line)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                # POSIX [[:space:]], matching check_expected_tests.sh's sed trim
+                # and load_expected() exactly -- all three components must agree
+                # byte-for-byte on what a pin name is.
+                line = line.strip(" \t\r\n\v\f")
+                if line and not line.startswith("#"):
+                    names.append(line)
+    except OSError as exc:
+        # Render a verdict, never a traceback -- the rule the checker documents
+        # for itself applies to its own test tooling.
+        sys.exit("cannot read the pin file %r: %s" % (path, exc))
     return names
 
 
@@ -83,6 +91,22 @@ if len(NAMES) < 3:
              "needs at least 3 to build its cases." % len(NAMES))
 N = len(NAMES)
 SUMMARY_OK = "PASSED (passed=%d, failed=0, errors=0)" % N
+
+# Names this suite (and its meta-check) mints synthetically. If a real (:test)
+# ever takes one of these names, the cases that rely on it being ABSENT from
+# the pin invert -- the original blocker's exact shape, surviving at three
+# names -- and the meta-check is green at HEAD so it cannot warn. Refuse
+# loudly instead; renaming the real test is the fix.
+_SYNTHETIC = ("test_rr_brandNew", "test_rr_somethingElse",
+              "test_meta_pinPerturbationProbe")
+_clashes = [s for s in _SYNTHETIC if s in NAMES] + \
+           [n for n in NAMES if n.startswith("test_meta_synth_")]
+# Real pins only: the meta-check's own perturbed pins CONTAIN these literals by
+# construction (that is what the probes are), so the guard must not fire on a
+# CIQ_TEST_PIN sub-run -- it would red the meta-check it exists to protect.
+if _clashes and not os.environ.get("CIQ_TEST_PIN"):
+    sys.exit("pinned test name(s) collide with this suite's synthetic "
+             "literals: %s -- rename the real test(s)." % ", ".join(_clashes))
 
 # The 17 names run 1 actually reported, frozen. Giving fixture cases a
 # fixture-DERIVED pin fixed the add/remove coupling but silently removed the
@@ -323,6 +347,28 @@ def _():
     return fx(real_green_log().replace("\n", "\r\n"))
 
 
+@case("a summary broken across two lines is not a summary", [])
+def _():
+    # Pins the [ \t] doctrine in SUMMARY_RE itself: with \s* in its gaps, the
+    # regex matches ACROSS the line break below, this transcript then contains
+    # two summaries, multi_summary fires, and this green case reds. Same
+    # newline-spanning defect class fixed for the veto and the header regexes.
+    broken = "PASSED\n(passed=%d, failed=0, errors=0)" % N
+    return transcript() + broken + "\n"
+
+
+@case("a CR-ONLY log is refused -- and this case is what pins newline=''",
+      ["no_summary", "no_ran", "no_table"])
+def _():
+    # Nothing in this pipeline emits lone-\r line endings (monkeydo on a Linux
+    # container does not even emit CRLF), so refusing them costs no real input.
+    # The case's REAL job is to pin read()'s newline="" open: remove that and
+    # Python's universal-newline translation turns every \r into \n before any
+    # regex runs -- this transcript then parses green, this case reds, and the
+    # CRLF case above silently returns to being vacuous (its \r?$ anchors dead).
+    return fx(real_green_log().replace("\n", "\r"))
+
+
 @case("real log with a trailing blank-padded table passes", [])
 def _():
     return fx(real_green_log().replace("Ran 17 tests", "\nRan 17 tests"))
@@ -451,6 +497,18 @@ def _():
     st = {n: "PASS" for n in NAMES}
     st[NAMES[-1]] = "ERROR"
     return transcript(st, ran=N, summary=SUMMARY_OK)
+
+
+@case("duplicate rows for one test are ambiguous and fail, in either order",
+      ["not_pass"], ["DUPLICATE_ROW"])
+def _():
+    # With a plain dict overwrite, `x FAIL` then `x PASS` resolved GREEN while
+    # the reverse order red -- order-dependent ambiguity resolved in the passing
+    # direction, in a parser whose contract is that ambiguity fails. The second
+    # row now marks the name DUPLICATE_ROW, which is not PASS, in both orders.
+    st = {n: "PASS" for n in NAMES}
+    return transcript(st, ran=N, summary=SUMMARY_OK,
+                      extra_rows=["%-37s %s" % (NAMES[0], "PASS")])
 
 
 @case("a stray FAILED line in the CONSOLE log vetoes a green monkeydo run",
@@ -678,7 +736,6 @@ def main():
         with tempfile.TemporaryDirectory() as td:
             variants = [
                 ("added", NAMES + ["test_meta_pinPerturbationProbe"]),
-                ("removed-two", NAMES[:-2]),
                 # Fully synthetic names, same count: the strongest probe. Any
                 # case hardcoding a REAL test name (the second half of the
                 # round-3 blocker -- a middle-of-the-list literal survives the
@@ -687,6 +744,17 @@ def main():
                 ("renamed", ["test_meta_synth_%02d" % i
                              for i in range(len(NAMES))]),
             ]
+            if len(NAMES) >= 5:
+                # The -2 probe drives the sub-run's pin to len(NAMES)-2, which
+                # must stay >= its own 3-name minimum -- at a real pin of 3 or 4
+                # this variant would red with "suite is not pin-agnostic", a
+                # false cause (found in review). Skip it, say so, and keep the
+                # other two probes, which work down to 3.
+                variants.insert(1, ("removed-two", NAMES[:-2]))
+            else:
+                print("meta-check: pin has %d names; skipping the removed-two "
+                      "probe (it would drive the sub-run below its 3-name "
+                      "minimum and red for a false cause)." % len(NAMES))
             for label, pin_names in variants:
                 pin = os.path.join(td, "pin-%s.txt" % label)
                 with open(pin, "w", encoding="utf-8") as fh:
@@ -701,7 +769,8 @@ def main():
                     for line in (proc.stdout + proc.stderr).splitlines()[-15:]:
                         print("      | " + line)
                     return 1
-            print("pin-perturbation meta-check: suite green under +1, -2 and all-renamed pins.")
+            print("pin-perturbation meta-check: suite green under %s pins."
+                  % ", ".join(label for label, _ in variants))
     return 0
 
 

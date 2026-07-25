@@ -65,7 +65,7 @@ deliberately does not perform.
 | Job | Container? | Required? | What it does |
 |---|---|---|---|
 | `manifest-lint` | no | yes | Fail-closed check that the manifest app id is a real 32-hex id (not a placeholder/template), the app has an entry/name/known type, and at least one device is listed. Also cross-checks `list_devices.sh` against the XML parse (see below). A bad id still compiles and still passes tests but the store rejects it — the SDK jobs can't catch this class. |
-| `test-tooling` | no | yes | Runner-free proof of the two things that decide whether `run-tests` can catch anything. (1) `scripts/check_expected_tests.sh` cross-checks the pin file against the `(:test)` functions actually declared under `source/` (extraction is the comment- and form-aware `scripts/list_tests.py`, so indented/own-line/multi-annotation declarations are pinned like any other and commented-out code is not). (2) `scripts/test_check_ciq_tests.py` runs the parser's RED/GREEN suite. Its own job rather than a step in `manifest-lint`: a parser-fixture regression reporting under a check named "manifest-lint" misnames its own cause. |
+| `test-tooling` | no | yes | Runner-free proof of the three things that decide whether `run-tests` can catch anything. (1) `scripts/test_list_tests.py` proves the declaration extractor RED/GREEN. (2) `scripts/check_expected_tests.sh` cross-checks the pin file against the `(:test)` functions actually declared under `source/` (extraction is the comment- and form-aware `scripts/list_tests.py`). (3) `scripts/test_check_ciq_tests.py` runs the parser's RED/GREEN suite and ends with the pin-perturbation meta-check. Its own job rather than a step in `manifest-lint`: a parser-fixture regression reporting under a check named "manifest-lint" misnames its own cause. |
 | `compile-unit-test` | yes | yes | Compiles the `--unit-test` build for **every** manifest device in one job (image pulls once). Enumerates devices fail-closed (zero devices ⇒ the job fails, never a green empty build), collects a per-device rc, and fails if any device fails. `-w` shows warnings but does not fail the build — this codebase is intentionally untyped, so no `-l` typecheck level is passed. |
 | `run-tests` | yes | yes | **Executes** the `(:test)` suites headlessly in the simulator on one device (`fr965`), via `scripts/run_ciq_tests.sh`, and judges the output with the fail-closed `scripts/check_ciq_tests.py`. Separate from `compile-unit-test` so a sim flake can't mask a compile regression. Uploads `monkeydo.log` / `sim-console.log` / `xvfb.log` / `harness-status.txt`. |
 | `release-build` | yes | yes | Compiles the shipping (non-unit-test) `.prg` for every device and exports the `.iq`. A device whose static image exceeds its memory limit makes `monkeyc` exit non-zero, so the compile itself is the budget gate. Uploads the `.prg`/`.iq` as the `strongrow-build-unsigned` artifact — **throwaway-signed, a build-sanity artifact, not a store upload** (a real submission is re-signed with the account-bound key). |
@@ -135,24 +135,35 @@ change**; the failure message names exactly what is missing and what is extra.
 
 **Adding or removing a test is exactly two edits, and nothing else:**
 
-1. add/remove the `(:test) function …` in the source (column 0);
+1. add/remove the `(:test) function …` in the source;
 2. add/remove its line in `scripts/expected_tests.txt`.
 
 That is the whole procedure. The parser self-suite derives its name list and
 counts from the pin at import, and its fixture-based cases judge the committed
 capture against a pin derived *from the fixture itself* — so neither the
 self-suite nor `scripts/fixtures/monkeydo-green-run.log` needs touching when
-the test set changes. (An earlier version hardcoded both, so following this
-procedure reddened `test-tooling`; that is fixed and regression-checked by
-running the suite with a test added and one removed.)
+the test set changes.
+
+**That property is enforced mechanically, not by promise.** Twice, a manual
+check of this procedure was declared and was wrong (a frozen name list, then a
+frozen slice and two frozen name strings — each reddened `test-tooling` on a
+legitimate pin edit). So the suite now ends with a **pin-perturbation
+meta-check**: it re-runs itself under three synthetic pins — one name added,
+two removed, and *all* names replaced — and fails if any rerun reds. The
+all-renamed probe exists because it is the only one that can see a hardcoded
+*middle-of-the-list* name. (With a real pin of fewer than 5 names the
+removed-two probe is skipped, with a printed reason, so it cannot red for a
+false cause.)
 
 **And the pin is cross-checked against the source, in CI** —
 `scripts/check_expected_tests.sh`, in `test-tooling`. It derives the name set
-independently from the `.mc` sources and diffs it against the pin, so the two
-cannot **drift**. It also names any `(:test)` declaration indented past the
-column-0 extractor (the simulator runs those, so leaving them invisible
-deadlocks this check against the parser), and refuses to pass on an empty
-extraction rather than matching two empty lists.
+independently from the `.mc` sources via `scripts/list_tests.py` — a comment-
+and form-aware extractor that handles indented, own-line, multi-annotation and
+argumented (`:typecheck(false)`) declarations natively, ignores commented-out
+and string-quoted text, and has its own RED/GREEN suite
+(`scripts/test_list_tests.py`, first step of `test-tooling`) — and diffs it
+against the pin, so the two cannot **drift**. The shell refuses a partial or
+empty extraction rather than trusting it.
 
 > ⚠️ **What it does *not* close: coordinated shrinkage.** An earlier version of
 > this section claimed otherwise, and that was wrong. Both sides of the diff are

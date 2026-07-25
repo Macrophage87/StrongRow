@@ -33,30 +33,47 @@ import sys
 # An annotation group containing :test (alone or among others, any order),
 # then `function <identifier>`. DOTALL so the annotation may sit on its own
 # line above the function.
+#
+# The annotation body admits ONE level of balanced parens -- `[^()]` with an
+# optional `\([^()]*\)` -- because annotations take arguments:
+# `(:test, :typecheck(false))` is legal Monkey C, and the previous `[^)]*`
+# body died at the `)` closing `typecheck(false`, making that declaration
+# invisible to the pin while the simulator still ran it (the deadlock this
+# script exists to prevent, reintroduced through its own regex).
+_ANN_BODY = r'(?:[^()]|\([^()]*\))*'
 DECL_RE = re.compile(
-    r'\(\s*:[^)]*\btest\b[^)]*\)\s*function\s+([A-Za-z_][A-Za-z0-9_]*)',
+    r'\(\s*:' + _ANN_BODY + r'\btest\b' + _ANN_BODY + r'\)\s*function\s+([A-Za-z_][A-Za-z0-9_]*)',
     re.S,
 )
 
 
 def strip_comments(text):
-    """Remove // and /* */ comments, preserving string contents and newlines
-    (newlines kept so line numbers survive for --where)."""
+    """Remove // and /* */ comments AND blank out string/Char literal BODIES,
+    keeping delimiters and newlines (so line numbers survive for --where).
+
+    Blanking literal bodies matters twice over:
+      * a string containing the annotation text would otherwise be extracted as
+        a phantom pinned test, and the drift diff's printed remedy would walk a
+        maintainer straight into pinning it;
+      * a Char literal like '"' would otherwise desynchronise the string lexer,
+        turning comment-stripping off for the rest of the file and resurrecting
+        commented-out declarations."""
     out = []
     i, n = 0, len(text)
     while i < n:
         c = text[i]
-        if c == '"':                              # string literal
+        if c == '"' or c == "'":                  # string or Char literal
+            quote = c
             out.append(c); i += 1
-            while i < n and text[i] != '"':
-                if text[i] == '\\':
-                    out.append(text[i]); i += 1
-                    if i < n:
-                        out.append(text[i]); i += 1
+            while i < n and text[i] != quote:
+                if text[i] == '\\' and i + 1 < n:
+                    i += 2                        # escape: skip both, emit neither
                     continue
-                out.append(text[i]); i += 1
+                if text[i] == '\n':
+                    out.append('\n')              # keep line numbers
+                i += 1
             if i < n:
-                out.append('"'); i += 1
+                out.append(quote); i += 1
         elif text.startswith('//', i):            # line comment
             while i < n and text[i] != '\n':
                 i += 1
@@ -71,11 +88,17 @@ def strip_comments(text):
 
 
 def mc_files(root="source"):
+    # No followlinks: it bought nothing (the tree has no symlinks) and cost
+    # termination -- a directory-symlink cycle loops forever, in a job that runs
+    # on every PR. Symlinked files are skipped too (they duplicate a name into
+    # an unfixable drift diff), as is anything that is not a regular file (a
+    # FIFO named *.mc would block open() indefinitely).
     hits = []
-    for dirpath, _dirs, files in os.walk(root, followlinks=True):
+    for dirpath, _dirs, files in os.walk(root):
         for f in sorted(files):
-            if f.endswith(".mc"):
-                hits.append(os.path.join(dirpath, f))
+            p = os.path.join(dirpath, f)
+            if f.endswith(".mc") and os.path.isfile(p) and not os.path.islink(p):
+                hits.append(p)
     return sorted(hits)
 
 

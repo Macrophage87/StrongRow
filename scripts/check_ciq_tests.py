@@ -33,8 +33,11 @@ import sys
 
 # Anchored to end-of-line so two summaries glued onto one physical line cannot
 # hide a FAILED behind a leading PASSED. Never use a bare `$` here.
+# [ \t]*, never \s*, in ALL THREE gaps: \s spans newlines, so
+# `PASSED\n(passed=...` -- a summary broken across lines -- would otherwise be
+# accepted as one. Same doctrine as FAILED_VETO_RE and RESULTS_HEADER_RE below.
 SUMMARY_RE = re.compile(
-    r'^(PASSED|FAILED)\s*\(passed=(\d+),\s*failed=(\d+),\s*errors=(\d+)\)[ \t]*\r?$',
+    r'^(PASSED|FAILED)[ \t]*\(passed=(\d+),[ \t]*failed=(\d+),[ \t]*errors=(\d+)\)[ \t]*\r?$',
     re.M,
 )
 # The standalone veto. Whitespace-tolerant WITHIN a line on purpose: SUMMARY_RE
@@ -61,7 +64,13 @@ RESULTS_HEADER_RE = re.compile(r'^Test:[ \t]+Status:[ \t]*\r?$', re.M)
 # The status alphabet is NOT pinned to PASS|FAIL|ERROR: an undocumented token
 # such as SKIP must still be captured so the "executed but mis-tallied" check
 # below can call it out by name. Anything that is not exactly PASS is a failure.
-RESULTS_ROW_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)[ \t]+([A-Z][A-Z0-9_]*)[ \t]*\r?$')
+# No \r? here, deliberately: rows are matched per-line after str.splitlines(),
+# which consumes the \r\n boundary whole -- so unlike SUMMARY_RE and
+# RESULTS_HEADER_RE (which run over the raw text under re.M and DO see the \r
+# before each \n), a row line can never end in \r and the anchor would be dead
+# code (proven: deleting it changed nothing while the other two anchors are
+# each pinned by the CRLF case).
+RESULTS_ROW_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)[ \t]+([A-Z][A-Z0-9_]*)[ \t]*$')
 # Terminal colour, if the simulator ever emits it, must not turn `PASS` into an
 # unparseable token (which would red a green run). Stripped on read.
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
@@ -90,10 +99,14 @@ def load_expected(path):
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                # ASCII whitespace only, matching check_expected_tests.sh's sed
-                # trim exactly -- a bare strip() also eats U+00A0 etc., which the
-                # shell does not, and the two sides must agree on the pin.
-                line = line.strip(" \t\r\n")
+                # POSIX [[:space:]] exactly (" \t\r\n\v\f"), matching
+                # check_expected_tests.sh's sed trim character-for-character.
+                # Not a bare strip(): that also eats U+00A0 etc., which the
+                # shell does not. All three pin readers (this, the shell, the
+                # self-suite's _load_pin) must agree byte-for-byte, or a stray
+                # VT/FF gives cross-check green while run-tests reports the
+                # same name as both missing and unexpected.
+                line = line.strip(" \t\r\n\v\f")
                 if line and not line.startswith("#"):
                     names.append(line)
     except OSError:
@@ -137,7 +150,14 @@ def parse_results_table(text):
         name, status = m.group(1), m.group(2)
         if name == "Ran":               # defensive: never treat the tally as a row
             break
-        rows[name] = status
+        if name in rows:
+            # Two rows for one test is ambiguity, and ambiguity fails: with a
+            # plain overwrite, `x FAIL` then `x PASS` resolved GREEN while the
+            # reverse order red -- order-dependent, in the passing direction.
+            # DUPLICATE_ROW is not PASS, so the not-PASS check names it.
+            rows[name] = "DUPLICATE_ROW"
+        else:
+            rows[name] = status
     return rows
 
 

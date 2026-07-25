@@ -30,15 +30,32 @@ cd "$(dirname "$0")/.."
 
 PIN="scripts/expected_tests.txt"
 
-# `|| true` is load-bearing on every substitution below: grep exits 1 on no
-# match and pipefail propagates it, so without this `set -e` kills the script
-# AT THE ASSIGNMENT and the diagnostics never print -- a red step with a blank
-# log, reproduced in review.
-from_source="$(python3 scripts/list_tests.py | sort || true)"
-# Trim surrounding ASCII whitespace to match load_expected() in
-# check_ciq_tests.py (which strips exactly " \t\r\n" for the same reason).
-# Without this a pin line with a trailing space reds here with a diff whose two
-# sides look identical on screen, while the parser passes.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "::error::python3 is unavailable -- the extractor cannot run."
+    exit 1
+fi
+
+# The extractor's exit code is CAPTURED, never ||-true'd away. Its contract is
+# "exit 0 always", so any non-zero is a crash -- and a crash AFTER some names
+# were printed would otherwise leave a plausible-looking partial list that
+# matches a prefix of the pin, printing "OK ... match exactly" under a
+# traceback. (The zero-name guard below only covers the crash that prints
+# nothing; the partial crash sails past it.)
+extractor_rc=0
+extractor_out="$(python3 scripts/list_tests.py)" || extractor_rc=$?
+if [ "$extractor_rc" -ne 0 ]; then
+    echo "::error::scripts/list_tests.py crashed (rc=${extractor_rc}) -- refusing to trust a partial extraction."
+    exit 1
+fi
+# `|| true` on the remaining substitutions is for GREP specifically: it exits 1
+# on no match and pipefail propagates that, so without it `set -e` kills the
+# script AT THE ASSIGNMENT and the diagnostics never print -- a red step with a
+# blank log, reproduced in review.
+from_source="$(printf '%s\n' "$extractor_out" | grep -v '^$' | sort || true)"
+# Trim surrounding whitespace to match load_expected() in check_ciq_tests.py,
+# which strips POSIX [[:space:]] (" \t\r\n\v\f") exactly -- the two sides must
+# agree byte-for-byte on what a pin name is, or a stray VT/FF gives cross-check
+# green while run-tests reports the same name as both missing and unexpected.
 from_pin="$(grep -vE '^[[:space:]]*(#|$)' "$PIN" \
             | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort || true)"
 

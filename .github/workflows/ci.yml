@@ -59,11 +59,21 @@ jobs:
   #    Python + grep), so it is the cheapest and fastest signal in the run.
   test-tooling:
     runs-on: ubuntu-latest
+    # A cycle in a directory symlink used to be able to hang the extractor
+    # forever; the walk no longer follows links, but a required job should
+    # never depend on that for termination.
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Extractor self-test (runner-free RED/GREEN)
+        # list_tests.py is the third leg of this job: the pin cross-check is
+        # only as trustworthy as the extraction. It shipped untested once and
+        # review immediately found three lexing defects; this suite makes the
+        # fourth fail here instead.
+        run: python3 scripts/test_list_tests.py
       - name: Cross-check expected_tests.txt against the sources
         # Closes DRIFT (the pin and the sources disagreeing) -- NOT the
         # coordinated-shrink bypass: deleting a (:test) function AND its pin
@@ -81,6 +91,10 @@ jobs:
         # Xvfb. Fixtures: the REAL monkeydo.log from the first green run-tests
         # run, plus synthetic transcripts perturbed one guard at a time. Each
         # case asserts the exact set of guards that must fire, not just rc.
+        # Ends with the pin-perturbation meta-check: the suite re-runs itself
+        # under +1 / -2 / all-renamed synthetic pins and fails if any rerun
+        # reds -- the mechanical enforcement that adding or removing a (:test)
+        # is two edits (source + pin) and can never redden this job.
         run: python3 scripts/test_check_ciq_tests.py
 
   # 3) Compile the unit-test build for EVERY manifest device in ONE job, so the
