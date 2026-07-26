@@ -132,6 +132,17 @@ exactly one summary line, found in the monkeydo stream; it starts `PASSED`; no
 `Ran N` agrees; and the RESULTS table contains **exactly** the names in
 `scripts/expected_tests.txt`, all `PASS`.
 
+**The table invariant, measured:** monkeydo emits the complete RESULTS block —
+header + rows + tally — to its **own stdout as one contiguous block**. Every
+non-cancelled `run-tests` execution on the introducing PR (14 of 14) produced
+exactly that shape in `monkeydo.log`; a table split across the two log files
+has never been observed and is structurally implausible (two processes, two
+`>`-truncated files, fresh container). monkeydo's table is authoritative. The
+parser therefore treats table multiplicity conservatively: identical duplicate
+tables are accepted, **disagreeing** tables anywhere in the two logs are
+refused as ambiguous — the same fail-closed doctrine as multiple summary lines
+and duplicate rows.
+
 **Names are pinned, not just the count** (`scripts/expected_tests.txt`, 17 today).
 A count alone cannot see a substitution — delete one test, add a trivial one, and
 17 is still 17. The expected count is simply the length of that list, so the two

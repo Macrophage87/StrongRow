@@ -14,9 +14,10 @@ using Toybox.Sensor;
 // arithmetic, because the bug was a wrong-argument bug: a test of the arithmetic
 // alone passes just as happily with computeCoeffs(n) still in place.
 //
-// Execution note: the runner-free CI compiles these across all 12 devices but
-// does NOT run them (no headless-sim job -- see docs/CI.md). Run locally with
-// `monkeydo <prg> <device> -t`.
+// Execution note: the run-tests CI job runs these headlessly in the simulator
+// on every PR (`monkeydo <prg> fr965 -t`, judged by a fail-closed parser),
+// with the test names pinned in scripts/expected_tests.txt -- update that
+// file in the same commit as any (:test) change here. See docs/CI.md.
 
 // -- Stubs -------------------------------------------------------------------
 // Duck-typed stand-ins for Sensor.SensorData / AccelerometerData.

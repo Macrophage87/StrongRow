@@ -60,6 +60,13 @@ fail_harness() {
     exit 2
 }
 
+# The throwaway key lives in a fresh temp dir, NEVER the workspace: run
+# locally against a checkout that has a real account-bound key file, a
+# workspace-relative `openssl -out developer_key.pem` would silently destroy
+# it (found in review). CI never has such a file, so this only changes where
+# the bytes land.
+KEY_DIR="$(mktemp -d)"
+
 sim_pid=""
 xvfb_pid=""
 # Capture the real exit code FIRST: without this, a fully successful run exits
@@ -68,6 +75,7 @@ cleanup() {
     ec=$?
     [[ -n "$sim_pid" ]]  && kill "$sim_pid"  2>/dev/null || true
     [[ -n "$xvfb_pid" ]] && kill "$xvfb_pid" 2>/dev/null || true
+    rm -rf "$KEY_DIR"
     exit "$ec"
 }
 trap cleanup EXIT
@@ -100,10 +108,10 @@ build_rc=0
 {
     # NOT silenced: openssl is present only transitively in this image, so if
     # it ever disappears its own error message is the fastest diagnosis.
-    openssl genrsa -out developer_key.pem 4096 &&
+    openssl genrsa -out "$KEY_DIR/developer_key.pem" 4096 &&
     openssl pkcs8 -topk8 -inform PEM -outform DER \
-        -in developer_key.pem -out developer_key.der -nocrypt &&
-    monkeyc -f monkey.jungle -o "$PRG" -y developer_key.der -d "$DEVICE" --unit-test -w
+        -in "$KEY_DIR/developer_key.pem" -out "$KEY_DIR/developer_key.der" -nocrypt &&
+    monkeyc -f monkey.jungle -o "$PRG" -y "$KEY_DIR/developer_key.der" -d "$DEVICE" --unit-test -w
 } || build_rc=$?
 if [[ "$build_rc" != "0" ]]; then
     fail_harness "compile_failed:${build_rc}" \
@@ -237,7 +245,13 @@ status monkeydo_rc "$rc"
 if [[ "$rc" == "124" || "$rc" == "137" ]]; then status monkeydo timed_out; fi
 if kill -0 "$sim_pid" 2>/dev/null; then status sim_alive yes; else status sim_alive no; fi
 echo "--- monkeydo output (also uploaded as an artifact) ---"
-cat "$MONKEYDO_LOG" || true
+# Prefixed, never raw: this stream contains whatever (:test) code printed, and
+# a raw echo of attacker-influenced text is a workflow-command sink -- a test
+# printing `::stop-commands::` could suppress this job's annotations. A prefix
+# on every physical line defuses that entirely (same trick as the ::error::
+# prefixing in check_expected_tests.sh). Verdict and exit codes were never
+# affected; this closes the annotation-suppression ceiling.
+sed 's/^/| /' "$MONKEYDO_LOG" || true
 echo "::endgroup::"
 
 echo "Harness completed; verdict deferred to scripts/check_ciq_tests.py"

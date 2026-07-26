@@ -412,7 +412,11 @@ jobs:
           ls -l bin/StrongRow.iq
 
       - name: Upload build artifacts (.prg + .iq, throwaway-signed)
-        if: always()
+        # Fork gate: without it, a fork PR publishes world-downloadable
+        # .prg/.iq built from arbitrary source under this repo's name. The
+        # compile itself still runs and still gates the merge — only the
+        # artifact publication is withheld for forks.
+        if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         # Same reasoning as run-tests' log upload: this job is required, so a
         # blob-storage flake must not red a build whose 12 devices all
         # compiled — an availability dependency on the merge gate that buys
@@ -428,7 +432,11 @@ jobs:
           path: |
             bin/*.prg
             bin/*.iq
-          if-no-files-found: error
+          # warn, not error: under continue-on-error an `error` here gated
+          # nothing anyway (found in review), and the compile step above is
+          # the real no-artifacts assertion — it fails the job if any device
+          # fails to build.
+          if-no-files-found: warn
 
   # 6) Single stable status name to require in branch protection. Add new
   #    required jobs to `needs` here rather than to branch protection.

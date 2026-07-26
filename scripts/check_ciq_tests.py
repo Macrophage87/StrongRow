@@ -115,10 +115,14 @@ def load_expected(path):
 
 
 def parse_results_table(text):
-    """Return {name: status} from the RESULTS table only.
+    """Return {name: status} from the FIRST RESULTS table in `text` only.
 
-    None  = no table header anywhere (caller may retry a wider stream).
+    None  = no table header anywhere.
     {}    = header present but no rows under it.
+
+    The caller enumerates every header position and calls this once per
+    window, then applies the ambiguity rule (disagreeing tables fail) -- this
+    function itself never chooses between tables.
 
     Why the parse is scoped to the block, corrected against the real transcript:
     an earlier note here claimed a whole-file scan double-counts every test
@@ -273,23 +277,58 @@ def main():
             % (ran.group(1), n_expected, expected_file))
 
     # --- Test-name set -------------------------------------------------------
-    # The fallback past "header entirely absent": if the header lands in
-    # monkeydo.log but the rows land in sim-console.log, the monkeydo-only parse
-    # returns an EMPTY dict, not None. Two subtleties, each a reproduced false
-    # red on a fully green run:
-    #   * `not rows`, never `rows is None`: {} must also trigger the fallback;
-    #   * EVERY header position in the combined text is tried, not just the
-    #     first: anchoring on the first header parsed monkeydo's header-only
-    #     window and returned {} again (see the break condition in
-    #     parse_results_table), so the fallback existed without working.
-    rows = parse_results_table(monkeydo)
-    if not rows:
-        for h in RESULTS_HEADER_RE.finditer(combined):
-            alt = parse_results_table(combined[h.start():])
-            if alt:
-                rows = alt
-                break
-    if rows is None:
+    # THE INVARIANT THAT MAKES THIS SAFE (measured, not designed): monkeydo
+    # emits the complete RESULTS block -- header + rows + tally -- to its OWN
+    # stdout as one contiguous block. All 14 non-cancelled run-tests executions
+    # on the introducing PR produced that byte-identical shape in monkeydo.log;
+    # a table split across the two log files has NEVER been observed and is
+    # structurally implausible (two processes writing two `>`-truncated files
+    # in a fresh container). monkeydo's table is authoritative. Do not extend
+    # the machinery below to "recover" exotic table shapes -- fail them.
+    #
+    # The parse is therefore conservative, not clever: EVERY candidate table
+    # anywhere in the combined text is collected, and
+    #   * one table, or several IDENTICAL ones (e.g. echoed to both streams)
+    #     -> use it;
+    #   * DISAGREEING tables -> ambiguity, and ambiguity fails. Same doctrine
+    #     as multiple summaries ("refusing to pick one") and DUPLICATE_ROW;
+    #     tables were the one place first-wins still resolved silently, and a
+    #     stale all-PASS table then hid a later table carrying a real SKIP
+    #     (found in review, round 7 -- reachable entirely within monkeydo.log,
+    #     no split required);
+    #   * header(s) but no rows anywhere -> {} (the missing-tests check
+    #     fires); no header at all -> None.
+    tables = []
+    for h in RESULTS_HEADER_RE.finditer(combined):
+        cand = parse_results_table(combined[h.start():])
+        if cand:
+            tables.append(cand)
+    unique = []
+    for t in tables:
+        if t not in unique:
+            unique.append(t)
+
+    rows = None
+    if len(unique) > 1:
+        # Name WHAT disagrees, per test: `None` here means "absent from that
+        # table" -- a diagnostic must say more than "something conflicts".
+        conflicts = []
+        for n in sorted(set().union(*unique)):
+            statuses = sorted({repr(u.get(n)) for u in unique})
+            if len(statuses) > 1:
+                conflicts.append("%s: %s" % (n, " vs ".join(statuses)))
+        problems.append(
+            "found %d RESULTS tables that disagree -- ambiguous (stale or "
+            "interleaved output), so refusing to pick one. Conflicts: %s"
+            % (len(tables), "; ".join(conflicts)))
+    elif unique:
+        rows = unique[0]
+    elif RESULTS_HEADER_RE.search(combined):
+        rows = {}
+
+    if len(unique) > 1:
+        pass                        # reported above; no name checks on a guess
+    elif rows is None:
         problems.append("no RESULTS table found in either log")
     else:
         got = set(rows)

@@ -175,6 +175,7 @@ GUARDS = [
     ("no_ran",        lambda s: s.startswith("no 'Ran N tests'")),
     ("ran_mismatch",  lambda s: s.startswith("'Ran ")),
     ("no_table",      lambda s: s.startswith("no RESULTS table")),
+    ("multi_table",   lambda s: "RESULTS tables that disagree" in s),
     ("missing",       lambda s: s.startswith("missing tests")),
     ("unexpected",    lambda s: s.startswith("unexpected tests")),
     ("not_pass",      lambda s: s.startswith("tests not PASS:")),
@@ -248,6 +249,18 @@ def transcript(statuses=None, ran=None, summary=None, extra_rows=(),
         summary = "%s (passed=%d, failed=%d, errors=%d)" % (verdict, npass, nfail, nerr)
     if summary != "":
         lines.append(summary)
+    return "\n".join(lines) + "\n"
+
+
+def bare_table(statuses):
+    """A RESULTS table alone -- header, rows, tally. No summary, so a second
+    table can be placed in either stream without tripping the summary or
+    FAILED-veto checks, isolating the table-ambiguity guard."""
+    lines = ["%-37s %s" % ("Test:", "Status:")]
+    for n in NAMES:
+        if n in statuses:
+            lines.append("%-37s %s" % (n, statuses[n]))
+    lines.append("Ran %d tests" % len(statuses))
     return "\n".join(lines) + "\n"
 
 
@@ -398,14 +411,12 @@ def _():
 
 @case("table header in monkeydo but rows in console still passes", [])
 def _():
-    # Regression: the old fallback only fired when the header was ENTIRELY
-    # absent, so a split table returned {} and reddened a green run.
-    #
-    # UNREPRESENTATIVE on purpose, kept anyway: this monkeydo half omits the
-    # `Ran N tests` line monkeydo actually prints, which is what let it pass
-    # for four rounds while the realistic variant below was a false red. It
-    # still isolates the `not rows` (vs `rows is None`) half of the fallback,
-    # which the variant below cannot, so the pair covers both halves.
+    # A split table has NEVER been observed -- all 14 non-cancelled run-tests
+    # executions produced monkeydo's contiguous header+rows+tally block, the
+    # authoritative shape (measured in review, round 7). This case and the one
+    # below survive as defense-in-depth on the WINDOW logic, not as realistic
+    # inputs. This half omits monkeydo's own `Ran N tests` line, which is the
+    # only way to isolate the `{}`-still-recovers (vs `is None`) behaviour.
     t = real_green_log()
     head, _sep, tail = t.partition("%-37s %s\n" % ("Test:", "Status:"))
     return fx(head + "%-37s %s\n" % ("Test:", "Status:") + _fixture_summary() + "\n", tail)
@@ -413,12 +424,12 @@ def _():
 
 @case("split table where monkeydo KEEPS its own 'Ran N tests' line passes", [])
 def _():
-    # Variant B -- the shape monkeydo actually produces (found in review,
-    # round 5): the case above proved the {} fallback FIRES without proving it
-    # WORKS. With monkeydo's own tally line present, parsing the combined text
-    # anchored on monkeydo's header used to break at that tally before ever
-    # reaching the console rows -- {} again, and a fully green run reported as
-    # "missing tests: <all of them>" on a required check.
+    # Same synthetic-split family as above (never observed live; see there).
+    # With monkeydo's own tally line present, a parse anchored on monkeydo's
+    # header used to break at that tally before ever reaching the console rows
+    # (round 5) -- and the round-7 rework must keep this window green while
+    # refusing DISAGREEING tables, so it pins that the recovered rows are not
+    # misread as a second, conflicting table.
     t = real_green_log()
     hdr = "%-37s %s\n" % ("Test:", "Status:")
     head, _sep, tail = t.partition(hdr)
@@ -543,6 +554,36 @@ def _():
     st[NAMES[0]] = "FAIL"
     return transcript(st, ran=N, summary=SUMMARY_OK,
                       extra_rows=["%-37s %s" % (NAMES[0], "PASS")])
+
+
+@case("two RESULTS tables that DISAGREE across the streams fail as ambiguous",
+      ["multi_table"], ["refusing to pick one", "%s: 'PASS' vs 'SKIP'" % NAMES[1]])
+def _():
+    # The round-7 false green: a stale all-PASS table first, a table carrying
+    # a real SKIP second. First-table-wins silently kept the stale one and
+    # printed OK on a run whose later table said otherwise. Tables now get the
+    # same ambiguity doctrine as summaries and duplicate rows.
+    st_bad = {n: "PASS" for n in NAMES}
+    st_bad[NAMES[1]] = "SKIP"
+    return (transcript(), bare_table(st_bad))
+
+
+@case("two DISAGREEING tables inside monkeydo ALONE fail as ambiguous",
+      ["multi_table"])
+def _():
+    # The same defect with no split at all -- both tables in monkeydo.log
+    # under one clean summary. This variant is what proves the bug was never
+    # about round 5's split-table fallback: it lives in first-table-wins.
+    st_bad = {n: "PASS" for n in NAMES}
+    st_bad[NAMES[-1]] = "SKIP"
+    return transcript() + bare_table(st_bad)
+
+
+@case("an IDENTICAL table echoed to both streams stays green", [])
+def _():
+    # Duplicate tables that AGREE are not ambiguity -- refusing them would
+    # false-red any future path that tees the block to both logs.
+    return (transcript(), bare_table({n: "PASS" for n in NAMES}))
 
 
 @case("a stray FAILED line in the CONSOLE log vetoes a green monkeydo run",
