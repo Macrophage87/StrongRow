@@ -419,8 +419,9 @@ class StrongRowView extends Ui.View {
     // called as computeCoeffs(n) with n = the first batch's SAMPLE COUNT, which
     // silently rescaled the entire synthetic clock for the whole session. With no
     // parameter, reintroducing that call is an arity error caught at compile time
-    // by the 12-device compile-unit-test job -- a guard that actually runs, unlike
-    // the (:test) suite, which CI compiles but does not execute.
+    // by the 12-device compile-unit-test job. (The (:test) suite is ALSO executed
+    // in CI these days -- the run-tests job, #42 -- but a compile-time guard needs
+    // no simulator and fails on every device at once, so it stays the first line.)
     hidden function computeCoeffs() {
         mDt = 1.0 / REQ_RATE;
         mAlphaSlow = mDt / (mDt + 1.0 / (2.0 * Math.PI * FC_SLOW));

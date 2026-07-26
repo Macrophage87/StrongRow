@@ -1,0 +1,10 @@
+# The workflow's actions are SHA-pinned (see ci.yml), which freezes them for
+# supply-chain integrity but also freezes them out of security fixes. This
+# keeps the pins maintained: Dependabot PRs bump the SHA and the version
+# comment together, and each bump runs the full required CI like any other PR.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

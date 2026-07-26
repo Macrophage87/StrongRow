@@ -7,10 +7,11 @@ using Toybox.Test;
 //
 // These are (:test) functions: included in the --unit-test build (the
 // compile-unit-test CI job compiles them across all 12 devices) and stripped
-// from the shipping build. They execute in the Connect IQ simulator's test
-// runner (`monkeydo <prg> <device> -t`); the runner-free CI compiles but does
-// not execute them (the headless-sim job is deliberately omitted -- see
-// docs/CI.md), so they are a compile-time contract guard plus local coverage.
+// from the shipping build. They EXECUTE on every PR: the run-tests CI job
+// runs them headlessly in the simulator (`monkeydo <prg> fr965 -t`) and a
+// fail-closed parser judges the output. Their names are pinned in
+// scripts/expected_tests.txt -- adding or removing a test here means editing
+// that file in the same commit. See docs/CI.md.
 
 // The FIT "no data" sentinel, mirrored from StrongRowView.RR_INVALID (which is
 // hidden). Kept in sync by the boundary tests below.

@@ -31,16 +31,23 @@ concurrency:
 permissions:
   contents: read
 
-# The SDK container is pinned by digest in each job's `container.image` below.
+# The SDK container is pinned by digest, in exactly ONE place in this file:
+# the &ciq_image anchor on compile-unit-test, aliased by every other container
+# job (`container.image` can't read workflow `env`, hence an anchor instead).
 # v2.8.0 = Connect IQ SDK 9.2.0; the digest IS the pin, the tag is a comment.
-# (`container.image` can't read workflow `env`, so the digest lives inline —
-#  keep the two copies in sync when bumping. See docs/CI.md.)
+# When bumping, also update the copy quoted in docs/CI.md ("The SDK
+# container") — nothing cross-checks that one — and walk the SDK-bump
+# checklist there. (An earlier version of this comment said "keep the two
+# copies in sync" as if both lived in this file; they never did.)
 jobs:
   # 1) Runner-free manifest sanity check. A bad/placeholder app id still
   #    compiles and still passes tests, but the store rejects it — the SDK jobs
   #    cannot catch that class, so this tiny check does.
   manifest-lint:
     runs-on: ubuntu-latest
+    # Every required job carries a timeout: without one, a hung job holds the
+    # merge gate for the 360-minute default. This one finishes in seconds.
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -51,11 +58,64 @@ jobs:
         # jobs) against the XML parse, so a device-extractor divergence fails here.
         run: python3 scripts/check_manifest_appid.py manifest.xml
 
-  # 2) Compile the unit-test build for EVERY manifest device in ONE job, so the
+  # 2) Runner-free proof of the TEST TOOLING itself — the three legs that
+  #    decide whether run-tests can actually catch a regression: the extractor
+  #    suite, the pin cross-check, and the parser suite (+ meta-check). Split
+  #    out of manifest-lint on purpose: a parser-fixture regression reporting
+  #    under a check named "manifest-lint" misnames its own cause, and a
+  #    pin-vs-source divergence is not a manifest problem either. Needs no
+  #    container (pure Python + grep), so it is the cheapest signal in the run.
+  test-tooling:
+    runs-on: ubuntu-latest
+    # A cycle in a directory symlink used to be able to hang the extractor
+    # forever; the walk no longer follows links, but a required job should
+    # never depend on that for termination.
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Extractor self-test (runner-free RED/GREEN)
+        # The pin cross-check below is only as trustworthy as the extraction,
+        # so the extractor's own suite runs first. It is HERMETIC -- scratch
+        # trees only, never the repo -- so the most common maintainer error
+        # (add a (:test), forget the pin) can never fail HERE with a bare
+        # FAIL; it falls through to the cross-check, whose diff names the
+        # test, the file and the remedy.
+        run: python3 scripts/test_list_tests.py
+      - name: Cross-check expected_tests.txt against the sources
+        # Closes DRIFT (the pin and the sources disagreeing) -- NOT the
+        # coordinated-shrink bypass: deleting a (:test) function AND its pin
+        # line in one commit shrinks both sides identically and still passes.
+        # That needs an anchor outside the commit (#52). Extraction is the
+        # comment- and form-aware scripts/list_tests.py, so an indented or
+        # own-line or multi-annotation declaration is pinned like any other
+        # instead of deadlocking this check against the parser.
+        # Must be bash — process substitution.
+        shell: bash
+        run: bash scripts/check_expected_tests.sh
+      - name: Parser self-test (runner-free RED/GREEN)
+        # check_ciq_tests.py is the sole verdict for run-tests, and it is pure
+        # Python -- so it can be proven here with no container, no SDK and no
+        # Xvfb. Fixtures: the REAL monkeydo.log from the first green run-tests
+        # run, plus synthetic transcripts perturbed one guard at a time. Each
+        # case asserts the exact set of guards that must fire, not just rc.
+        # Ends with the pin-perturbation meta-check: the suite re-runs itself
+        # under +1 / -2 / all-renamed synthetic pins and fails if any rerun
+        # reds -- the mechanical enforcement that adding or removing a (:test)
+        # is two edits (source + pin) and can never redden this job.
+        run: python3 scripts/test_check_ciq_tests.py
+
+  # 3) Compile the unit-test build for EVERY manifest device in ONE job, so the
   #    SDK image is pulled once (not once per device via a matrix). A per-device
   #    rc is collected; the job fails if any single device fails to compile.
   compile-unit-test:
     runs-on: ubuntu-latest
+    # Generous multiple of the observed run time (image pull + 12 device
+    # compiles); the point is that a hang fails instead of holding the merge
+    # gate for the 360-minute default.
+    timeout-minutes: 30
     container:
       # Digest is single-sourced via the &ciq_image YAML anchor and aliased in
       # release-build, so a bump can't leave the two jobs on different SDKs.
@@ -143,12 +203,128 @@ jobs:
           fi
           exit $rc_total
 
-  # 3) release-build: compile the NON-unit-test RELEASE artifact (the build that
+  # 4) run-tests: EXECUTE the (:test) suites headlessly in the simulator.
+  #    Separate from compile-unit-test on purpose, so a simulator flake can never
+  #    mask a compile regression. Deliberately has NO `needs:` (it would only
+  #    serialise the two for nothing) and NO job-level `if:` (a `skipped` result
+  #    fails ci-required by design). It appears after compile-unit-test purely
+  #    because the *ciq_image anchor is defined there — an alias earlier in the
+  #    document is a YAML parse error that would red every job.
+  run-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: *ciq_image # same digest as compile-unit-test (v2.8.0 = SDK 9.2.0)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve SDK toolchain onto PATH
+        # Same fallback the two sibling container jobs carry. Without it an
+        # image bump that relocates the binaries self-heals those two and hard-
+        # fails this one at exit 127 with no breadcrumb. monkeydo and simulator
+        # live in the same bin dir as monkeyc, so resolving one resolves all.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v monkeyc >/dev/null 2>&1; then
+            for d in /connectiq /opt/connectiq /root/connectiq /sdk /opt/garmin; do
+              b=$(find "$d" -name monkeyc -type f 2>/dev/null | head -1 || true)
+              if [ -n "$b" ]; then
+                dir="$(dirname "$b")"
+                echo "$dir" >> "$GITHUB_PATH"   # subsequent steps
+                export PATH="$dir:$PATH"        # this step's assertion
+                break
+              fi
+            done
+          fi
+          command -v monkeyc
+          command -v monkeydo
+          command -v simulator
+
+      - name: Assert the test device is in the manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keeps the "CI device set equals the manifest" invariant honest: if
+          # fr965 is ever dropped from <iq:products>, this says so plainly
+          # instead of the simulator failing for an unrelated-looking reason.
+          if ! sh scripts/list_devices.sh | grep -qx fr965; then
+            echo "::error::test device fr965 is not in manifest.xml"; exit 1
+          fi
+
+      - name: Compile and run the (:test) suites in the simulator
+        # No apt-get, so archive.ubuntu.com stays off a required check's
+        # critical path, and the port/liveness/X probes are package-free by
+        # design. Accuracy note: the upstream Dockerfile's apt list is
+        # openjdk-17-jre-headless, libwebkit2gtk-4.0-37, libusb-1.0-0, libsm6
+        # and xvfb — so `xvfb` IS declared, but `openssl` appears only in a
+        # Dockerfile COMMENT and is present transitively. It is frozen by the
+        # digest pin today; the script now aborts with a named breadcrumb (exit
+        # 2, harness_error=compile_failed) rather than a bare 127 if a future
+        # bump drops it. See the SDK-bump checklist in docs/CI.md.
+        # Must be bash — the script uses /dev/tcp, [[ ]] and pipefail.
+        shell: bash
+        run: bash scripts/run_ciq_tests.sh fr965
+
+      - name: Check the test results (fail-closed)
+        # !cancelled(), not always(): a harness that DIED before monkeydo
+        # still gets its verdict printed (failure is not cancelled), but a
+        # superseded run no longer reaches this step with no logs at all and
+        # prints a diagnostic whose three suggested causes are all wrong,
+        # blaming a simulator that was never started (observed verbatim on a
+        # cancel-in-progress supersede).
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # python3 is NOT in the upstream Dockerfile's apt list — it is present
+          # transitively and frozen only by the digest pin. This step is the
+          # verdict for a required check AND runs `if: always()`, so a bump that
+          # drops it would die with a bare "command not found" on every path.
+          # Say so explicitly instead.
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "::error::python3 is missing from the SDK image — the run-tests"
+            echo "::error::verdict cannot be rendered. Re-verify the SDK-bump"
+            echo "::error::checklist in docs/CI.md (python3 / procps / openssl)."
+            exit 1
+          fi
+          python3 scripts/check_ciq_tests.py \
+            --monkeydo-log monkeydo.log \
+            --console-log sim-console.log \
+            --harness-status harness-status.txt \
+            --expected-file scripts/expected_tests.txt
+
+      - name: Upload simulator logs
+        if: always()
+        # continue-on-error: the verdict is already rendered by the step above.
+        # Without this, a blob-storage flake in the upload reds a REQUIRED check
+        # with all 17 tests passing — an availability dependency on the merge
+        # gate that buys nothing. Losing the logs is a diagnostics loss, not a
+        # correctness signal.
+        continue-on-error: true
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: ciq-test-logs
+          path: |
+            monkeydo.log
+            sim-console.log
+            xvfb.log
+            harness-status.txt
+          # warn, not error: a harness that dies before writing a log must not
+          # mask its own failure behind an artifact-upload error.
+          if-no-files-found: warn
+
+  # 5) release-build: compile the NON-unit-test RELEASE artifact (the build that
   #    actually ships) for every device, then export the store .iq package.
   #    monkeyc exits non-zero if a device's static image blows its memory limit,
   #    so a non-zero exit is the assertion — the per-device compile IS the gate.
   release-build:
     runs-on: ubuntu-latest
+    # Same rationale as compile-unit-test: fail on hang, never idle for hours.
+    timeout-minutes: 30
     container:
       image: *ciq_image # same digest as compile-unit-test (v2.8.0 = SDK 9.2.0)
     steps:
@@ -236,7 +412,19 @@ jobs:
           ls -l bin/StrongRow.iq
 
       - name: Upload build artifacts (.prg + .iq, throwaway-signed)
-        if: always()
+        # Fork gate: without it, a fork PR publishes world-downloadable
+        # .prg/.iq built from arbitrary source under this repo's name. The
+        # compile itself still runs and still gates the merge — only the
+        # artifact publication is withheld for forks.
+        if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        # Same reasoning as run-tests' log upload: this job is required, so a
+        # blob-storage flake must not red a build whose 12 devices all
+        # compiled — an availability dependency on the merge gate that buys
+        # nothing. The guard stands on that principle alone: no upload failure
+        # has actually been observed (an earlier claim here citing run
+        # 30129516247 attempt 2 was wrong — that job was cancelled mid-pull
+        # and this step never executed).
+        continue-on-error: true
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           # Throwaway-signed: a CI build sanity artifact, not a store upload.
@@ -244,9 +432,13 @@ jobs:
           path: |
             bin/*.prg
             bin/*.iq
-          if-no-files-found: error
+          # warn, not error: under continue-on-error an `error` here gated
+          # nothing anyway (found in review), and the compile step above is
+          # the real no-artifacts assertion — it fails the job if any device
+          # fails to build.
+          if-no-files-found: warn
 
-  # 4) Single stable status name to require in branch protection. Add new
+  # 6) Single stable status name to require in branch protection. Add new
   #    required jobs to `needs` here rather than to branch protection.
   #
   #    `if: always()` matters: with the default `if: success()`, a failing
@@ -256,16 +448,21 @@ jobs:
   #    skip) on any upstream failure/cancel/skip, so it truly gates the merge.
   ci-required:
     if: ${{ always() }}
-    needs: [manifest-lint, compile-unit-test, release-build]
+    needs: [manifest-lint, test-tooling, compile-unit-test, run-tests, release-build]
     runs-on: ubuntu-latest
+    # The aggregator IS the required context, so a hang here is a stuck merge
+    # gate by definition. It only echoes results; seconds, not minutes.
+    timeout-minutes: 5
     steps:
       - name: Fail unless every required job succeeded
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
         run: |
           echo "::error::A required job did not succeed:"
           echo "  manifest-lint     = ${{ needs.manifest-lint.result }}"
+          echo "  test-tooling      = ${{ needs.test-tooling.result }}"
           echo "  compile-unit-test = ${{ needs.compile-unit-test.result }}"
+          echo "  run-tests         = ${{ needs.run-tests.result }}"
           echo "  release-build     = ${{ needs.release-build.result }}"
           exit 1
       - name: All required CI jobs passed
-        run: echo "manifest-lint + compile-unit-test + release-build all succeeded."
+        run: echo "manifest-lint + test-tooling + compile-unit-test + run-tests + release-build all succeeded."
