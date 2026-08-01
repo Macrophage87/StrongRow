@@ -238,18 +238,34 @@ class CoreTempSensor {
         if (p == null || p.size() < 8) { return; }
         if ((p[0] & 0xFF) != 0x01) { return; }   // CBT data page 1 only
 
+        var now = System.getTimer();
+
+        // Each field stamps its OWN clock, inside its own acceptance gate. The
+        // stamp used to live only inside the core-valid branch, so a frame with
+        // valid skin but invalid or implausible core advanced nothing:
+        // skinTemp() returned 0.0, everSeen() stayed false, and the skin FIT
+        // field was never created. #17.
+        //
+        // Separate stamps rather than one shared clock advanced by either
+        // field, which is the other option #17 offers: with a shared clock a
+        // valid core frame would keep republishing a stale mSkin as fresh every
+        // time the skin field was rejected -- a staleness lie that does not
+        // exist today and must not be introduced while fixing this.
         var c = decodeCoreC(p);
         if (c != null) {
-            var now = System.getTimer();
             mCore     = c;
-            mLastMs   = now;
             mCoreMs   = now;
-            mSkinMs   = now;   // stamped together for now; split at the #17 commit
+            mLastMs   = now;
             mEverSeen = true;
         }
 
         var s = decodeSkinC(p);
-        if (s != null) { mSkin = s; }
+        if (s != null) {
+            mSkin     = s;
+            mSkinMs   = now;
+            mLastMs   = now;
+            mEverSeen = true;
+        }
     }
 
     // Search timed out or the pod dropped. Keep trying forever for a pod we
@@ -274,11 +290,11 @@ class CoreTempSensor {
     hidden function skinFreshAt(nowMs) { return ctIsFresh(nowMs, mSkinMs, $.CT_FRESH_MS); }
 
     hidden function coreTempAt(nowMs) {
-        return ctIsFresh(nowMs, mLastMs, $.CT_FRESH_MS) ? mCore : 0.0;
+        return coreFreshAt(nowMs) ? mCore : 0.0;
     }
 
     hidden function skinTempAt(nowMs) {
-        return ctIsFresh(nowMs, mLastMs, $.CT_FRESH_MS) ? mSkin : 0.0;
+        return skinFreshAt(nowMs) ? mSkin : 0.0;
     }
 
     // ONE freshness definition, shared with the getters. This used to test a
