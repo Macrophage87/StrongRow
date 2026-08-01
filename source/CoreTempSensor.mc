@@ -52,7 +52,6 @@ class CoreTempSensor {
     hidden var mCoreMs;
     hidden var mSkinMs;
     hidden var mEverSeen;
-    hidden var mTries;
     hidden var mFails;
     hidden var mClosed;
     hidden var mRetryTimer;
@@ -66,7 +65,6 @@ class CoreTempSensor {
         mCoreMs     = 0;
         mSkinMs     = 0;
         mEverSeen   = false;
-        mTries      = 0;
         mFails      = 0;
         mClosed     = false;
         mRetryTimer = null;
@@ -205,15 +203,40 @@ class CoreTempSensor {
         }
     }
 
-    // Re-open the channel after `delayMs`. Behaviour-preserving for now: the
-    // delay is ignored and the reopen is immediate, exactly as the direct call
-    // it replaces. The timer is wired up at the #26 commit.
+    // Re-open the channel after `delayMs`. A zero delay reopens synchronously,
+    // which is what the first CT_BURST_TRIES searches do, so discovery keeps
+    // exactly today's timing. A non-zero delay defers via a one-shot timer,
+    // which is what stops a permanently absent pod from holding the radio open.
     hidden function scheduleReopen(delayMs) {
+        if (mClosed) { return; }
+        cancelReopen();
+        if (delayMs <= 0) {
+            openChannel();
+            return;
+        }
+        try {
+            mRetryTimer = new Timer.Timer();
+            mRetryTimer.start(method(:onRetry), delayMs, false);
+        } catch (e) {
+            // No timer available: fall back to today's behaviour rather than
+            // silently dropping the retry and leaving CORE dead.
+            mRetryTimer = null;
+            openChannel();
+        }
+    }
+
+    function onRetry() as Void {
+        mRetryTimer = null;
+        if (mClosed) { return; }
         openChannel();
     }
 
-    // Cancel a pending reopen. A no-op until a timer exists.
+    // Cancel a pending reopen.
     hidden function cancelReopen() {
+        if (mRetryTimer != null) {
+            try { mRetryTimer.stop(); } catch (e) {}
+            mRetryTimer = null;
+        }
     }
 
     // ---- message handling ---------------------------------------------------
@@ -239,6 +262,12 @@ class CoreTempSensor {
         if ((p[0] & 0xFF) != 0x01) { return; }   // CBT data page 1 only
 
         var now = System.getTimer();
+
+        // Any tracked page-1 frame resets the search pacing, not merely an
+        // ACCEPTED reading: a pod broadcasting undonned is fully tracked while
+        // producing zero readings that clear the plausibility clamps, and the
+        // counter should mean what its name says.
+        mFails = 0;
 
         // Each field stamps its OWN clock, inside its own acceptance gate. The
         // stamp used to live only inside the core-valid branch, so a frame with
@@ -268,18 +297,38 @@ class CoreTempSensor {
         }
     }
 
-    // Search timed out or the pod dropped. Keep trying forever for a pod we
-    // have already seen (mid-row dropout); otherwise a few attempts,
-    // alternating the channel period in case the pod broadcasts at the other
-    // rate.
+    // Search timed out or the pod dropped.
+    //
+    // This used to be `if (mEverSeen || mTries < 3)`, and BOTH branches were
+    // wrong. Post-acquisition the left disjunct was permanently true, so the
+    // channel re-searched forever with no backoff -- ~30 s of radio per cycle,
+    // continuing through stopAndSave() until the app exited. Pre-acquisition,
+    // mTries allowed one open plus three retries and then permanent silence at
+    // ~120 s, so donning a pod after rigging yielded no CORE data for the whole
+    // session.
+    //
+    // The fix is a DUTY-CYCLE bound, not an attempt-count bound. An attempt cap
+    // is what made the pre-acquisition branch broken in the first place;
+    // replacing one cap with a larger cap would only move the threshold. The
+    // ladder paces retries instead, and never gives up:
+    //
+    //   searches at 0-30, 30-60, 60-90, 90-120 s  -- identical to today --
+    //   then 150-180, 240-270, 390-420, 660-690, 990-1020, every 330 s after.
+    //
+    // A pod donned at t=5 min is acquired in the 390-420 s window where today
+    // it never would be, and steady-state radio duty after a permanent loss
+    // falls from ~100 % to 30/330 = 9.1 %. Battery drain in mAh is NOT measured
+    // and is not claimed; this is a duty-cycle argument only.
+    //
+    // A recording-state gate is deliberately NOT added here: it needs a
+    // lifecycle hook in StrongRowView, which is #11's coordination point.
     hidden function onChannelClosed() {
-        if (mEverSeen || mTries < 3) {
-            mTries++;
-            if (!mEverSeen) {
-                mPeriod = (mPeriod == PERIOD_A) ? PERIOD_B : PERIOD_A;
-            }
-            scheduleReopen(0);
+        if (mClosed) { return; }
+        mFails++;
+        if (!mEverSeen) {
+            mPeriod = (mPeriod == PERIOD_A) ? PERIOD_B : PERIOD_A;
         }
+        scheduleReopen(ctBackoffMs(mFails));
     }
 
     // ---- accessors ----------------------------------------------------------
@@ -326,6 +375,13 @@ class CoreTempSensor {
     function everSeen() { return mEverSeen; }
 
     function close() {
+        // mClosed FIRST, then cancel, then release. If release() synchronously
+        // delivers CHANNEL_CLOSED, the handler would otherwise run after the
+        // cancel and re-arm the search after shutdown. The old
+        // `mEverSeen || mTries < 3` predicate was an accidental brake on that;
+        // removing it removes the brake, so the guard is explicit now.
+        mClosed = true;
+        cancelReopen();
         discardChannel();
     }
 }
