@@ -438,7 +438,127 @@ jobs:
           # fails to build.
           if-no-files-found: warn
 
-  # 6) Single stable status name to require in branch protection. Add new
+  # 6) agent-prompt-guard: refuse a pull request from an UNTRUSTED author that
+  #    modifies an agent operating prompt. Those files are executable policy
+  #    wearing a documentation disguise — their content IS the prompt an
+  #    automated actor runs on, so editing one changes what that actor does.
+  #
+  #    Why this is a CI job and not branch protection: a CODEOWNERS entry alone
+  #    only auto-REQUESTS review, and `required_pull_request_reviews` is not
+  #    configured on `main`. Enabling it would deadlock the repo (enforce_admins
+  #    is true, there is one maintainer, and GitHub forbids self-approval), so
+  #    the guard is routed through the one thing that already blocks: the
+  #    required `ci-required` check, via the `needs:` list below.
+  #
+  #    NO job-level `if:` and NO `needs:`, ON PURPOSE — same rule the run-tests
+  #    comment states: ci-required treats a `skipped` need as a failure, so this
+  #    job must ALWAYS run and ALWAYS reach a conclusion on BOTH triggers. The
+  #    push path has no pull_request context, so it passes trivially INSIDE the
+  #    step rather than being skipped by a condition on the job.
+  agent-prompt-guard:
+    runs-on: ubuntu-latest
+    # Required-job rule: a hang here holds the merge gate. This is a clone and
+    # one diff; seconds, not minutes.
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the PR's changed-file set is taken against the MERGE
+          # BASE, which the default shallow clone of the merge ref does not
+          # contain. A two-dot base..head diff would need no history but would
+          # false-positive on any protected file that moved on `main` after the
+          # branch point.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Guard the agent operating prompts
+        # PR-controlled values are passed through `env:` and never interpolated
+        # into the script body: `${{ }}` expansion of attacker-controlled text
+        # inside `run:` is the standard workflow script-injection vector.
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # The files whose CONTENT is an operating prompt. Deliberately NARROW:
+          # .github/workflows/** and scripts/** are executable too, but a
+          # `pull_request` run executes the workflow file FROM THE PR HEAD, so a
+          # job here structurally cannot protect itself against an edit in the
+          # same PR — listing them would red honest CI contributions without
+          # closing that hole. They are covered advisorily by .github/CODEOWNERS
+          # instead. docs/CI.md is descriptive, not executable, so it is
+          # advisory too. Keep this list in step with the first section of
+          # .github/CODEOWNERS.
+          PROTECTED=(
+            "docs/AGENT_PROMPT.md"
+            "docs/CODE_REVIEW_AGENT.md"
+          )
+
+          # --- push (or any non-pull_request trigger): pass trivially --------
+          # There is no pull_request context on a push, so there is no author to
+          # classify and no PR diff to take. Passing IS the conclusion; the job
+          # must not skip, because ci-required counts `skipped` as failure.
+          if [ "${EVENT_NAME}" != "pull_request" ]; then
+            echo "event=${EVENT_NAME}: no pull_request context — agent-prompt guard not applicable; passing."
+            exit 0
+          fi
+
+          # --- pull_request: fail closed if the diff cannot be computed ------
+          if [ -z "${BASE_SHA}" ] || [ -z "${HEAD_SHA}" ]; then
+            echo "::error::agent-prompt-guard: the pull_request payload carried no base/head SHA, so the changed-file set cannot be determined. Refusing to pass green."
+            exit 1
+          fi
+          # fetch-depth: 0 should already have both commits (they are the merge
+          # ref's parents). Re-fetch only if one is genuinely absent, and let a
+          # failure fall through to the merge-base check rather than aborting
+          # with a less informative message.
+          for sha in "${BASE_SHA}" "${HEAD_SHA}"; do
+            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --quiet origin "${sha}" || true
+            fi
+          done
+          if ! merge_base="$(git merge-base "${BASE_SHA}" "${HEAD_SHA}" 2>/dev/null)"; then
+            echo "::error::agent-prompt-guard: no merge base between ${BASE_SHA} and ${HEAD_SHA}; the pull request diff cannot be computed. Refusing to pass green."
+            exit 1
+          fi
+          if ! changed="$(git diff --name-only "${merge_base}" "${HEAD_SHA}" -- "${PROTECTED[@]}")"; then
+            echo "::error::agent-prompt-guard: git diff failed over the protected paths. Refusing to pass green."
+            exit 1
+          fi
+
+          if [ -z "${changed}" ]; then
+            echo "No agent operating prompt is modified by this pull request; nothing to guard."
+            exit 0
+          fi
+
+          echo "Protected agent-prompt file(s) modified by this pull request:"
+          printf '  %s\n' ${changed}
+          echo "author_association=${AUTHOR_ASSOCIATION:-<none>}"
+
+          # --- the trust decision -------------------------------------------
+          # Default-deny: anything that is not one of these three is untrusted,
+          # which is what puts CONTRIBUTOR, NONE, FIRST_TIME_CONTRIBUTOR,
+          # FIRST_TIMER, MANNEQUIN and an empty value on the failing side.
+          case "${AUTHOR_ASSOCIATION}" in
+            OWNER|MEMBER|COLLABORATOR)
+              echo "Author association ${AUTHOR_ASSOCIATION} is trusted; allowed."
+              exit 0
+              ;;
+          esac
+
+          while read -r f; do
+            [ -z "$f" ] && continue
+            echo "::error file=${f}::${f} is an agent operating prompt. Changes to it require maintainer review because its content is the prompt an automated agent runs on — editing it alters automated behaviour, it does not merely document it."
+          done <<< "${changed}"
+          echo "::error::agent-prompt-guard: this pull request modifies agent operating prompt file(s) and its author_association is '${AUTHOR_ASSOCIATION:-<none>}', which is not OWNER, MEMBER or COLLABORATOR. A maintainer must review and land this change directly. See .github/CODEOWNERS."
+          exit 1
+
+  # 7) Single stable status name to require in branch protection. Add new
   #    required jobs to `needs` here rather than to branch protection.
   #
   #    `if: always()` matters: with the default `if: success()`, a failing
@@ -448,7 +568,7 @@ jobs:
   #    skip) on any upstream failure/cancel/skip, so it truly gates the merge.
   ci-required:
     if: ${{ always() }}
-    needs: [manifest-lint, test-tooling, compile-unit-test, run-tests, release-build]
+    needs: [manifest-lint, test-tooling, compile-unit-test, run-tests, release-build, agent-prompt-guard]
     runs-on: ubuntu-latest
     # The aggregator IS the required context, so a hang here is a stuck merge
     # gate by definition. It only echoes results; seconds, not minutes.
@@ -463,6 +583,7 @@ jobs:
           echo "  compile-unit-test = ${{ needs.compile-unit-test.result }}"
           echo "  run-tests         = ${{ needs.run-tests.result }}"
           echo "  release-build     = ${{ needs.release-build.result }}"
+          echo "  agent-prompt-guard= ${{ needs.agent-prompt-guard.result }}"
           exit 1
       - name: All required CI jobs passed
-        run: echo "manifest-lint + test-tooling + compile-unit-test + run-tests + release-build all succeeded."
+        run: echo "manifest-lint + test-tooling + compile-unit-test + run-tests + release-build + agent-prompt-guard all succeeded."
