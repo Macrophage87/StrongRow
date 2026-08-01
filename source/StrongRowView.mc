@@ -475,8 +475,18 @@ class StrongRowView extends Ui.View {
         var xs = accel.x;
         var ys = accel.y;
         var zs = accel.z;
-        if (xs == null) { return; }
+        // #20: all three axis arrays are read below, so all three must be
+        // guarded here. A null or SHORT y/z drops the whole batch rather than
+        // processing the common prefix: mSampleIdx is the synthetic time base
+        // (t = mSampleIdx * mDt) and nothing resyncs it, so partial credit
+        // would leave the clock slow and every derived rate silently high.
+        // Dropping is what the three guards around this one already do.
+        // `<` and not `!=`: a LONGER y/z is still processed, tail ignored,
+        // exactly as before -- so behaviour changes only on inputs that used
+        // to throw.
+        if (xs == null || ys == null || zs == null) { return; }
         var n = xs.size();
+        if (ys.size() < n || zs.size() < n) { return; }
         if (n <= 0) { return; }
         // NOTE (#8): `n` is a batch SIZE and must never reach computeCoeffs().
         // The time base is fixed at init; nothing here may recompute it.
