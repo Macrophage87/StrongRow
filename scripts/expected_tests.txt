@@ -44,3 +44,8 @@ test_rr_gapExceeded_states
 test_ct_initialStateIsCold
 test_ct_freshReturnsValue
 test_ct_staleReturnsZero
+test_ct_freshConstUnchanged
+test_ct_isFreshPredicate
+test_ct_skinRaw12Assembly
+test_ct_sext12
+test_ct_backoffLadder
