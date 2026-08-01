@@ -728,6 +728,22 @@ class StrongRowView extends Ui.View {
         return lastBeatMs > 0 && (nowMs - lastBeatMs) > threshMs;
     }
 
+    // Pure: should startSession() declare the three CORE developer fields?
+    // Extracted from the inline condition it replaces so the decision is
+    // reachable from a (:test) without an ActivityRecording.Session -- the
+    // same reason filterRr/packRr/rrIsFresh/rrGapExceeded above are statics.
+    //
+    // Two deliberate declaration choices, neither cosmetic:
+    //   * `static`, NOT `hidden`. `hidden` is protected in Monkey C, so a
+    //     hidden static compiles and then fails to resolve from
+    //     CoreFieldGateTest.mc. Every static above is public for the same
+    //     reason.
+    //   * the parameter is UNTYPED, so runtime duck typing applies and a stub
+    //     exposing only everSeen() can stand in for CoreTempSensor.
+    static function coreFieldsWanted(sensor) {
+        return sensor != null && sensor.everSeen();
+    }
+
     // ----------------- R-R / HRV state model (epic #59) ---------------------
     // One row per piece of state, ONE MEANING per row. Any PR that changes
     // this model updates its own row(s) here in the same commit -- this table
@@ -1034,7 +1050,7 @@ class StrongRowView extends Ui.View {
                 // core temperature: only declare the fields when a CORE pod
                 // has actually been heard, so podless rows carry no empty
                 // developer fields
-                if (mCoreSensor != null && mCoreSensor.everSeen()) {
+                if (coreFieldsWanted(mCoreSensor)) {
                     try {
                         mFitCore = mSession.createField(
                             "core_temperature", 7, Fit.DATA_TYPE_FLOAT,

@@ -301,7 +301,7 @@ jobs:
         if: always()
         # continue-on-error: the verdict is already rendered by the step above.
         # Without this, a blob-storage flake in the upload reds a REQUIRED check
-        # with all 17 tests passing — an availability dependency on the merge
+        # with all 19 tests passing — an availability dependency on the merge
         # gate that buys nothing. Losing the logs is a diagnostics loss, not a
         # correctness signal.
         continue-on-error: true

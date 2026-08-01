@@ -143,9 +143,9 @@ tables are accepted, **disagreeing** tables anywhere in the two logs are
 refused as ambiguous — the same fail-closed doctrine as multiple summary lines
 and duplicate rows.
 
-**Names are pinned, not just the count** (`scripts/expected_tests.txt`, 17 today).
+**Names are pinned, not just the count** (`scripts/expected_tests.txt`, 19 today).
 A count alone cannot see a substitution — delete one test, add a trivial one, and
-17 is still 17. The expected count is simply the length of that list, so the two
+19 is still 19. The expected count is simply the length of that list, so the two
 can never disagree. **Update that file in the same commit as any `(:test)`
 change**; the failure message names exactly what is missing and what is extra.
 
@@ -212,7 +212,7 @@ What `scripts/test_check_ciq_tests.py` establishes, precisely:
   because one malformed transcript trips several guards at once and any one of
   them yields rc=1. Guards that no transcript can isolate get a case built to
   isolate them — notably a `SKIP` row under a summary that still reads
-  `PASSED (passed=17, failed=0, errors=0)` with `Ran 17`, which is the entire
+  `PASSED (passed=19, failed=0, errors=0)` with `Ran 19`, which is the entire
   reason the not-`PASS` check exists;
 - a parser that **raises instead of rendering a verdict** now fails the suite,
   because a traceback produces no diagnostics to classify.
