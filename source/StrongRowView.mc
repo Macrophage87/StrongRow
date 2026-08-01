@@ -738,6 +738,37 @@ class StrongRowView extends Ui.View {
         return lastBeatMs > 0 && (nowMs - lastBeatMs) > threshMs;
     }
 
+    // Pure: should startSession() declare the three CORE developer fields?
+    // Extracted from the inline condition it replaces so the decision is
+    // reachable from a (:test) without an ActivityRecording.Session -- the
+    // same reason filterRr/packRr/rrIsFresh/rrGapExceeded above are statics.
+    //
+    // Two deliberate declaration choices, neither cosmetic:
+    //   * `static`, NOT `hidden`. `hidden` is protected in Monkey C, so a
+    //     hidden static compiles and then fails to resolve from
+    //     CoreFieldGateTest.mc. Every static above is public for the same
+    //     reason.
+    //   * the parameter is UNTYPED, so runtime duck typing applies and a stub
+    //     exposing only everSeen() can stand in for CoreTempSensor.
+    //
+    // #75: this deliberately does NOT consult everSeen(). startSession() runs
+    // once per row, so gating on "has a pod been heard yet" made the answer
+    // permanent for the whole session -- see the block at the call site.
+    //
+    // The null term is DEFENSIVE, not a crash guard. onTick's core/skin writes
+    // dereference mCoreSensor guarded only by the field handle, so keeping it
+    // holds the invariant `mFitCore != null => mCoreSensor != null` local to
+    // one adjacent line instead of resting on a whole-file lifecycle argument.
+    // (Traced separately: mCoreSensor is assigned null only in initialize(),
+    // and onTick is registered two straight-line statements after it is
+    // constructed in onLayout, so a null dereference there is not reachable
+    // today. The term is kept because it is free and matches the defensive
+    // style used elsewhere in this file -- not because removing it would
+    // crash.)
+    static function coreFieldsWanted(sensor) {
+        return sensor != null;
+    }
+
     // ----------------- R-R / HRV state model (epic #59) ---------------------
     // One row per piece of state, ONE MEANING per row. Any PR that changes
     // this model updates its own row(s) here in the same commit -- this table
@@ -1041,10 +1072,45 @@ class StrongRowView extends Ui.View {
                     mFitCorrTotal = null;
                 }
                 mCorrAccum = 0.0;
-                // core temperature: only declare the fields when a CORE pod
-                // has actually been heard, so podless rows carry no empty
-                // developer fields
-                if (mCoreSensor != null && mCoreSensor.everSeen()) {
+                // Per-session accumulator, reset with the others above. It used
+                // to be reset INSIDE the CORE block below, which made its
+                // correctness depend on whether fields were created.
+                mMaxCore = 0.0;
+                // Core temperature (#75). These fields are declared WITHOUT
+                // asking whether a pod has been heard yet. The previous gate
+                // (`... && mCoreSensor.everSeen()`) was evaluated exactly once,
+                // here: startSession()'s body is guarded by `mSession == null`,
+                // its only callers are onPrimary/startWorkout, and togglePause
+                // resumes with mSession.start() without re-entering it. So a
+                // pod acquired one second after START had no field to write to
+                // for the rest of the row, and nothing re-checked. The ANT
+                // search starts at onLayout, but searchTimeoutLowPriority gives
+                // ~30 s per attempt with the period alternating between
+                // attempts, so pressing START before the first valid broadcast
+                // is the ordinary case, not an edge case.
+                //
+                // Accepted cost, stated so it is a decision and not a surprise:
+                // a row with no pod now declares these three fields and writes
+                // core/skin every tick. coreTemp()/skinTemp() return 0.0 when
+                // nothing is fresh, so such a row logs 0.0 rather than leaving
+                // the fields unwritten. That is #13's territory (it owns the
+                // guard, and the freshness model it depends on); do not
+                // pre-empt it here. Note 0.0 cannot collide with a real reading
+                // -- the 25-45 C / 15-45 C clamps in CoreTempSensor put it
+                // outside the accepted band by construction in this code.
+                //
+                // CONSEQUENCE FOR stopAndSave, do not "simplify" it away: with
+                // these fields now created on every row, `mFitMaxCore != null`
+                // there is always true, so `mMaxCore > 0.0` is the SOLE
+                // remaining guard against writing a bogus 0 C
+                // max_core_temperature on a podless row. It is not redundant.
+                //
+                // The inner try/catch below stays this block's own: merging it
+                // with an earlier group's would let a throw here null handles
+                // that were already created successfully. It is now reachable
+                // on every row rather than only rows with a pod (whether a
+                // createField throw is reachable at all is #76).
+                if (coreFieldsWanted(mCoreSensor)) {
                     try {
                         mFitCore = mSession.createField(
                             "core_temperature", 7, Fit.DATA_TYPE_FLOAT,
@@ -1060,7 +1126,6 @@ class StrongRowView extends Ui.View {
                         mFitSkin = null;
                         mFitMaxCore = null;
                     }
-                    mMaxCore = 0.0;
                 }
             } catch (e) {
                 mSession = null;

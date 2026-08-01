@@ -19,6 +19,12 @@
 # NOTE: it does NOT prove the tests are meaningful. Shared-helper rot (rrArrEq is
 # the entire assertion for 11 of the 14 RR tests) leaves this list unchanged.
 
+# source/CoreFieldGateTest.mc
+test_core_gateFalseWhenSensorNull
+test_core_gateTrueWhenPodSeen
+test_core_gateTrueWhenPodNotYetSeen
+test_core_gateIgnoresEverSeen
+
 # source/DspTimeBaseTest.mc
 test_dsp_timeBaseInvariantToBatchSize
 test_dsp_timeBaseIs25Hz
