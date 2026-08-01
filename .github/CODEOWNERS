@@ -7,10 +7,13 @@
 # reader who assumes otherwise will believe these paths are gated when they
 # are not.
 #
-# Turning required reviews ON would not fix that — it would deadlock the
-# repository. `enforce_admins` is true and @Macrophage87 is the sole
-# maintainer, and GitHub does not let an author approve their own pull
-# request. Every PR, including the maintainer's own, would become unmergeable.
+# Turning required reviews ON would not fix that — it would deadlock ordinary
+# work on this repository. `enforce_admins` is true and @Macrophage87 is the
+# sole maintainer, and GitHub does not let an author approve their own pull
+# request, so every PR the maintainer authors — 18 of the 21 opened to date —
+# would become unmergeable. (The handful from other accounts could still be
+# approved, which is exactly the inversion to avoid: the outside PRs would
+# merge and the maintainer's would not.)
 #
 # The only thing on `main` that actually BLOCKS a merge is the required
 # `ci-required` status check. Enforcement for the agent operating prompts
@@ -31,16 +34,32 @@
 # (blocking) by `agent-prompt-guard` in .github/workflows/ci.yml. If you add a
 # file here, decide deliberately whether it belongs in that job's PROTECTED
 # list too.
+#
+# Note the asymmetry, and do not assume this file covers it: these patterns are
+# exact and CASE-SENSITIVE, so a lowercase twin such as
+# docs/code_review_agent.md matches no rule here and draws no review request —
+# even though on a case-insensitive checkout it is the same file as the entry
+# below. That gap is closed on the blocking side only: the guard compares
+# LOWERCASED paths.
 /docs/AGENT_PROMPT.md         @Macrophage87
 /docs/CODE_REVIEW_AGENT.md    @Macrophage87
 
 # --- CI definition and its tooling -------------------------------------------
-# Genuinely executable: these files ARE what CI does. They are listed here for
-# visibility only, and deliberately NOT in the blocking guard — a hard block
-# on them would red every good-faith outside contribution to CI plumbing,
-# while buying nothing against a hostile one (a `pull_request` run executes
-# the workflow file from the PR head, so a job here cannot protect itself
-# against an edit in the same PR; see the PROTECTED-list note in ci.yml).
+# Genuinely executable: these files ARE what CI does. Both are listed here for
+# visibility only and deliberately NOT in the blocking guard — but for two
+# DIFFERENT reasons, and conflating them overstates the guard.
+#
+# .github/workflows/: a hard block buys nothing against a hostile PR, because a
+# `pull_request` run executes the workflow file from the PR head, so the guard
+# cannot protect itself against an edit in the same PR.
+#
+# scripts/: that argument does NOT apply. The guard step is pure bash + git and
+# executes nothing from scripts/, so a hostile scripts/ edit in a PR that left
+# ci.yml alone would in fact be catchable. It is excluded on the other reason
+# alone — blocking it would red every good-faith outside contribution to CI
+# plumbing. That is a consciously accepted residual, and a real one:
+# scripts/check_ciq_tests.py is the sole verdict of the required run-tests
+# check, so a hostile edit there could make a red suite report green.
 /.github/workflows/           @Macrophage87
 /scripts/                     @Macrophage87
 

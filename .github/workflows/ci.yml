@@ -485,19 +485,46 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The files whose CONTENT is an operating prompt. Deliberately NARROW:
-          # .github/workflows/** and scripts/** are executable too, but a
-          # `pull_request` run executes the workflow file FROM THE PR HEAD, so a
-          # job here structurally cannot protect itself against an edit in the
-          # same PR — listing them would red honest CI contributions without
-          # closing that hole. They are covered advisorily by .github/CODEOWNERS
-          # instead. docs/CI.md is descriptive, not executable, so it is
-          # advisory too. Keep this list in step with the first section of
-          # .github/CODEOWNERS.
+          # The files whose CONTENT is an operating prompt. Deliberately NARROW.
+          #
+          # .github/workflows/** is excluded because a `pull_request` run
+          # executes the workflow file FROM THE PR HEAD, so a job here
+          # structurally cannot protect itself against an edit in the same PR —
+          # listing it would red honest CI contributions without closing that
+          # hole.
+          #
+          # scripts/** is excluded for a DIFFERENT and weaker reason, and the
+          # distinction matters: this step is pure bash + git and executes
+          # nothing from scripts/, so a hostile scripts/ edit in a PR that left
+          # this file alone WOULD be catchable here. It is excluded only because
+          # blocking it would red every good-faith outside contribution to CI
+          # plumbing. That is a consciously accepted residual, not an
+          # impossibility — scripts/check_ciq_tests.py is the sole verdict of
+          # the required run-tests check (see the verdict step above).
+          #
+          # docs/CI.md is descriptive, not executable, so it is advisory too.
+          # Keep this list in step with the first section of .github/CODEOWNERS.
           PROTECTED=(
             "docs/AGENT_PROMPT.md"
             "docs/CODE_REVIEW_AGENT.md"
           )
+
+          # Matching is CASE-INSENSITIVE, and that is load-bearing rather than
+          # lenient. Exact-path matching left a bypass: a PR that ADDS
+          # docs/code_review_agent.md while leaving docs/CODE_REVIEW_AGENT.md
+          # untouched produces an EMPTY exact-path diff and passes green — but
+          # on a case-insensitive filesystem (the maintainer's Windows checkout,
+          # core.ignorecase=true, and any macOS agent) the two paths collide on
+          # checkout, one file lands on disk, and an agent reading the canonical
+          # path gets the twin's content while the genuine blob sits in the tree
+          # unreferenced. CODEOWNERS does not backstop it: its patterns are
+          # exact and case-sensitive, so the twin draws no review request.
+          # Comparing lowercased forms rejects the twin, a case-only rename, and
+          # any other spelling that would collide on such a filesystem.
+          PROTECTED_LC=()
+          for p in "${PROTECTED[@]}"; do
+            PROTECTED_LC+=("${p,,}")
+          done
 
           # --- push (or any non-pull_request trigger): pass trivially --------
           # There is no pull_request context on a push, so there is no author to
@@ -526,18 +553,39 @@ jobs:
             echo "::error::agent-prompt-guard: no merge base between ${BASE_SHA} and ${HEAD_SHA}; the pull request diff cannot be computed. Refusing to pass green."
             exit 1
           fi
-          if ! changed="$(git diff --name-only "${merge_base}" "${HEAD_SHA}" -- "${PROTECTED[@]}")"; then
-            echo "::error::agent-prompt-guard: git diff failed over the protected paths. Refusing to pass green."
+          # No pathspec: take the WHOLE changed-file list and filter it here, so
+          # the case-insensitive rule above can see paths an exact pathspec
+          # would never return. --no-renames so a rename is always reported as
+          # delete-old + add-new: a case-only rename then shows BOTH spellings,
+          # and a rename that moves a protected file away still reports the
+          # protected path as deleted instead of hiding it behind an R-status
+          # destination. core.quotePath=false keeps non-ASCII paths literal.
+          if ! all_changed="$(git -c core.quotePath=false diff --name-only --no-renames "${merge_base}" "${HEAD_SHA}")"; then
+            echo "::error::agent-prompt-guard: git diff failed. Refusing to pass green."
             exit 1
           fi
 
-          if [ -z "${changed}" ]; then
+          matched=()
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            lf="${f,,}"
+            for lp in "${PROTECTED_LC[@]}"; do
+              if [ "$lf" = "$lp" ]; then
+                matched+=("$f")
+                break
+              fi
+            done
+          done <<< "${all_changed}"
+
+          if [ "${#matched[@]}" -eq 0 ]; then
             echo "No agent operating prompt is modified by this pull request; nothing to guard."
             exit 0
           fi
 
           echo "Protected agent-prompt file(s) modified by this pull request:"
-          printf '  %s\n' ${changed}
+          # Quoted, one element per line: the list is data, and a path with a
+          # space or a glob character must not word-split or expand here.
+          printf '  %s\n' "${matched[@]}"
           echo "author_association=${AUTHOR_ASSOCIATION:-<none>}"
 
           # --- the trust decision -------------------------------------------
@@ -551,10 +599,23 @@ jobs:
               ;;
           esac
 
-          while read -r f; do
-            [ -z "$f" ] && continue
-            echo "::error file=${f}::${f} is an agent operating prompt. Changes to it require maintainer review because its content is the prompt an automated agent runs on — editing it alters automated behaviour, it does not merely document it."
-          done <<< "${changed}"
+          # A twin that merely COLLIDES gets its own message: naming it "is an
+          # agent operating prompt" would be wrong and would hide the actual
+          # mechanism from whoever reads the annotation.
+          for f in "${matched[@]}"; do
+            canon=""
+            for i in "${!PROTECTED[@]}"; do
+              if [ "${f,,}" = "${PROTECTED_LC[$i]}" ]; then
+                canon="${PROTECTED[$i]}"
+                break
+              fi
+            done
+            if [ "$f" != "$canon" ]; then
+              echo "::error file=${f}::${f} collides case-insensitively with the agent operating prompt ${canon}. On a case-insensitive filesystem (Windows, macOS) those two paths are ONE file on checkout, so adding or renaming this path can silently replace what an automated agent reads at ${canon}. Requires maintainer review."
+            else
+              echo "::error file=${f}::${f} is an agent operating prompt. Changes to it require maintainer review because its content is the prompt an automated agent runs on — editing it alters automated behaviour, it does not merely document it."
+            fi
+          done
           echo "::error::agent-prompt-guard: this pull request modifies agent operating prompt file(s) and its author_association is '${AUTHOR_ASSOCIATION:-<none>}', which is not OWNER, MEMBER or COLLABORATOR. A maintainer must review and land this change directly. See .github/CODEOWNERS."
           exit 1
 
