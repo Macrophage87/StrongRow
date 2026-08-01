@@ -39,3 +39,8 @@ test_rr_filterInRangeOnly
 test_rr_isFresh_states
 test_rr_freshConstUnchanged
 test_rr_gapExceeded_states
+
+# source/CoreTempSensorTest.mc
+test_ct_initialStateIsCold
+test_ct_freshReturnsValue
+test_ct_staleReturnsZero
