@@ -237,3 +237,116 @@ function dspZeros(n) {
     }
     return ok;
 }
+
+// -- RED differentials -------------------------------------------------------
+// The five cases below fail before the fix and pass after it. Each records which
+// evidence carries its redness, because that is not uniform:
+//
+//   CATCH-ONLY   the bad read is at the TOP of the loop body while mSampleIdx++
+//                is the LAST statement, so the throw happens at i=0 and main
+//                leaves mSampleIdx at 0 -- the same value the test asserts. The
+//                assertion cannot tell these apart; only the throw does.
+//   DOUBLY       the throw happens at i=10, so main leaves mSampleIdx at 10
+//   CARRIED      against an asserted 0. Red for two independent reasons.
+//
+// No case can go GREEN on unmodified main either way: if the reads turned out
+// not to throw at all, the loop would run to completion and leave 25, which
+// every assertion below rejects.
+
+// CATCH-ONLY. main throws at the fy read, i=0.
+(:test) function test_dsp_accelNullYDropsBatch(logger) {
+    var p = new DspProbe();
+    var sd = new FakeSensorData(25);
+    sd.accelerometerData.y = null;
+    var ok = true;
+    try {
+        p.onSensorData(sd as Sensor.SensorData);
+    } catch (e) {
+        logger.error("threw on a null y axis");
+        ok = false;
+    }
+    if (p.sampleIdx() != 0) {
+        logger.error("null y must consume no samples, got " + p.sampleIdx());
+        ok = false;
+    }
+    return ok;
+}
+
+// CATCH-ONLY. main throws at the fz read, i=0.
+(:test) function test_dsp_accelNullZDropsBatch(logger) {
+    var p = new DspProbe();
+    var sd = new FakeSensorData(25);
+    sd.accelerometerData.z = null;
+    var ok = true;
+    try {
+        p.onSensorData(sd as Sensor.SensorData);
+    } catch (e) {
+        logger.error("threw on a null z axis");
+        ok = false;
+    }
+    if (p.sampleIdx() != 0) {
+        logger.error("null z must consume no samples, got " + p.sampleIdx());
+        ok = false;
+    }
+    return ok;
+}
+
+// DOUBLY CARRIED. main completes i=0..9 (leaving mSampleIdx at 10) and throws at
+// i=10. The 10 depends on dspZeros: a bare `new [10]` is null-filled and would
+// throw at i=0 instead, collapsing this to catch-only.
+(:test) function test_dsp_accelShortYDropsBatch(logger) {
+    var p = new DspProbe();
+    var sd = new FakeSensorData(25);
+    sd.accelerometerData.y = dspZeros(10);
+    var ok = true;
+    try {
+        p.onSensorData(sd as Sensor.SensorData);
+    } catch (e) {
+        logger.error("threw on a short y axis (10 of 25)");
+        ok = false;
+    }
+    if (p.sampleIdx() != 0) {
+        logger.error("a short y drops the whole batch; expected 0, got " + p.sampleIdx());
+        ok = false;
+    }
+    return ok;
+}
+
+// DOUBLY CARRIED. Same shape on the z axis; see the note above about dspZeros.
+(:test) function test_dsp_accelShortZDropsBatch(logger) {
+    var p = new DspProbe();
+    var sd = new FakeSensorData(25);
+    sd.accelerometerData.z = dspZeros(10);
+    var ok = true;
+    try {
+        p.onSensorData(sd as Sensor.SensorData);
+    } catch (e) {
+        logger.error("threw on a short z axis (10 of 25)");
+        ok = false;
+    }
+    if (p.sampleIdx() != 0) {
+        logger.error("a short z drops the whole batch; expected 0, got " + p.sampleIdx());
+        ok = false;
+    }
+    return ok;
+}
+
+// CATCH-ONLY. The size boundary of the short guard: present, correctly typed and
+// empty, so main throws at i=0 rather than mid-loop.
+(:test) function test_dsp_accelZeroLenYDropsBatch(logger) {
+    var p = new DspProbe();
+    var sd = new FakeSensorData(25);
+    sd.accelerometerData.y = dspZeros(0);
+    var ok = true;
+    try {
+        p.onSensorData(sd as Sensor.SensorData);
+    } catch (e) {
+        logger.error("threw on a zero-length y axis");
+        ok = false;
+    }
+    if (p.sampleIdx() != 0) {
+        logger.error("a zero-length y drops the whole batch; expected 0, got " + p.sampleIdx());
+        ok = false;
+    }
+    return ok;
+}

@@ -26,6 +26,11 @@ test_dsp_timeBaseSetAtInit
 test_dsp_accelEqualSizeAdvancesClock
 test_dsp_accelLongerYZIgnoresExtra
 test_dsp_accelNullXDropsBatch
+test_dsp_accelNullYDropsBatch
+test_dsp_accelNullZDropsBatch
+test_dsp_accelShortYDropsBatch
+test_dsp_accelShortZDropsBatch
+test_dsp_accelZeroLenYDropsBatch
 
 # source/RrRecordTest.mc
 test_rr_oneValid
