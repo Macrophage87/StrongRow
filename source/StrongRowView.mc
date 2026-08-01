@@ -58,7 +58,7 @@ const RR_PER_REC = 4;      // raw intervals logged per FIT record
 const RR_INVALID = 0xFFFF;
 // R-R freshness window (ms). Used both by the display "RR streaming" indicator
 // (keyed off batch arrival, mLastRrMs) and by the rMSSD logging gate (keyed off
-// the last ACCEPTED beat, mLastBeatMs) so a dropout stops polluting avg_rmssd.
+// the last RANGE-accepted beat, mLastBeatMs) so a dropout stops polluting avg_rmssd.
 const RR_FRESH_MS = 5000;
 
 class StrongRowView extends Ui.View {
@@ -146,7 +146,7 @@ class StrongRowView extends Ui.View {
     // R-R / HRV state
     hidden var mRrOk;
     hidden var mLastRrMs;     // last R-R BATCH arrival (display indicator)
-    hidden var mLastBeatMs;   // last ACCEPTED beat (rMSSD freshness + gap reset)
+    hidden var mLastBeatMs;   // last RANGE-accepted beat (rMSSD freshness + gap reset)
     hidden var mRrLast;
     hidden var mDiffSq;
     hidden var mDiffIdx;
@@ -325,22 +325,55 @@ class StrongRowView extends Ui.View {
             if (mFitRate != null) { mFitRate.setData(outputRate()); }
             if (mFitDps != null)  { mFitDps.setData(distPerStroke(currentSpeed())); }
             // #15: only log/accumulate rMSSD while beats are actually fresh
-            // (keyed off the last ACCEPTED beat, not batch arrival).
+            // (keyed off the last RANGE-accepted beat, not batch arrival).
             //
             // What this definitively fixes: avg_rmssd. The accumulator is pure
             // in-app arithmetic, so a dropout contributes nothing to the mean.
             //
-            // What it does NOT claim: a gap in the per-record rmssd trace.
-            // A FitContributor record field has no "unset" -- it is understood to
-            // retain its last setData value and re-emit it on subsequent records,
-            // so skipping the write likely re-emits the last pre-dropout value
-            // rather than leaving the field absent. Skipping is still the right
-            // call (it is no worse, and writing 0.0 would be an in-band lie), but
-            // the trace half of #15 is UNVERIFIED pending a simulator dropout run.
-            // NOTE: merged #12 relies on the same assumption for mFitRr; one sim
-            // run settles both. Do not restate the "gap" claim until it is proven.
+            // What it does NOT fix: the per-record rmssd trace. Record-scope
+            // FitContributor fields LATCH once setData has been called even
+            // once -- confirmed byte-exact by #36 and reconfirmed by #48's
+            // probe_skip (SIMULATOR, fr965 / SDK 9.2.0 -- treat hardware and
+            // other SDKs as expected-same but unmeasured): from then on a
+            // skipped write re-emits the last value on every subsequent
+            // record. Only records BEFORE the first write carry the type's
+            // never-set invalid pattern (#48 measured 0xFFFFFFFF exactly
+            // where a field had NOT YET BEEN SET AS OF THAT RECORD -- REC 1
+            // included, since that record committed before any setData).
+            // That is a byte-pattern fact; what a decoder RENDERS for such a
+            // record is still a [Local] question, so do not upgrade it to
+            // "absence". Once a real value HAS been written in the
+            // session, a dropout leaves the trace carrying the last
+            // pre-dropout value and NO in-app change can do better:
+            //   * writing 0.0 is an in-band lie ("perfect regularity") -- and
+            //     note the write below has no value guard while the
+            //     accumulator does, so 0.0 IS logged today; #68 enumerates
+            //     five such windows (four reachable today) and owns the fix.
+            //     That defect is FIXABLE (the guard leaves the field unset in
+            //     the not-yet-written windows, so they carry the invalid
+            //     pattern instead of 0.0) and is distinct from the
+            //     latched-value case above;
+            //   * writing NaN is not an absence encoding for a FLOAT field:
+            //     #48 measured setData(NaN) landing as 0xFFC00000, a
+            //     DIFFERENT pattern from never-set invalid (0xFFFFFFFF) --
+            //     it reads as data, not absence, and a NaN can poison
+            //     averages, min/max and any downstream aggregate that does
+            //     not guard for it, so it is WORSE than the latch, not
+            //     merely no better. (Connect's rendering of 0xFFC00000 is
+            //     untested -- tracked in #53.)
+            //   * setData(null) is NEVER an option: #48 observed it as an
+            //     uncatchable native error that escapes try/catch and kills
+            //     the app -- a crash, not a no-op.
+            // Skipping is still the right call (it is no worse, and writing
+            // 0.0 would be an in-band lie). The LATCHED-VALUE half of #15's
+            // trace defect is confirmed unfixable in-app and accepted as such
+            // (#47, Option B); the 0.0 half is #68's to fix, and the
+            // rr_interval analogue is #46's. Do not restate a "gap" claim
+            // until a [Local] decode proves it -- and note no open [Local]
+            // issue covers rmssd itself (#53 tracks Connect's rendering of
+            // the NaN pattern, which is a different question).
             if (rrIsFresh(System.getTimer(), mLastBeatMs, $.RR_FRESH_MS)) {
-                if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }
+                if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }   // see #68
                 if (mRmssd > 0.0) {
                     mRmssdSum += mRmssd;
                     mRmssdN++;
@@ -635,7 +668,11 @@ class StrongRowView extends Ui.View {
     // values are dropped so they can never land in the UINT16 rr_interval field,
     // and unused slots are padded with RR_INVALID (0xFFFF, the FIT "no data"
     // sentinel) rather than a fake 0 ms. The extra artifact-rejection gate
-    // (RR_ART_K) is applied ONLY to the on-watch rMSSD, not to the logged values.
+    // (RR_ART_K) is applied ONLY to the rMSSD path -- mRmssd and the rmssd /
+    // avg_rmssd fields derived from it -- never to the logged rr_interval
+    // intervals. (Earlier text here read "only to the on-watch rMSSD, not to
+    // the logged values"; mRmssd has no UI consumer, so both halves of that
+    // were wrong -- the rMSSD path is itself a logged path.)
     // filterRr() is the single range gate shared by the record and rMSSD paths.
     //
     // NOTE (#14): the rr_interval field is NOT a complete raw R-R stream. It is a
@@ -684,24 +721,87 @@ class StrongRowView extends Ui.View {
         return tsMs > 0 && (nowMs - tsMs) < threshMs;
     }
 
-    // Pure: has the gap since the last accepted beat exceeded `threshMs`, so the
-    // next beat cannot be its consecutive successor? Strict `>` (gap == thresh is
+    // Pure: has the gap since the last RANGE-accepted beat exceeded `threshMs`, so
+    // the next beat cannot be its consecutive successor? Strict `>` (gap == thresh is
     // not a gap). A never-seen stamp (0) is not a gap -- the first beat just seeds.
     static function rrGapExceeded(nowMs, lastBeatMs, threshMs) {
         return lastBeatMs > 0 && (nowMs - lastBeatMs) > threshMs;
     }
 
+    // ----------------- R-R / HRV state model (epic #59) ---------------------
+    // One row per piece of state, ONE MEANING per row. Any PR that changes
+    // this model updates its own row(s) here in the same commit -- this table
+    // is the model; the code below implements it.
+    //
+    //   mLastRrMs    "did a batch arrive?"  Stamped on every non-empty batch,
+    //                before filtering. Init 0, never reset. Sole consumer: the
+    //                display RR pip (drawGps). Not a data-validity signal.
+    //   mLastBeatMs  "was a beat RANGE-accepted?" Stamped for every such
+    //                beat (batch-arrival time -- all beats in a batch share
+    //                one stamp). Init 0, never reset; 0 <=> no beat ever
+    //                RANGE-accepted. Consumers: the rrGapExceeded gap reset,
+    //                and onTick's rMSSD freshness gate (#15).
+    //   mRrLast      "what is the adjacency reference?" The last
+    //                RANGE-accepted beat's INTERVAL in ms -- a value, not a
+    //                timestamp, unlike the rows above (RR_ART_K * mRrLast
+    //                only parses that way). ARTIFACT-rejected beats still
+    //                advance it. Zeroed on an inter-batch gap (#16) so the
+    //                next beat seeds instead of diffing; init 0; no
+    //                session-boundary reset today -- PR-C of epic #59 ADDS
+    //                one (#59; #68 window 1 for why). Known gap: intra-batch
+    //                RANGE rejections do not reset it (#37).
+    //   mDiffSq / mDiffIdx / mDiffCount
+    //                The rMSSD window: the last ~RR_NDIFF SQUARED
+    //                ARTIFACT-accepted successive differences -- the ring
+    //                stores d*d, not d, so recomputeRmssd sums it directly.
+    //                Fixed-size OVERWRITING ring -- oldest evicted once full,
+    //                ~90 pairs retained; init empty; never cleared on a gap
+    //                (#39) and no session-boundary reset today -- PR-C of
+    //                epic #59 ADDS one (#59). The code depends on
+    //                mDiffIdx == mDiffCount while filling (entries beyond
+    //                mDiffCount are null).
+    //   mRmssd       Cached rMSSD over the ring; 0.0 is BOTH the
+    //                "insufficient data" sentinel (mDiffCount < 5) and the
+    //                honest value of a fully flat ring (sqrt(0) -- #68's
+    //                window 3). Init 0.0; no session-boundary reset today --
+    //                PR-C of epic #59 ADDS one (#59). Consumers: onTick's
+    //                trace write and accumulator -- with asymmetric guards
+    //                today; #68. There is no UI consumer: mRmssd is a LOGGED
+    //                value, not an on-watch one.
+    //
+    // "PR-C ADDS", precisely: stopAndSave has never reset mRrLast, the ring,
+    // or mRmssd, so PR-C INTRODUCES those resets rather than restoring them.
+    // #39 is the dropout ring-clear -- a different question from session
+    // boundaries, which are #59's plan (see #68 window 1).
+    //
+    // Two DIFFERENT accept gates appear above, named consistently:
+    // RANGE-accepted means the interval survives [RR_MIN_MS, RR_MAX_MS]
+    // after toNumber (filterRr); ARTIFACT-accepted means the successive
+    // difference also cleared RR_ART_K. Every row advances regardless of
+    // mStarted/mPaused -- handleRr runs whenever batches arrive -- which is
+    // what makes #68's window 1 a race today rather than a certainty.
+    // Freshness is keyed on RANGE-accepted BEATS, not ARTIFACT-accepted
+    // DIFFS, so sustained artifact rejection still reads "fresh" (#38);
+    // and both freshness gates share the single RR_FRESH_MS constant --
+    // splitting it is #40.
+    // Clock caveat: NEITHER freshness helper has been analysed across a
+    // System.getTimer() rollover (~24.9 days IF the counter is signed 32-bit
+    // -- itself unmeasured), and by inspection the two would NOT fail alike
+    // (the tsMs > 0 guards cut opposite ways); treat rollover behaviour as
+    // unspecified -- #70.
+    // -------------------------------------------------------------------------
     hidden function handleRr(ivals) {
         if (ivals == null) { return; }
         if (ivals.size() <= 0) { return; }
         var now = System.getTimer();
         mLastRrMs = now;   // batch-arrival stamp (drives the display indicator)
 
-        // #16: if the gap since the last ACCEPTED beat exceeds one max interval,
-        // a beat was missed -- the next beat is not a consecutive successor, so
-        // drop the stale reference (using the OLD mLastBeatMs, before this batch
-        // restamps it). The `if (mRrLast > 0)` guard below then makes the first
-        // post-gap beat seed only, injecting no bogus rMSSD difference.
+        // #16: if the gap since the last RANGE-accepted beat exceeds one max
+        // interval, a beat was missed -- the next beat is not a consecutive
+        // successor, so drop the stale reference (using the OLD mLastBeatMs,
+        // before this batch restamps it). The `if (mRrLast > 0)` guard below
+        // then makes the first post-gap beat seed only, injecting no bogus
+        // rMSSD difference.
         if (rrGapExceeded(now, mLastBeatMs, $.RR_MAX_MS)) { mRrLast = 0; }
 
         var valid = filterRr(ivals);   // single in-range source for both paths
@@ -720,12 +820,18 @@ class StrongRowView extends Ui.View {
                 }
             }
             mRrLast = rr;
-            mLastBeatMs = now;   // #15/#16: last ACCEPTED beat (all batch beats share `now`)
+            mLastBeatMs = now;   // #15/#16: last RANGE-accepted beat (batch beats share `now`)
         }
 
         // FIT record: first RR_PER_REC valid intervals, padded with RR_INVALID.
-        // An all-invalid batch (valid empty) writes nothing, leaving the field
-        // absent for that record rather than emitting fictitious data.
+        // An all-invalid batch (valid empty) skips the write -- and the field
+        // LATCHES (the RECORD-SCOPE FIELDS LATCH block in startSession, above
+        // the createField calls, carries that fact; the state model above
+        // carries the R-R state, not the latch): the record re-emits the last
+        // written array, or stays never-set before any write. An earlier
+        // version of this comment claimed the field is left "absent for that
+        // record"; #36 disproved that. The dropout sentinel fix is #46's
+        // scope.
         if (valid.size() > 0 && mFitRr != null && mStarted && !mPaused) {
             mFitRr.setData(packRr(valid));
         }
@@ -837,6 +943,53 @@ class StrongRowView extends Ui.View {
                     :sport => Activity.SPORT_ROWING,
                     :subSport => Activity.SUB_SPORT_GENERIC
                 });
+                // RECORD-SCOPE FIELDS LATCH -- this governs every
+                // MESG_TYPE_RECORD field created below, mFitRr included.
+                // Once setData has been called even once, a record committing
+                // without a new setData RE-EMITS the last value; only records
+                // BEFORE the first write carry the type's never-set invalid
+                // pattern (#48 measured 0xFFFFFFFF exactly where a field had
+                // NOT YET BEEN SET AS OF THAT RECORD -- REC 1 included, where
+                // every field read invalid because that record committed
+                // before the first setData). That is a byte-pattern fact;
+                // what a decoder RENDERS for such a record is a [Local]
+                // question, so do not upgrade it to "absence". Confirmed
+                // byte-exact by #36 and reconfirmed by #48's probe_skip, in
+                // the SIMULATOR on fr965 / SDK 9.2.0 -- treat hardware and
+                // other SDKs as expected-same but unmeasured.
+                //
+                // Time base, as measured rather than assumed: record commits
+                // track STAGED DATA, not a schedule this code controls.
+                // #36's first run staged nothing during its skipped ticks and
+                // got no record message at all for them (8 records / 14
+                // ticks); it added a per-tick `beat` field IN THE PROBE as
+                // the control that separates "no record committed" from "no
+                // write staged". StrongRow's analogue is mFitRate/mFitDps,
+                // staged on every 250 ms onTick WHILE STARTED AND UNPAUSED
+                // (the mStarted && !mPaused gate) -- so under that gate a
+                // record commits regardless of R-R state, which is how the
+                // latch reaches the file here. The engine's own cadence is
+                // NOT established: #36's ~1/s is its own probe's write rate
+                // (#48 states no cadence at all), and #48's REC 1 committed
+                // before any setData.
+                //
+                // Two hard rules from #48. Rule 1 is a prohibition and holds
+                // for every field here whatever its type or scope; rule 2 is
+                // a BYTE-PATTERN fact measured on RECORD-SCOPE FLOAT fields
+                // only -- #48's probes were all record-scope, and what
+                // setData does on a session-scope field is open (#76), which
+                // matters because three MESG_TYPE_SESSION fields are created
+                // below (avg_rmssd, total_corrective_strokes,
+                // max_core_temperature):
+                //   * NEVER call setData(null): it is an uncatchable native
+                //     error that escapes try/catch and kills the app.
+                //   * NaN is not an absence encoding for a record-scope
+                //     FLOAT field: setData(NaN) lands as 0xFFC00000,
+                //     distinct from never-set invalid 0xFFFFFFFF -- it reads
+                //     as data, not absence, and can poison averages, min/max
+                //     and any downstream aggregate that does not guard for
+                //     it (#48; Connect's rendering is untested, tracked
+                //     in #53).
                 mFitRate = mSession.createField(
                     "row_stroke_rate", 0, Fit.DATA_TYPE_FLOAT,
                     { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
