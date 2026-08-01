@@ -199,7 +199,23 @@ class CoreTempSensor {
             }));
             mChannel.open();
         } catch (e) {
-            mChannel = null;
+            // Hand the channel back before dropping the reference. ANT channels
+            // are a scarce hardware resource, and the `if (mChannel == null)`
+            // guard above only protects the ALLOCATION -- setDeviceConfig() and
+            // open() run on every call, so a throw on the re-search path
+            // discards an already-assigned channel too. Once the reference is
+            // gone close() can no longer release it. #18.
+            discardChannel();
+
+            // ...and schedule a retry, because releasing alone fixes the leak
+            // but not the outage: after this catch mChannel is null, so no
+            // further CHANNEL_CLOSED can arrive and nothing re-enters
+            // openChannel() -- CORE would stay dead for the rest of the app
+            // run. This is also why #18 and #26 must ship together: the ladder
+            // re-enters openChannel(), which against the un-fixed catch would
+            // have turned a one-shot leak into one orphaned channel per retry.
+            mFails++;
+            scheduleReopen(ctBackoffMs(mFails));
         }
     }
 
