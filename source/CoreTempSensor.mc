@@ -20,6 +20,11 @@ const CT_CORE_MAX_C = 45.0;
 const CT_SKIN_MIN_C = 15.0;
 const CT_SKIN_MAX_C = 45.0;
 
+// Invalid marker for the 12-bit signed skin field: the most-negative code
+// point, which is why the documented range is +/-102.35 (2047/20) rather than
+// +/-102.40. Tested on the raw pattern BEFORE sign extension.
+const CT_SKIN_INVALID = 0x800;
+
 // Retry pacing for the ANT search. Wired up at the #26 commit; the ladder
 // itself is a pure function so it is (:test)-able on its own.
 const CT_BURST_TRIES     = 4;     // back-to-back searches before backoff starts
@@ -129,14 +134,32 @@ class CoreTempSensor {
     // Skin temperature in C from a page-1 payload, or null when the frame
     // carries no usable value.
     //
-    // NOTE: this reads bytes 4-5 and scales by 0.01, which is what the shipped
-    // code has always done. It is extracted here UNCHANGED so this commit is
-    // behaviour-preserving; the byte positions and the scale are corrected in a
-    // later commit (#86), guarded by tests added before that change.
+    // This states what the code READS: byte 3 plus byte 4 bits 4:7 as a 12-bit
+    // signed field, scaled by 1/20 (0.05 C), with 0x800 as the invalid marker.
+    // Nothing here has been measured on air -- the layout is document agreement
+    // across the vendor's own Connect IQ sample and two independent third-party
+    // decoders, not an observation. See #88.
+    //
+    // Previously this read bytes 4-5 and scaled by 0.01, which is the Reserved
+    // field plus skin's top nibble: the result barely moved with real skin
+    // temperature (25.60 C and 38.30 C both decoded to the same number) and
+    // tracked Reserved instead. #86.
+    //
+    // Two traps, both present in the published implementations and both avoided
+    // here. The invalid marker is tested on the RAW 12-bit pattern BEFORE sign
+    // extension -- afterwards 0x800 has become -2048, and a comparison against
+    // -32768 can never fire. And every & used in a boolean context is fully
+    // parenthesised, because `v & 0x800 == 0x800` binds as `v & (0x800 == 0x800)`.
     static function decodeSkinC(p) {
-        var rawS = (p[4] & 0xFF) + 256 * (p[5] & 0xFF);
-        if (rawS == 0xFFFF) { return null; }
-        var s = rawS * 0.01;
+        var raw = skinRaw12(p[3], p[4]);
+        if (raw == $.CT_SKIN_INVALID) { return null; }
+        var s = sext12(raw) / 20.0;
+        // Plausibility clamp, retained. It is no longer the thing that rejects
+        // the invalid marker, but it is the only defence against a layout that
+        // has not been measured. A clamp rejection leaves mSkin untouched AND
+        // leaves mSkinMs unstamped, so skinTemp() reports 0.0 rather than
+        // republishing a stale reading as fresh -- which is why this and the
+        // per-field stamps must ship together.
         if (s < $.CT_SKIN_MIN_C || s > $.CT_SKIN_MAX_C) { return null; }
         return s;
     }
