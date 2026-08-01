@@ -356,10 +356,11 @@ class StrongRowView extends Ui.View {
             //   * writing NaN is not an absence encoding for a FLOAT field:
             //     #48 measured setData(NaN) landing as 0xFFC00000, a
             //     DIFFERENT pattern from never-set invalid (0xFFFFFFFF) --
-            //     it reads as data, not absence, and a NaN poisons averages,
-            //     min/max and any downstream aggregate, so it is WORSE than
-            //     the latch, not merely no better. (Connect's rendering of
-            //     0xFFC00000 is untested -- tracked in #53.)
+            //     it reads as data, not absence, and a NaN can poison
+            //     averages, min/max and any downstream aggregate that does
+            //     not guard for it, so it is WORSE than the latch, not
+            //     merely no better. (Connect's rendering of 0xFFC00000 is
+            //     untested -- tracked in #53.)
             //   * setData(null) is NEVER an option: #48 observed it as an
             //     uncatchable native error that escapes try/catch and kills
             //     the app -- a crash, not a no-op.
@@ -369,8 +370,8 @@ class StrongRowView extends Ui.View {
             // (#47, Option B); the 0.0 half is #68's to fix, and the
             // rr_interval analogue is #46's. Do not restate a "gap" claim
             // until a [Local] decode proves it -- and note no open [Local]
-            // issue covers rmssd itself (the open questions are #46's UINT16
-            // array and #53's Connect rendering).
+            // issue covers rmssd itself (#53 tracks Connect's rendering of
+            // the NaN pattern, which is a different question).
             if (rrIsFresh(System.getTimer(), mLastBeatMs, $.RR_FRESH_MS)) {
                 if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }   // see #68
                 if (mRmssd > 0.0) {
@@ -748,7 +749,7 @@ class StrongRowView extends Ui.View {
     //                next beat seeds instead of diffing; init 0; no
     //                session-boundary reset today -- PR-C of epic #59 ADDS
     //                one (#59; #68 window 1 for why). Known gap: intra-batch
-    //                rejections do not reset it (#37).
+    //                RANGE rejections do not reset it (#37).
     //   mDiffSq / mDiffIdx / mDiffCount
     //                The rMSSD window: the last ~RR_NDIFF SQUARED
     //                ARTIFACT-accepted successive differences -- the ring
@@ -968,18 +969,27 @@ class StrongRowView extends Ui.View {
                 // (the mStarted && !mPaused gate) -- so under that gate a
                 // record commits regardless of R-R state, which is how the
                 // latch reaches the file here. The engine's own cadence is
-                // NOT established: #36/#48's ~1/s is their probes' write
-                // rate, and #48's REC 1 committed before any setData.
+                // NOT established: #36's ~1/s is its own probe's write rate
+                // (#48 states no cadence at all), and #48's REC 1 committed
+                // before any setData.
                 //
-                // Two hard rules from #48, for every field here regardless
-                // of type:
+                // Two hard rules from #48. Rule 1 is a prohibition and holds
+                // for every field here whatever its type or scope; rule 2 is
+                // a BYTE-PATTERN fact measured on RECORD-SCOPE FLOAT fields
+                // only -- #48's probes were all record-scope, and what
+                // setData does on a session-scope field is open (#76), which
+                // matters because three MESG_TYPE_SESSION fields are created
+                // below (avg_rmssd, total_corrective_strokes,
+                // max_core_temperature):
                 //   * NEVER call setData(null): it is an uncatchable native
                 //     error that escapes try/catch and kills the app.
-                //   * NaN is not an absence encoding for FLOAT fields:
-                //     setData(NaN) lands as 0xFFC00000, distinct from
-                //     never-set invalid 0xFFFFFFFF -- it reads as data, not
-                //     absence, and poisons downstream aggregates (#48;
-                //     Connect's rendering is untested, tracked in #53).
+                //   * NaN is not an absence encoding for a record-scope
+                //     FLOAT field: setData(NaN) lands as 0xFFC00000,
+                //     distinct from never-set invalid 0xFFFFFFFF -- it reads
+                //     as data, not absence, and can poison averages, min/max
+                //     and any downstream aggregate that does not guard for
+                //     it (#48; Connect's rendering is untested, tracked
+                //     in #53).
                 mFitRate = mSession.createField(
                     "row_stroke_rate", 0, Fit.DATA_TYPE_FLOAT,
                     { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
