@@ -23,6 +23,9 @@
 test_dsp_timeBaseInvariantToBatchSize
 test_dsp_timeBaseIs25Hz
 test_dsp_timeBaseSetAtInit
+test_dsp_accelEqualSizeAdvancesClock
+test_dsp_accelLongerYZIgnoresExtra
+test_dsp_accelNullXDropsBatch
 
 # source/RrRecordTest.mc
 test_rr_oneValid
