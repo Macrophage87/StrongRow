@@ -38,6 +38,7 @@ class CoreProbe extends CoreTempSensor {
     var mDelays;
     var mCancels;
     var mFake;          // when set, makeChannel() returns this instead of ANT
+    var mDepth;         // re-entrancy guard, see scheduleReopen
 
     function initialize() {
         CoreTempSensor.initialize();   // may re-enter the overrides below
@@ -66,7 +67,20 @@ class CoreProbe extends CoreTempSensor {
     hidden function scheduleReopen(delayMs) {
         if (mDelays == null) { mDelays = []; }
         mDelays.add(delayMs);
-        CoreTempSensor.openChannel();
+        // Stand in for the one-shot Timer. The reopen must be SYNCHRONOUS --
+        // once the retry path is the only route back into openChannel(), a
+        // record-only override makes every open-count assertion trivially 0 --
+        // but it must NOT re-enter: the failure path schedules a retry from
+        // inside openChannel()'s own catch, and a real Timer breaks that cycle
+        // by deferring. This depth guard is what the Timer would have done.
+        if (mDepth == null) { mDepth = 0; }
+        if (mDepth > 0) { return; }
+        mDepth++;
+        // UNQUALIFIED on purpose: a qualified CoreTempSensor.openChannel() call
+        // bypasses this class's own counting override, so every open-count
+        // assertion would read 0 and stay red no matter what the fix does.
+        openChannel();
+        mDepth--;
     }
 
     hidden function cancelReopen() {
@@ -98,6 +112,7 @@ class CoreProbe extends CoreTempSensor {
         mDelays  = [];
         mCancels = 0;
         mFails   = 0;
+        mDepth   = 0;
     }
 
     // Deterministic clock forms -- see the *At(nowMs) note in CoreTempSensor.
@@ -265,4 +280,223 @@ class FakeChannel {
         }
     }
     return ok;
+}
+
+// -- c2 red differentials ----------------------------------------------------
+// Every test below FAILS on the code as it stands and passes once the fixes
+// land. Assertions are written null-safely so a wrong result reports as FAIL,
+// not ERROR -- an ERROR carries no information about which behaviour is wrong.
+
+function ctAlmostEq(a, b) {
+    if (a == null) { return false; }
+    var d = a - b;
+    if (d < 0) { d = -d; }
+    return d < 0.001;
+}
+
+// Build a page-0x01 payload from field values, per the layout in #86: byte 3 +
+// byte 4 bits 4:7 = skin (12-bit signed), byte 4 bits 0:3 + byte 5 = reserved,
+// bytes 6-7 = core little endian.
+function ctPayload(skinRaw12, reserved12, coreRaw) {
+    return [0x01,
+            0x1E,
+            0x64,
+            skinRaw12 & 0xFF,
+            ((skinRaw12 >> 4) & 0xF0) | (reserved12 & 0x0F),
+            (reserved12 >> 4) & 0xFF,
+            coreRaw & 0xFF,
+            (coreRaw >> 8) & 0xFF];
+}
+
+// #86: skin's low 8 bits live in byte 3, which the shipped decode never reads.
+(:test) function test_ct_skinDecodedFromByte3(logger) {
+    var got = CoreTempSensor.decodeSkinC(ctPayload(0x294, 0x0C8, 3742));
+    if (!ctAlmostEq(got, 33.00)) {
+        logger.error("decodeSkinC = " + got + ", expected 33.00 (raw12 0x294 / 20)");
+        return false;
+    }
+    return true;
+}
+
+// #86, the load-bearing property: the recorded value must MOVE with the real
+// signal. The shipped decode returns the same number for 25.60, 33.00 and
+// 38.30 because only skin's top nibble reaches it.
+(:test) function test_ct_skinTracksTrueSignal(logger) {
+    var raws = [512, 660, 766];             // 25.60, 33.00, 38.30 C
+    var exps = [25.60, 33.00, 38.30];
+    var ok = true;
+    for (var i = 0; i < raws.size(); i++) {
+        var got = CoreTempSensor.decodeSkinC(ctPayload(raws[i], 0x0C8, 3742));
+        if (!ctAlmostEq(got, exps[i])) {
+            logger.error("true skin " + exps[i] + " decoded as " + got);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// #86, the converse: the Reserved field must not reach the result at all.
+(:test) function test_ct_skinIgnoresReserved(logger) {
+    var res = [0x000, 0x0C8, 0xFFF];
+    var ok = true;
+    for (var i = 0; i < res.size(); i++) {
+        var got = CoreTempSensor.decodeSkinC(ctPayload(0x294, res[i], 3742));
+        if (!ctAlmostEq(got, 33.00)) {
+            logger.error("reserved " + res[i] + " changed skin to " + got);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// #86: the documented invalid marker is 0x800 on the 12-bit field, not 0xFFFF
+// on a 16-bit one.
+(:test) function test_ct_skinInvalidSentinel(logger) {
+    var got = CoreTempSensor.decodeSkinC(ctPayload(0x800, 0x0C8, 3742));
+    if (got != null) {
+        logger.error("skin raw 0x800 must decode as invalid, got " + got);
+        return false;
+    }
+    return true;
+}
+
+// #86: the field is signed. 0xFFF is -1 -> -0.05 C, which the plausibility
+// clamp then rejects -- it must not surface as a large positive temperature.
+(:test) function test_ct_skinNegativeRejected(logger) {
+    var got = CoreTempSensor.decodeSkinC(ctPayload(0xFFF, 0x0C8, 3742));
+    if (got != null) {
+        logger.error("skin raw 0xFFF (-0.05 C) must be rejected, got " + got);
+        return false;
+    }
+    return true;
+}
+
+// #19: one freshness definition. At 20 s stale the getters still report the
+// reading as current, so the CT pip must agree rather than greying out.
+(:test) function test_ct_freshnessUnified(logger) {
+    var p = new CoreProbe();
+    p.stampAt(100000, 100000, 37.42, 33.00);
+    var ok = true;
+    if (p.isFreshAtT(120000) != true) {
+        logger.error("isFresh at 20 s stale should agree with the getters (true)");
+        ok = false;
+    }
+    if (p.coreTempAtT(120000) != 37.42) {
+        logger.error("coreTemp at 20 s stale = " + p.coreTempAtT(120000));
+        ok = false;
+    }
+    return ok;
+}
+
+// #17: a frame with valid skin but invalid core must still stamp freshness and
+// latch everSeen. Core 0x8000 is 327.68 C, which the clamp rejects.
+(:test) function test_ct_skinIndependentOfCore(logger) {
+    var p = new CoreProbe();
+    p.feed(ctPayload(660, 0x0C8, 0x8000));
+    var ok = true;
+    if (p.everSeen() != true)  { logger.error("everSeen must latch on a valid skin reading"); ok = false; }
+    if (p.skinFresh() != true) { logger.error("skinFresh must be true after a valid skin frame"); ok = false; }
+    if (!ctAlmostEq(p.skinTemp(), 33.00)) { logger.error("skinTemp = " + p.skinTemp() + ", expected 33.00"); ok = false; }
+    return ok;
+}
+
+// #17 + #86: the converse. A frame with valid core but an INVALID skin field
+// must not publish a skin number -- today the Reserved bytes supply one.
+(:test) function test_ct_coreIndependentOfSkin(logger) {
+    var p = new CoreProbe();
+    p.feed(ctPayload(0x800, 0x0C8, 3742));
+    var ok = true;
+    if (!ctAlmostEq(p.coreTemp(), 37.42)) { logger.error("coreTemp = " + p.coreTemp() + ", expected 37.42"); ok = false; }
+    if (p.skinTemp() != 0.0) { logger.error("skinTemp must stay 0.0 when the skin field is invalid, got " + p.skinTemp()); ok = false; }
+    if (p.coreFresh() != true) { logger.error("coreFresh must be true after a valid core frame"); ok = false; }
+    return ok;
+}
+
+// #26, pre-acquisition branch: `mTries < 3` gives 4 searches then permanent
+// silence, so a pod donned after rigging is never found.
+(:test) function test_ct_retryContinuesPastPreAcquisitionBound(logger) {
+    var p = new CoreProbe();
+    // A channel whose open() SUCCEEDS, so the retry ladder is measured on its
+    // own. The real allocation always throws under the headless simulator,
+    // which would drive the failure path and mix its retries into the count.
+    p.useFakeChannel(new FakeChannel(false));
+    p.resetRecorders();
+    for (var i = 0; i < 6; i++) { p.closeEvent(); }
+    if (p.opens() != 6) {
+        logger.error("6 channel closes produced " + p.opens() + " re-opens; searching must not stop");
+        return false;
+    }
+    return true;
+}
+
+// #26, post-acquisition branch: unbounded re-search with no backoff. The ladder
+// must pace it, and any tracked frame must reset the pacing.
+(:test) function test_ct_backoffLadderAndReset(logger) {
+    var p = new CoreProbe();
+    p.useFakeChannel(new FakeChannel(false));   // see the note in the test above
+    p.resetRecorders();
+    for (var i = 0; i < 6; i++) { p.closeEvent(); }
+    var exp = [0, 0, 0, 30000, 60000, 120000];
+    var got = p.delays();
+    var ok = true;
+    if (got.size() != exp.size()) {
+        logger.error("delay count " + got.size() + " != " + exp.size());
+        ok = false;
+    } else {
+        for (var i = 0; i < exp.size(); i++) {
+            if (got[i] != exp[i]) { logger.error("delay[" + i + "] = " + got[i] + " exp " + exp[i]); ok = false; }
+        }
+    }
+    p.feed(ctPayload(660, 0x0C8, 3742));   // a tracked frame resets the pacing
+    p.closeEvent();
+    var after = p.delays();
+    if (after[after.size() - 1] != 0) {
+        logger.error("a tracked frame must reset the backoff, next delay = " + after[after.size() - 1]);
+        ok = false;
+    }
+    return ok;
+}
+
+// #18: a throw after allocation must hand the channel back. ANT channels are a
+// scarce hardware resource, and because the reference is discarded close() can
+// no longer release it.
+(:test) function test_ct_openThrowReleasesChannel(logger) {
+    var p = new CoreProbe();
+    var f = new FakeChannel(true);
+    p.resetRecorders();
+    p.useFakeChannel(f);
+    p.closeEvent();
+    var ok = true;
+    if (f.opened != true)   { logger.error("the fake channel's open() was never reached"); ok = false; }
+    if (f.released != true) { logger.error("open() threw and the channel was never released"); ok = false; }
+    return ok;
+}
+
+// #18 x #26: after the catch fires, mChannel is null and no further
+// CHANNEL_CLOSED can arrive, so without a scheduled retry CORE is dead for the
+// rest of the app run.
+(:test) function test_ct_openThrowSchedulesRetry(logger) {
+    var p = new CoreProbe();
+    p.resetRecorders();
+    p.useFakeChannel(new FakeChannel(true));
+    p.closeEvent();
+    if (p.delays().size() < 2) {
+        logger.error("a failed open must schedule a retry; delays recorded = " + p.delays().size());
+        return false;
+    }
+    return true;
+}
+
+// #26 lifecycle: a pending reopen must be cancelled on close, or a retry can
+// re-open an ANT channel after shutdown.
+(:test) function test_ct_closeCancelsPendingRetry(logger) {
+    var p = new CoreProbe();
+    p.resetRecorders();
+    p.closeEvent();
+    p.close();
+    if (p.cancels() < 1) {
+        logger.error("close() must cancel a pending reopen; cancelReopen calls = " + p.cancels());
+        return false;
+    }
+    return true;
 }
