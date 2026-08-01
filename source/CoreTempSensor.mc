@@ -258,8 +258,23 @@ class CoreTempSensor {
         return ctIsFresh(nowMs, mLastMs, $.CT_FRESH_MS) ? mSkin : 0.0;
     }
 
+    // ONE freshness definition, shared with the getters. This used to test a
+    // hard-coded 15000 while coreTemp()/skinTemp() used CT_FRESH_MS, so between
+    // 15 s and 30 s stale the CT pip greyed out while onTick was still writing
+    // that same reading to the FIT as current (#19).
+    //
+    // Unified UP to CT_FRESH_MS rather than pulling the getters down: pulling
+    // them down would start writing 0.0 fifteen seconds sooner, which is #13's
+    // defect made worse to fix this one. The cost is that the pip's
+    // dropout-detection latency doubles, 15 s -> 30 s, and the pip is the only
+    // CORE indicator on the display.
+    //
+    // Pod-level (either field fresh), matching the pip's own "a CORE pod's data
+    // is fresh". #13 must NOT gate both setData calls on this: use coreFresh()
+    // for the core field and skinFresh() for the skin field, or a skin-only
+    // frame licenses a core_temperature = 0.0 write.
     hidden function isFreshAt(nowMs) {
-        return ctIsFresh(nowMs, mLastMs, 15000);
+        return coreFreshAt(nowMs) || skinFreshAt(nowMs);
     }
 
     function coreFresh() { return coreFreshAt(System.getTimer()); }
