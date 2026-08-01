@@ -22,6 +22,8 @@
 # source/CoreFieldGateTest.mc
 test_core_gateFalseWhenSensorNull
 test_core_gateTrueWhenPodSeen
+test_core_gateTrueWhenPodNotYetSeen
+test_core_gateIgnoresEverSeen
 
 # source/DspTimeBaseTest.mc
 test_dsp_timeBaseInvariantToBatchSize

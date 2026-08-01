@@ -68,3 +68,39 @@ class FakeCoreSensor {
     }
     return true;
 }
+
+// -- #75 differentials --------------------------------------------------------
+// The two below are the whole point. Both RED against the pre-fix predicate
+// `sensor != null && sensor.everSeen()` and GREEN once the everSeen() term is
+// dropped. Nothing else in the suite moves between those two epochs.
+
+// THE defect. startSession() runs exactly once per row (its body is guarded by
+// `if (mSession == null)`), is reached only from onPrimary/startWorkout, and
+// togglePause resumes via mSession.start() without re-entering it -- so a
+// decision of "no" here is permanent for the whole session. A pod whose first
+// valid broadcast lands one second after START must still have had its fields
+// declared.
+(:test) function test_core_gateTrueWhenPodNotYetSeen(logger) {
+    if (StrongRowView.coreFieldsWanted(new FakeCoreSensor(false)) != true) {
+        logger.error("#75: the CORE fields must be declared even when the pod " +
+                     "has not been heard yet -- startSession() runs once, so a " +
+                     "'no' here loses core/skin/max-core for the entire row");
+        return false;
+    }
+    return true;
+}
+
+// Phrased as an invariance check rather than pinning one value (same style as
+// test_dsp_timeBaseInvariantToBatchSize), so it keeps guarding this bug even if
+// the predicate is legitimately re-tuned some day: whatever it returns, it must
+// not depend on whether the pod has been heard.
+(:test) function test_core_gateIgnoresEverSeen(logger) {
+    var seen    = StrongRowView.coreFieldsWanted(new FakeCoreSensor(true));
+    var notSeen = StrongRowView.coreFieldsWanted(new FakeCoreSensor(false));
+    if (seen != notSeen) {
+        logger.error("field creation still depends on everSeen(): seen -> " +
+                     seen + " vs notSeen -> " + notSeen);
+        return false;
+    }
+    return true;
+}
