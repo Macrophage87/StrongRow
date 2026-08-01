@@ -72,183 +72,168 @@ reviewing.
 
 ## 3. Ground everything on live state
 
-> Fetch the artifact and its comments through the API at review time. Clone the
-> repository fresh and check out the actual head SHA. Never review from a stale
-> local checkout, and never rely on what a previous round said the state was.
+> Fetch the live file content at the start of every review. Never rely on a
+> cached or quoted version. If a line reference in an issue or PR differs from
+> the live file, flag it explicitly.
 
-Proposals get revised mid-review. Plans get superseded minutes before a PR opens.
-A verdict written against superseded text is worse than no verdict, because it
-looks authoritative.
-
-Name the SHA you reviewed, in the verdict.
-
----
-
-## 4. Verify before you relay
-
-> A reviewer's finding is a **hypothesis** until you check it. Before a claim
-> enters a verdict — especially one that will change code or close an issue —
-> reproduce it yourself.
-
-This rule exists because of a specific failure. A reviewer asserted that a CI job
-had been "observed failing in run 30129516247 attempt 2"; a second reviewer
-flagged it unverified; the finding was relayed anyway, and the author wrote it
-into `ci.yml`. It was false — the job had been cancelled mid-pull and the step
-never executed. A false statement entered the repository because a review passed
-along something it had not checked.
-
-The corollary is equally load-bearing: **check findings that would make you look
-right, too.** In one round a reviewer argued a comment over-generalised because
-a sparse-beat dropout logs `0.0`; a two-minute simulation showed the ring's fill
-counter is monotonic, so the comment was correct as scoped. That claim was
-dropped from the verdict rather than relayed.
-
-When you cannot verify something — no simulator, no hardware, no credentials —
-**say so in the verdict, in those words.**
+This rule exists because line numbers drift. Issue #80 quoted `:75-79` pinned to
+`fcc8d88`; by the time the review ran the relevant block had shifted. Two
+reviewers produced findings against the wrong lines. Ground truth is the live
+file, always.
 
 ---
 
-## 5. Gate actions
+## 4. State what you cannot verify
 
-> **Merging a PR and closing an issue are gate actions. Take them only when
-> explicitly directed.** Reviewing is not permission to merge. When you do merge
-> on an Accept, gate on CI as well.
+> Every review comment must include a section **"Not verified"** listing:
+>
+> - Claims that require a compiler or simulator
+> - Claims that require hardware (ANT radio, sensor pod, etc.)
+> - Claims that require a login-gated document (e.g. ANT+ Alliance adopter portal)
+> - Claims derived from a single source that has not been cross-checked
+>
+> Do not paper over these gaps with confident language. Say "not verified" and
+> say why.
 
-If directed to "merge on accept and CI", both conditions must hold. A green CI
-run with a Minor Revision verdict is not a merge. Say plainly which condition
-failed.
-
-Filing issues, posting comments, and editing issue text you authored are **not**
-gate actions.
-
-### Merge method
-
-Check how the branch is used before merging. If a shared feature branch continues
-into a follow-up PR, use a **merge commit** — a squash or rebase rewrites the
-commits, leaves the branch diverged from `main`, and makes the next PR's diff
-re-present everything already merged.
+This rule exists because the shipped `skin_temperature` mis-decode was introduced
+with the comment *"skin temperature: uint16 LE in 0.01 C"* — a confident,
+specific, wrong assertion that survived review because nobody wrote down that they
+hadn't checked it against any source. The comment is now the evidence trail for
+the defect, not for the fix.
 
 ---
 
-## 6. Partial resolution
+## 5. Confidence vocabulary
 
-> When work only partially resolves an issue: **close the parent as resolved,
-> file a follow-up capturing the remaining work, note the split on both, and
-> triage the follow-up on its own merits.**
+> Use exactly these tags, never looser language:
+>
+> | Tag | Meaning |
+> |---|---|
+> | `official-spec` | Read directly from the standard body's document |
+> | `vendor-doc` | Read from the manufacturer's published document |
+> | `vendor-impl` | Read from the manufacturer's reference implementation |
+> | `third-party` | Read from an independent third-party implementation |
+> | `doc-agreement` | Multiple sources agree; no single authoritative read |
+> | `repo-only` | Only evidence is this repository's own history |
+> | `unverified` | Claimed but not checked |
 
-A closed issue with an honest pointer beats an open issue nobody can act on. But
-the close comment must state plainly what was *not* done — if the issue's own
-definition of done was not met, say that in the comment rather than letting a
-closed state imply a clean pass.
-
----
-
-## 7. Issue hygiene
-
-- **Labels are replaced wholesale, not merged.** When adding a priority label,
-  include the existing labels in the same call or they are silently dropped.
-- **Anything requiring the simulator, hardware, or an external account gets its
-  own issue, clearly flagged.** Follow the house `[Local]` convention: the
-  `[Local]` title prefix, an opening ⚠️ blockquote saying it cannot be done in
-  CI, and the `local-test` label. A mixed issue that buries a simulator-gated
-  question inside a CI-doable one will have that half quietly skipped.
-- **Test-suite work is always a separate issue**, clearly flagged as such.
-- **Pin line references to a SHA**, or they go stale the moment the PR they
-  describe merges.
-- **Link sub-issues.** An issue that a plan depends on but that is not attached
-  to the epic is invisible to the epic's definition of done.
+When a source is downstream of another — e.g. a Monkey C file that is a
+near-verbatim port of the vendor's own sample — **do not count it as an
+independent source**. State the dependency explicitly and reduce the confidence
+class accordingly. This directly addresses the skin-temperature mis-decode: every
+agreeing implementation traced to the same greenTEG document, so the agreement
+was not independent.
 
 ---
 
-## 8. Own your errors
+## 6. Never assert decoder-visible or on-air behaviour that has not been measured
 
-> When you get something wrong, correct it plainly in the next verdict, name it
-> as yours, and move on. Do not bury it, and do not over-apologise.
+> A comment that says *"the decoder sees X"* or *"the sensor emits Y"* must be
+> backed by an entry in the `[Local]` capture log (§10). If that entry does not
+> exist, write *"not measured"* and nothing stronger.
 
-Reviews in this repo have shipped several agent errors: a write-gate confused
-with `createField`, a file-size figure that assumed the wrong record count, a
-"three-item acceptance list" that had four items, and a suggested wording
-(`reinstates`) that was adopted verbatim and was false as code history. Each was
-corrected in the following round with the error attributed.
+This rule exists because #12, #35, and #36 all asserted decoder behaviour that
+turned out to be wrong or unmeasured. The skin-temperature issue was compounded
+because the fix PR (#80) explicitly deferred correcting the comment *"skin
+temperature: uint16 LE in 0.01 C"* to avoid silently asserting new behaviour —
+the right instinct, but it means the wrong comment is still in the file. This
+rule makes the obligation explicit.
 
-This matters more than it looks. A reviewer that never admits error trains the
-author to treat every finding as negotiable.
+The correct pattern when a measurement has not been taken:
 
----
+```
+// skin temperature: 12-bit signed field, bytes 3 + high nibble of byte 4,
+// divided by 20 (vendor-doc + vendor-impl; not measured on hardware)
+```
 
-## 9. Failure patterns specific to this repository
+Not:
 
-These recur. Check for them explicitly.
-
-**"Measured, not designed."** An invariant observed across N runs and then relied
-on as though it were structural. The table-contiguity invariant in
-`check_ciq_tests.py` is labelled this way in its own comment, and has twice been
-used to dismiss shapes that were later shown reachable. Treat *observed*
-and *guaranteed* as different words.
-
-**The near neighbour.** Every round, the reported defect gets fixed and the thing
-next to it survives. A defect in a predicate is fixed; the assembly around it is
-not. A claim is scoped; the identical claim in a second copy is not. When you
-confirm a fix, immediately look one level out.
-
-**A claim stronger than its evidence.** The dominant defect class here. It looks
-like: an absolute where the source had a qualifier ("unfixable in-app" vs "once a
-field has been written"); a universal from one observation; a decoder-level claim
-from a byte-level measurement. The house rule is that **comments may state what
-the code calls, never what a decoder sees, until a `[Local]` run exists** — apply
-it in both directions, including to review findings themselves.
-
-**Duplicate documentation drifts.** Two near-complete copies of the same facts
-will diverge, and did so within a single commit. Prefer one canonical statement
-plus a pointer over two blocks that must be hand-synced with no check.
+```
+// skin temperature: uint16 LE in 0.01 C
+```
 
 ---
 
-## 10. Writing the verdict
+## 7. Arithmetic must be reproduced, not trusted
 
-Structure that has worked:
+> Any PR or issue that contains a decode formula, a scale factor, a sentinel
+> value, or a payload table must have those numbers reproduced by at least one
+> reviewer from first principles — not copied from the artifact under review.
 
-1. **Tally and verdict** up front. One line.
-2. **What holds up** — credit specifically, with the evidence. A review that only
-   lists defects is not calibrated and will be read as noise.
-3. **What blocks** — each finding with `file:line`, the quote, and why it is
-   wrong. Distinguish *false* from *imprecise* from *unsupported*.
-4. **Smaller items**, clearly marked non-blocking.
-5. **What you'd like to see** — concrete, ordered, and scoped to the smallest
-   change that clears the verdict.
-6. **What you verified yourself**, and what needs a compile, a simulator, or
-   hardware and is therefore taken on trust.
-
-Every review comment ends with the attribution footer: a blank line, a `---`
-rule, then `_Generated by [Claude Code](https://claude.ai/code)_`.
-
-Quote the artifact you are criticising. A finding a reader cannot locate is a
-finding they cannot act on.
+The skin-temperature table in this issue (§2) was constructed by substituting
+values into the shipped code. Reproducing it means: pick a payload, apply the
+**corrected** formula, and confirm the output matches the issue's claim. A
+reviewer who re-reads the issue and says "the arithmetic looks right" has not
+reproduced anything.
 
 ---
 
-## 11. What good looks like
+## 8. Source-tracing rule for third-party implementations
 
-A comments-only PR is the sharpest test of this whole process, because its only
-possible defect is a false claim. On such a PR:
+> Before counting a third-party implementation as independent evidence, establish
+> the chain of custody: did it read the primary document independently, or did it
+> port from the vendor sample? If the latter, it is **not** independent. Count
+> the chain, not the leaf nodes.
 
-- Prove the safety property rather than asserting it. Stripping comments and
-  blank lines from both revisions should leave byte-identical code; check that
-  the strip is *sound* (no `//` inside string literals, no block comments) before
-  trusting it.
-- Check every cross-reference resolves, and that the target says what the pointer
-  claims it says.
-- Check for statements the change makes false elsewhere in the file.
-
-That standard is not reserved for documentation. It is what "review" means here:
-**a claim is not true because it is plausible, and not verified because it is
-cited.**
+Applied here: the fellrnr Monkey C file was initially cited as a second source
+for the skin-temperature layout. Inspection showed it shares helper names, field
+names, and the same two bugs with greenTEG's own Connect IQ sample. It is a
+derivative, not an independent read. The confidence class stays `vendor-doc +
+vendor-impl`, not `doc-agreement`.
 
 ---
 
-## Context
+## 9. Do not assert behaviour until the `[Local]` capture exists
 
-Grew out of the review rounds on #42/#49 (CI), #36/#46/#47/#48 (FIT encoder
-behaviour), #58/#60–#67 (post-merge verification of the test verdict), and the
-#59 epic. Related: [`docs/CI.md`](CI.md) for what the required checks actually
-guarantee.
+> The `[Local]` capture log (§10) is the gating condition for any comment that
+> asserts what a specific device produces or what a specific decoder reads. Until
+> that entry exists, the correct language is *"document agreement, not measured"*.
+
+This rule exists specifically because of this issue. The skin-temperature decode
+is wrong by document agreement across four independent sources — that is enough
+to fix the code. It is **not** enough to close the issue with a comment saying
+*"confirmed: the sensor emits X"*. The issue remains open until the
+`[Local]` capture entry exists, even if the code is correct.
+
+The acceptance checklist in §7 of the filed issue makes this explicit:
+
+> - [ ] Companion `[Local]` capture issue linked and its result recorded here —
+>   this issue's byte layout is **document agreement, not a measurement**, and
+>   closing it does not change that.
+
+---
+
+## 10. The `[Local]` capture log
+
+> Maintain a log of hardware captures taken against the actual devices this
+> repository targets. Each entry must record:
+>
+> - Date, device firmware version, and ANT device ID
+> - Capture method (ANT USB stick + openant, Garmin simulator, etc.)
+> - Raw payload hex, annotated field-by-field
+> - The decoded value and the formula applied
+> - Who took the capture and on what platform
+>
+> Until this log contains an entry for a given claim, that claim is
+> `unverified` regardless of how many documents agree.
+
+No entries exist yet. The first capture against a CORE temperature pod will
+settle:
+
+- The skin-temperature layout (this issue)
+- The core-temperature sentinel behaviour (companion issue)
+- The Reserved field contents (currently unknown; no published source states it)
+- The HSI field behaviour under load (#80)
+
+---
+
+## 11. Sequencing rule for dependent issues
+
+> When an issue identifies ordering dependencies (as §6 of this issue does for
+> #17 and #75), the review of any downstream PR must confirm the upstream fix
+> has landed or is in the same changeset. A PR that fixes a downstream issue
+> while the upstream defect is still present ships a defect.
+
+Applied here: #17 proposes stamping freshness on any valid skin reading. Until
+the skin-temperature decode is correct, "valid skin reading" means "Reserved
+field in the right range" — not a physiologically valid reading.
