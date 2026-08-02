@@ -5,6 +5,8 @@
     <property id="restMinutes" type="float">2.0</property>
     <property id="targetLo" type="number">16</property>
     <property id="targetHi" type="number">18</property>
+    <property id="hrLo" type="number">116</property>
+    <property id="hrHi" type="number">130</property>
     <property id="pressToContinue" type="boolean">true</property>
     <property id="warmupCooldown" type="boolean">true</property>
 </properties>

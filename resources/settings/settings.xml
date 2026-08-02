@@ -17,6 +17,12 @@
     <setting propertyKey="@Properties.targetHi" title="@Strings.setTargetHi">
         <settingConfig type="numeric" min="4" max="60"/>
     </setting>
+    <setting propertyKey="@Properties.hrLo" title="@Strings.setHrLo">
+        <settingConfig type="numeric" min="60" max="200"/>
+    </setting>
+    <setting propertyKey="@Properties.hrHi" title="@Strings.setHrHi">
+        <settingConfig type="numeric" min="60" max="200"/>
+    </setting>
     <setting propertyKey="@Properties.pressToContinue" title="@Strings.setPressToContinue">
         <settingConfig type="boolean"/>
     </setting>

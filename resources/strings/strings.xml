@@ -6,6 +6,8 @@
     <string id="setRestMinutes">Rest length (minutes)</string>
     <string id="setTargetLo">Target low (spm)</string>
     <string id="setTargetHi">Target high (spm)</string>
+    <string id="setHrLo">HR target low (bpm)</string>
+    <string id="setHrHi">HR target high (bpm)</string>
     <string id="setPressToContinue">Press START after rest</string>
     <string id="setWarmupCooldown">Warmup and cooldown steps</string>
 </strings>

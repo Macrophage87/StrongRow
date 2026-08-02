@@ -61,6 +61,61 @@ const RR_INVALID = 0xFFFF;
 // the last RANGE-accepted beat, mLastBeatMs) so a dropout stops polluting avg_rmssd.
 const RR_FRESH_MS = 5000;
 
+// #110 -- left-edge heart-rate arc. At module (global) scope for exactly the
+// reason the R-R constants above are: a Monkey C class `const` is an instance
+// member, unreachable from a static method, and every decision this feature
+// makes is a class-scope static so a (:test) can reach it without a Dc.
+//
+// DISPLAY RANGE, in bpm, mapped linearly onto the arc sweep. 60 is below any
+// seated resting rate and 200 above any working rate plausible for this app's
+// user, so a clamped reading is an edge case rather than a routine state. These
+// two are ALSO the bounds loadSettings clamps hrLo/hrHi to, and that identity
+// is deliberate: it makes "the band marker always lands on the track" an
+// invariant of loadSettings instead of a hope.
+const HR_DISP_LO = 60;
+const HR_DISP_HI = 200;
+// SWEEP, in drawArc degrees. 0 is 3 o'clock, 90 is 12, 180 is 9, 270 is 6, so
+// this is the left edge centred on 9 o'clock: low bpm at the bottom
+// (HR_ARC_BOT), high at the top (HR_ARC_TOP), +/-30 degrees of horizontal.
+//
+// WHY 30 AND NOT THE DERIVED 35. The +/-35 bound is derived for THE ARC, at the
+// track radius. The head tick is drawn OUTSIDE that radius, so at the ends of
+// the sweep the outermost drawn pixel sits lower on the screen than the arc
+// does. At +/-30 the outermost drawn pixel of the whole widget falls inside the
+// y a +/-35 sweep at the track radius would reach -- on all twelve manifest
+// devices, computed with the same truncation the code uses. Honouring the
+// stricter of the two derivations costs 10 degrees of resolution and removes
+// the argument. It does NOT make any claim about how the result looks.
+const HR_ARC_TOP = 150;
+const HR_ARC_BOT = 210;
+// MINIMUM DRAWN SWEEP, in whole degrees, for every arc this feature draws.
+// SDK 9.2.0 documents drawArc as truncating its parameters toward zero and
+// drawing A COMPLETE CIRCLE when degreeStart and degreeEnd are equal. So a band
+// narrower than one truncated degree, or a fill of zero length, is not a short
+// arc -- it is a ring across the entire screen. The guard has to be applied to
+// the TRUNCATED values, because that is where the hazard lives: 185.2 and 185.8
+// are different heart rates and the same degree.
+const HR_ARC_MIN_D = 2;
+// FRESHNESS WINDOW (ms) for the heart-rate read. Its own constant rather than
+// RR_FRESH_MS on purpose: the RR pip keys off R-R BATCH ARRIVAL (mLastRrMs) and
+// this keys off a bpm read. Different signals, independently tunable, and #110
+// requires the two no-data states to stay independent.
+//
+// SCOPE, stated rather than implied: this measures the age of the last non-null
+// read BY THIS APP. It does not measure the age of the underlying beat --
+// Connect IQ exposes no timestamp for that -- so if the platform latches a
+// stale value into currentHeartRate, nothing in-app can see it.
+const HR_FRESH_MS = 5000;
+// ZONE CODES. A code, not a colour. "No data" has to be a distinct KIND of
+// answer rather than a colour that happens to differ, or the no-data case
+// becomes a palette decision one edit away from collapsing into "below band" --
+// which is the #86 / #107 defect class this repository has already shipped
+// twice.
+const HRZ_NONE  = -1;
+const HRZ_BELOW = 0;
+const HRZ_IN    = 1;
+const HRZ_ABOVE = 2;
+
 class StrongRowView extends Ui.View {
 
     // step types
@@ -80,6 +135,11 @@ class StrongRowView extends Ui.View {
     hidden var mTgtHi;
     hidden var mGate;
     hidden var mWarmCool;
+    // #110: the HEART-RATE target band, in bpm. Named apart from mTgtLo/mTgtHi
+    // (which are stroke rate, in spm) because confusing the two is the exact
+    // failure #110 calls out.
+    hidden var mHrLo;
+    hidden var mHrHi;
 
     // ================= stroke detector tunables =============================
     hidden const REQ_RATE = 25;
@@ -142,6 +202,20 @@ class StrongRowView extends Ui.View {
     hidden var mAcBatch;
     hidden var mAcPeriod;
     hidden var mAcLowConf;
+
+    // #110 heart-rate state. THREE fields, and the split is the whole point:
+    //   mHrBpm     the last VALID reading. Never consulted for presence.
+    //   mLastHrMs  when that reading was taken (System.getTimer()).
+    //   mHrEver    explicit "have we ever had a reading". Never DERIVED from
+    //              mHrBpm.
+    // Presence is (mHrEver AND fresh), never (mHrBpm > 0) -- because unlike
+    // outputRate(), which genuinely returns 0.0 when nothing is measured (the
+    // premise rateColour's guard rests on), the last bpm SURVIVES in the field
+    // after the heart-rate source drops. Deriving absence from the value there
+    // is the #86 / #107 defect class.
+    hidden var mHrBpm;
+    hidden var mLastHrMs;
+    hidden var mHrEver;
 
     // R-R / HRV state
     hidden var mRrOk;
@@ -213,6 +287,9 @@ class StrongRowView extends Ui.View {
         mFitMaxCore = null;
         mFitCtDiag  = null;
         mMaxCore    = 0.0;
+        mHrBpm      = 0;
+        mLastHrMs   = 0;
+        mHrEver     = false;
         mRrOk       = false;
         mLastRrMs   = 0;
         mLastBeatMs = 0;
@@ -256,6 +333,23 @@ class StrongRowView extends Ui.View {
         mTgtLo = getProp("targetLo", 16).toNumber();
         mTgtHi = getProp("targetHi", 18).toNumber();
         if (mTgtHi < mTgtLo) { var t = mTgtLo; mTgtLo = mTgtHi; mTgtHi = t; }
+        // #110: the HEART-RATE band, in bpm. Defaults 116-130 are the
+        // maintainer's measured target (a stated ~123 bpm intent on a 68-minute
+        // durability row, +/-7), not a guess and not doctrine -- they are
+        // configuration and are expected to be set per athlete.
+        //
+        // CLAMPED IN CODE, unlike the four settings #21 is open about. The
+        // bounds are HR_DISP_LO/HR_DISP_HI, i.e. the arc's own display range,
+        // which is what makes "the band marker always lands on the track" an
+        // invariant rather than a hope: no persisted or sideloaded value can
+        // put a mark off the end of the scale. Connect IQ Properties survive an
+        // app update and a .set file is not re-clamped on load, so declaring
+        // the range in settings.xml is not enough on its own -- that is exactly
+        // #21's finding, and this does not add to it.
+        var hb = hrClampBand(getProp("hrLo", 116).toNumber(),
+                             getProp("hrHi", 130).toNumber());
+        mHrLo = hb[0];
+        mHrHi = hb[1];
         mGate = getProp("pressToContinue", true);
         mWarmCool = getProp("warmupCooldown", true);
     }
@@ -409,7 +503,34 @@ class StrongRowView extends Ui.View {
         }
     }
 
+    // #110: sample the heart rate. UNCONDITIONAL and first, so the arc is live
+    // during STEP_GATE and while paused, not only while recording.
+    //
+    // Wrapped in try/catch because this is the only platform call the arc makes
+    // and a throw here must not cost the tick everything below it. The
+    // shipping-code rule this follows is getProp's (above), not onLayout's:
+    // onLayout deliberately propagates because an app with no tick timer should
+    // not run silently, whereas a heart rate is an ornament on two priorities
+    // that must keep working without it.
+    hidden function sampleHr() {
+        var bpm = null;
+        try {
+            var ai = Activity.getActivityInfo();
+            if (ai != null) { bpm = ai.currentHeartRate; }
+        } catch (e) {}
+        // `bpm > 0` HERE is a validity filter on a READING -- zero bpm is not a
+        // living heart -- and it is emphatically NOT the absence test. Absence
+        // is carried by mHrEver and mLastHrMs, which is the distinction #110
+        // requires and the one #86 and #107 each got wrong.
+        if (bpm != null && bpm > 0) {
+            mHrBpm    = bpm.toNumber();
+            mLastHrMs = System.getTimer();
+            mHrEver   = true;
+        }
+    }
+
     function onTick() as Void {
+        sampleHr();
         if (mStarted && !mPaused) {
             if (mFitRate != null) { mFitRate.setData(outputRate()); }
             if (mFitDps != null)  { mFitDps.setData(distPerStroke(currentSpeed())); }
@@ -951,6 +1072,138 @@ class StrongRowView extends Ui.View {
             return Gfx.COLOR_GREEN;                     // in band: hold
         }
         return Gfx.COLOR_WHITE;
+    }
+
+    // ============ #110: the heart-rate arc, as pure decisions ================
+    // Every judgement the left-edge arc makes lives here, as a class-scope
+    // static taking plain numbers and booleans -- the same seam filterRr /
+    // rrIsFresh / coreFieldsWanted / rateColour above use, and for the same
+    // reason: the drawing itself needs a Dc and a fully-built view, which no
+    // (:test) can supply.
+    //
+    // SCOPE, stated rather than implied, exactly as rateColour states it above:
+    // these pin the PREDICATES, not the call site. The step-type test that
+    // decides whether the arc is drawn at all, and the order of the draw calls,
+    // are covered by review only.
+
+    // Pure: is there a heart rate to show?
+    //
+    // TWO independent conditions, and #110 requires both: an EXPLICIT
+    // "have we ever had a reading" flag, AND freshness. Never `bpm > 0`.
+    // `lastMs > 0` is a third, cheap consistency check on the stamp itself
+    // (System.getTimer() is monotonic from app start, so 0 means "never
+    // stamped") -- it is not the presence test, it backs one up.
+    //
+    // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
+    // freshness is about R-R batch arrival and this is about a bpm read. Two
+    // signals that happen to share a shape today and must be free to diverge.
+    static function hrHave(ever, lastMs, nowMs, threshMs) {
+        return ever && lastMs > 0 && (nowMs - lastMs) < threshMs;
+    }
+
+    // Pure: which zone is this heart rate in?
+    //
+    // Returns a CODE, never a colour, so that "no data" is a different kind of
+    // answer rather than a different colour -- see the HRZ_* constants.
+    //
+    // Boundary inclusivity matches rateColour: `bpm == lo` is neither `< lo`
+    // nor `> hi`, so it is in band, and likewise `bpm == hi`.
+    static function hrZone(hasHr, bpm, lo, hi) {
+        if (bpm > 0) {
+            if (bpm < lo) { return $.HRZ_BELOW; }
+            if (bpm > hi) { return $.HRZ_ABOVE; }
+            return $.HRZ_IN;
+        }
+        return $.HRZ_NONE;
+    }
+
+    // Pure: the fill colour for a zone. Identical constants to rateColour, so
+    // the arc and the stroke-rate numeral share one vocabulary rather than two
+    // that happen to agree today.
+    //
+    // HRZ_NONE maps to the track colour and is never actually painted as a
+    // fill: the no-data state draws no fill at all. It is returned so that the
+    // function is total.
+    static function hrZoneColour(zone) {
+        if (zone == $.HRZ_BELOW) { return Gfx.COLOR_BLUE; }
+        if (zone == $.HRZ_IN)    { return Gfx.COLOR_GREEN; }
+        if (zone == $.HRZ_ABOVE) { return Gfx.COLOR_RED; }
+        return Gfx.COLOR_DK_GRAY;
+    }
+
+    // Pure: the arc angle, in whole degrees, for a heart rate.
+    //
+    // The `* 1.0` is load-bearing and not decoration: both operands are Numbers
+    // and Monkey C would do INTEGER division, pinning every rate below the top
+    // of the range to the bottom of the arc.
+    //
+    // Returns a Number because drawArc truncates its arguments anyway --
+    // doing it here means every caller, and every test, sees the value the
+    // renderer will actually use.
+    static function hrAngle(bpm) {
+        var f = (bpm - $.HR_DISP_LO) * 1.0 / ($.HR_DISP_HI - $.HR_DISP_LO);
+        if (f < 0.0) { f = 0.0; }
+        if (f > 1.0) { f = 1.0; }
+        return ($.HR_ARC_BOT - f * ($.HR_ARC_BOT - $.HR_ARC_TOP)).toNumber();
+    }
+
+    // Pure: how many whole degrees of fill a heart rate asks for, measured from
+    // the bottom of the sweep. Zero at or below the bottom of the display
+    // range, which is the case the full-circle hazard lives in.
+    static function hrFillSweep(bpm) {
+        return $.HR_ARC_BOT - hrAngle(bpm);
+    }
+
+    // Pure: should the fill arc be drawn at all?
+    static function hrFillVisible(bpm) {
+        return bpm > 0;
+    }
+
+    // Pure: the target band as a drawArc counter-clockwise pair,
+    // [degreeStart, degreeEnd], with degreeStart the HIGH-bpm end because
+    // degrees decrease as bpm rises.
+    //
+    // Ordered defensively even though loadSettings already swaps inverted
+    // input: this is a public static and its post-condition should not depend
+    // on a caller elsewhere in the file.
+    static function hrBandArc(lo, hi) {
+        var a1 = hrAngle(hi);
+        var a2 = hrAngle(lo);
+        if (a2 < a1) { var t = a1; a1 = a2; a2 = t; }
+        return [a1, a2];
+    }
+
+    // Pure: is this reading off the end of the display range, so that the arc
+    // is showing an endpoint rather than a position? #110 requires the clamp to
+    // be visible -- 210 bpm and 200 bpm must not render identically.
+    static function hrIsClamped(bpm) {
+        return bpm > $.HR_DISP_HI;
+    }
+
+    // Pure: how many segments the grey track is drawn in.
+    //
+    // The track's CONTINUITY is one of the three independent channels that
+    // separate "no data" from any reading -- the others being the absent fill
+    // and the absent head tick. One continuous arc means "there is a heart
+    // rate"; more than one means there is not.
+    static function hrTrackParts(hasHr) {
+        return 1;
+    }
+
+    // Pure: the heart-rate band, swapped if inverted and clamped to the arc's
+    // display range at BOTH ends.
+    //
+    // Split out from loadSettings rather than written inline for the usual
+    // reason -- loadSettings needs App.Properties and a built view, so no
+    // (:test) can reach the clamp there -- and because #21 is precisely the
+    // defect of a clamp that exists in settings.xml and nowhere in code.
+    static function hrClampBand(lo, hi) {
+        if (hi < lo) { var t = lo; lo = hi; hi = t; }
+        if (lo < $.HR_DISP_LO) { lo = $.HR_DISP_LO; }
+        if (lo > $.HR_DISP_HI) { lo = $.HR_DISP_HI; }
+        if (hi < $.HR_DISP_LO) { hi = $.HR_DISP_LO; }
+        if (hi > $.HR_DISP_HI) { hi = $.HR_DISP_HI; }
+        return [lo, hi];
     }
 
     // ----------------- R-R / HRV state model (epic #59) ---------------------
@@ -1716,6 +1969,130 @@ class StrongRowView extends Ui.View {
         dc.drawText(w / 2, h * 0.87, Gfx.FONT_XTINY, foot, Gfx.TEXT_JUSTIFY_CENTER);
     }
 
+    // #110: one radial line segment at `deg`, from radius r0 to radius r1.
+    // Screen y grows downward while drawArc's degrees grow counter-clockwise,
+    // hence the minus on the sine.
+    hidden function radialTick(dc, cx, cy, deg, r0, r1) {
+        var rad = deg * Math.PI / 180.0;
+        var c = Math.cos(rad);
+        var s = Math.sin(rad);
+        dc.drawLine(cx + r0 * c, cy - r0 * s, cx + r1 * c, cy - r1 * s);
+    }
+
+    // #110: the left-edge heart-rate arc. Glance priority 3 -- "is my heart
+    // rate in target?" -- answered in peripheral vision while the eye is on the
+    // stroke rate.
+    //
+    // THREE CHANNELS, and only one of them is colour:
+    //
+    //   1. the FILL length carries MAGNITUDE. Colour alone cannot distinguish
+    //      105 bpm from 138 bpm when both are below the band;
+    //   2. the BAND is drawn ON THE TRACK -- a light rail inside the track
+    //      spanning exactly the target band, closed by a radial tick at each
+    //      end that crosses both the rail and the track. This is what makes
+    //      below / in / above readable from GEOMETRY with all colour
+    //      information removed, and it is the only channel that can answer
+    //      "how much room do I have?", which colour cannot express at all;
+    //   3. COLOUR carries the zone, with the same constants as rateColour.
+    //
+    // The band marker is not decoration. Red/green is the commonest
+    // colour-vision deficiency pair, and under simulated deuteranopia the blue
+    // and red used here separate by only about 1.2:1 in luminance -- so with
+    // the geometric channel removed, the DIRECTION cue would rest entirely on
+    // the blue/yellow axis.
+    //
+    // LAYERING INVARIANT: nothing but the head tick is drawn beyond radius
+    // r + pw/2 + 2. That is what keeps the head tick unmistakable in monochrome
+    // (it is the only outward mark) and what keeps the fill from ever occluding
+    // it.
+    //
+    // NO TEXT. Deliberate: adding a variable-width string would put this inside
+    // #22, whose rule 2 obliges a getTextWidthInPixels() measurement, and there
+    // is not one call to that anywhere in this repository. The cost, stated
+    // plainly, is that the arc never tells you the number.
+    //
+    // NO ALARM, at either extreme -- no vibration, no tone, no flashing, no
+    // takeover. That is the recorded decision on #114 with its reasoning:
+    // alarms fire at extremes, and at extremes the rower already knows.
+    //
+    // Every dimension derives from dc.getWidth(); .toNumber() truncates toward
+    // zero, and the clearances against the h*0.13 and h*0.78 rows and against a
+    // 4 px bezel inset were computed with that same truncation for all twelve
+    // manifest devices. None of that arithmetic says anything about how this
+    // looks on a wrist, and nothing here claims it does.
+    hidden function drawHrArc(dc, w, h) {
+        var cx  = w / 2;
+        var cy  = h / 2;
+        var r   = (w * 0.42).toNumber();
+        var pw  = (w * 0.030).toNumber(); if (pw  < 4) { pw  = 4; }
+        var pwb = (w * 0.020).toNumber(); if (pwb < 3) { pwb = 3; }
+        var gap = (w * 0.010).toNumber(); if (gap < 2) { gap = 2; }
+        var ptk = (w * 0.008).toNumber(); if (ptk < 2) { ptk = 2; }
+        var phd = (w * 0.012).toNumber(); if (phd < 3) { phd = 3; }
+
+        var rBand  = r - pw / 2 - gap - pwb / 2;   // band rail: inside the track
+        var rTkIn  = rBand - pwb;                  // band ticks cross rail+track
+        var rTkOut = r + pw / 2;
+        var rHd0   = r + pw / 2 + 2;               // head tick: outside, alone
+        var rHd1   = rHd0 + pw + 2;
+
+        var hasHr = hrHave(mHrEver, mLastHrMs, System.getTimer(), $.HR_FRESH_MS);
+        var bpm   = mHrBpm;
+        var show  = hrFillVisible(bpm);
+
+        // ---- the scale ----
+        dc.setPenWidth(pw);
+        dc.setColor(Gfx.COLOR_DK_GRAY, Gfx.COLOR_TRANSPARENT);
+        var parts = hrTrackParts(hasHr);
+        if (parts <= 1) {
+            dc.drawArc(cx, cy, r, Gfx.ARC_COUNTER_CLOCKWISE, $.HR_ARC_TOP, $.HR_ARC_BOT);
+        } else {
+            // A BROKEN track is the no-data state's own channel: `parts`
+            // segments separated by gaps of the same width. Nothing else in
+            // this widget draws a discontinuous arc.
+            var seg = ($.HR_ARC_BOT - $.HR_ARC_TOP) / (2 * parts - 1);
+            if (seg < $.HR_ARC_MIN_D) { seg = $.HR_ARC_MIN_D; }
+            for (var i = 0; i < parts; i++) {
+                var a0 = $.HR_ARC_TOP + i * 2 * seg;
+                if (a0 + seg > $.HR_ARC_BOT) { break; }
+                dc.drawArc(cx, cy, r, Gfx.ARC_COUNTER_CLOCKWISE, a0, a0 + seg);
+            }
+        }
+
+        // ---- the fill: magnitude, coloured by zone ----
+        if (show) {
+            dc.setColor(hrZoneColour(hrZone(hasHr, bpm, mHrLo, mHrHi)),
+                        Gfx.COLOR_TRANSPARENT);
+            dc.drawArc(cx, cy, r, Gfx.ARC_CLOCKWISE, $.HR_ARC_BOT, hrAngle(bpm));
+        }
+
+        // ---- the band, drawn ON the track ----
+        // Drawn whether or not there is a heart rate: showing where the target
+        // sits costs nothing and is honest.
+        var ba = hrBandArc(mHrLo, mHrHi);
+        dc.setPenWidth(pwb);
+        dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
+        dc.drawArc(cx, cy, rBand, Gfx.ARC_COUNTER_CLOCKWISE, ba[0], ba[1]);
+        dc.setPenWidth(ptk);
+        radialTick(dc, cx, cy, ba[0], rTkIn, rTkOut);
+        radialTick(dc, cx, cy, ba[1], rTkIn, rTkOut);
+
+        // ---- the head: where the reading actually is ----
+        if (show) {
+            var ah = hrAngle(bpm);
+            dc.setPenWidth(phd);
+            dc.setColor(Gfx.COLOR_WHITE, Gfx.COLOR_TRANSPARENT);
+            radialTick(dc, cx, cy, ah, rHd0, rHd1);
+            if (hrIsClamped(bpm)) {
+                // A SECOND parallel tick, turned inward from the endpoint: the
+                // reading is off the end of the scale, so 210 bpm and 200 bpm
+                // do not render identically.
+                var d = (bpm > $.HR_DISP_HI) ? 3 : -3;
+                radialTick(dc, cx, cy, ah + d, rHd0, rHd1);
+            }
+        }
+    }
+
     function onUpdate(dc) {
         var w = dc.getWidth();
         var h = dc.getHeight();
@@ -1742,6 +2119,17 @@ class StrongRowView extends Ui.View {
         // ---- workout mode ----
         var st = mStarted ? mSteps[mStepIdx] : null;
         var type = (st != null) ? st[:type] : -1;
+
+        // #110: the heart-rate arc, live during WORK, REST and GATE and nowhere
+        // else. Drawn BEFORE every text element on purpose -- it sits in a
+        // left-edge annulus no text occupies, but if that assumption is ever
+        // wrong the text wins rather than the geometry.
+        //
+        // Free-row mode never reaches here (the early return above), and WARM /
+        // COOL / DONE / pre-start are unchanged, per #110's acceptance list.
+        if (type == STEP_WORK || type == STEP_REST || type == STEP_GATE) {
+            drawHrArc(dc, w, h);
+        }
 
         var title;
         if (!mStarted)              { title = mNumWork.toString() + "x" + (mWorkSec / 60).toString() + "'"; }
