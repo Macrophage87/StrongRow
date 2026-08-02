@@ -51,8 +51,16 @@ class LifeTimer {
 
 class LifeCoreSensor {
     var closes;      // close() call count
-    function initialize() { closes = 0; }
-    function close() { closes++; }
+    var log;         // shared ordered event log owned by the probe, or null
+    function initialize(sharedLog) { closes = 0; log = sharedLog; }
+    function close() {
+        closes++;
+        // Ordered, not just counted: #103 latches its ANT diagnostics at
+        // close() precisely because shutdown() calls close() BEFORE
+        // stopAndSave(), so the relative order is a contract another PR
+        // depends on and not an implementation detail.
+        if (log != null) { log.add("close"); }
+    }
     // Not called on any path these tests drive, but present so a future test
     // that reaches drawGps or onTick does not measure a missing-member throw
     // and call it a lifecycle defect.
@@ -98,6 +106,10 @@ class LifeCoreSensor {
 class LifeProbe extends StrongRowView {
     var madeTimers;    // every LifeTimer handed to the shipping code, in order
     var madeSensors;   // every LifeCoreSensor handed to the shipping code
+    var events;        // ordered "close" / "save" log across the teardown path
+    var saves;         // stopAndSave() call count
+    var sensorAtSave;  // was mCoreSensor still readable when stopAndSave ran?
+    var timerAtSave;   // ditto for mTimer
 
     function initialize() { StrongRowView.initialize(); }
 
@@ -113,9 +125,24 @@ class LifeProbe extends StrongRowView {
 
     hidden function makeCoreSensor() {
         if (madeSensors == null) { madeSensors = []; }
-        var s = new LifeCoreSensor();
+        if (events == null) { events = []; }
+        var s = new LifeCoreSensor(events);
         madeSensors.add(s);
         return s;
+    }
+
+    // Records the teardown ORDER and the state visible AT readout time, then
+    // runs the real body. stopAndSave() is where every session-scope field is
+    // written, and what those writes can still reach is decided by what
+    // shutdown() has already cleared -- which is the whole of the #103
+    // interaction this probe exists to pin.
+    function stopAndSave() {
+        if (events == null) { events = []; }
+        events.add("save");
+        saves = (saves == null) ? 1 : saves + 1;
+        sensorAtSave = (mCoreSensor != null);
+        timerAtSave  = (mTimer != null);
+        StrongRowView.stopAndSave();
     }
 
     // The two handles #11 is about. Read, never written, from the tests.
@@ -126,6 +153,18 @@ class LifeProbe extends StrongRowView {
     function sensorCount() { if (madeSensors == null) { madeSensors = []; } return madeSensors.size(); }
     function timerAt(i)    { return madeTimers[i]; }
     function sensorAt(i)   { return madeSensors[i]; }
+
+    function saveCount()          { return (saves == null) ? 0 : saves; }
+    function sensorLiveAtSave()   { return sensorAtSave == true; }
+
+    // Index of the first occurrence of `what` in the teardown log, or -1.
+    function eventIndex(what) {
+        if (events == null) { return -1; }
+        for (var i = 0; i < events.size(); i++) {
+            if (events[i].equals(what)) { return i; }
+        }
+        return -1;
+    }
 }
 
 // -- Characterization pins ----------------------------------------------------
@@ -357,6 +396,73 @@ class LifeProbe extends StrongRowView {
 // test_life_shutdownReleasesTheLiveResources above asserts that the resources
 // were RELEASED first, and it reads the recorded stubs rather than these
 // fields precisely so the two cannot be satisfied by nulling without releasing.
+// The CROSS-PR interaction, and the one nothing else in either suite can see.
+//
+// shutdown() clears mCoreSensor, and stopAndSave() is where every session-scope
+// field is written. If the clear happens BEFORE stopAndSave(), then any
+// session-scope write that needs the sensor is silently skipped -- the field
+// handle is non-null, the session saves, and the value is simply never written.
+//
+// That is not hypothetical. #103 adds
+//     if (mFitCtDiag != null && mCoreSensor != null) {
+//         mFitCtDiag.setData(mCoreSensor.diagSnapshot());
+//     }
+// to stopAndSave(), and latches its flags at close() *because* shutdown()
+// calls close() before stopAndSave() (CoreTempSensor.mc, "Flags latched at
+// close(), because shutdown() calls close() BEFORE stopAndSave()"). Clearing
+// the handle first defeats that accommodation exactly on the app-stop exit --
+// the one that does NOT go through BACK, and therefore the entire reason
+// shutdown() calls stopAndSave() at all. Measured on the merged tree: the BACK
+// path wrote ct_diag, the onStop path wrote nothing, and both trees compiled
+// clean and passed their full suites.
+//
+// So the ordering contract is three-part, and all three are pinned here:
+//   1. close() still precedes stopAndSave()      -- #103's latch depends on it
+//   2. the handle is still READABLE during stopAndSave() -- the readout needs it
+//   3. the handle is null once shutdown() RETURNS -- #11's "non-null means live"
+// Only (2) moves between epochs. (1) and (3) are pinned alongside it because a
+// "fix" that satisfied (2) by moving close() after the save, or by not clearing
+// at all, would break the other two.
+//
+// Neither PR's suite can catch this alone: this file has no ct_diag and #103's
+// has no lifecycle probe. It is pinned on THIS side because the ordering
+// constraint is shutdown()'s to keep.
+(:test) function test_life_shutdownKeepsSensorReadableUntilSaved(logger) {
+    var p = new LifeProbe();
+    p.onLayout(null as Gfx.Dc);
+    p.shutdown();
+
+    if (p.saveCount() != 1) {
+        logger.error("shutdown must reach stopAndSave exactly once, got " +
+                     p.saveCount() + " -- the assertions below read its state");
+        return false;
+    }
+
+    var ok = true;
+    var iClose = p.eventIndex("close");
+    var iSave  = p.eventIndex("save");
+    if (iClose < 0 || iSave < 0 || iClose > iSave) {
+        logger.error("close() must still precede stopAndSave(): #103 latches " +
+                     "its ANT diagnostics at close() for exactly that reason " +
+                     "(close idx " + iClose + ", save idx " + iSave + ")");
+        ok = false;
+    }
+    if (!p.sensorLiveAtSave()) {
+        logger.error("mCoreSensor was already null when stopAndSave() ran, so " +
+                     "any session-scope field read from the sensor there is " +
+                     "silently skipped -- #103's ct_diag is lost on the " +
+                     "app-stop exit, the one that does not go through BACK. " +
+                     "Clear the handle AFTER stopAndSave(), not before");
+        ok = false;
+    }
+    if (p.sensorHandle() != null) {
+        logger.error("the handle must still be null once shutdown() returns, " +
+                     "or onLayout's guard reads a closed sensor as live");
+        ok = false;
+    }
+    return ok;
+}
+
 (:test) function test_life_shutdownClearsTheHandles(logger) {
     var p = new LifeProbe();
     p.onLayout(null as Gfx.Dc);
