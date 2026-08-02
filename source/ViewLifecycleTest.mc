@@ -116,9 +116,9 @@ class LifeCoreSensor {
 //
 // Annotating onLayout (and onUpdate, also unannotated) is the real fix and is
 // deliberately NOT done in this PR -- it is a separate change with its own
-// blast radius. Widening the parameter instead is illegal: Monkey C rejects
-// `Cannot override parameter 1 ... with type 'PolyType<Null or
-// $.Toybox.Graphics.Dc>'`.
+// blast radius, tracked in #117. Widening the parameter instead is illegal:
+// Monkey C rejects `Cannot override parameter 1 ... with type 'PolyType<Null
+// or $.Toybox.Graphics.Dc>'`.
 
 class LifeProbe extends StrongRowView {
     var madeTimers;    // every LifeTimer handed to the shipping code, in order
