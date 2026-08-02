@@ -79,3 +79,9 @@ test_ct_closeCancelsPendingRetry
 test_ct_coreSentinelRejected
 test_ct_coreClampBounds
 test_ct_skinClampBounds
+test_ct_diagLayoutConstants
+test_ct_diagSlotIndicesDistinct
+test_ct_diagSnapshotShape
+test_ct_diagClampSaturates
+test_ct_coreRaw16Assembly
+test_ct_diagSentinelClassifiers

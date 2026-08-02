@@ -585,3 +585,153 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
     }
     return ok;
 }
+
+// -- #102 c1: green pins on the new symbols -----------------------------------
+// These assert semantics that hold from the moment the symbols exist and do NOT
+// move when the counters are wired up in the fix commit. Nothing here asserts
+// that a counter is zero: a freshly constructed sensor runs openChannel() from
+// its own initialize(), so "all counters zero" is true before the wiring and
+// false after -- that is a c2 differential, not a c1 pin.
+
+// The layout constants ARE the wire format of the ct_diag field. Pinned so that
+// changing one without bumping CT_DIAG_VERSION cannot pass silently: every
+// value already recorded in a FIT file is interpreted through this key.
+(:test) function test_ct_diagLayoutConstants(logger) {
+    var ok = true;
+    if ($.CT_DIAG_SLOTS != 21)      { logger.error("CT_DIAG_SLOTS changed to " + $.CT_DIAG_SLOTS + " -- bump CT_DIAG_VERSION and the field's :count together"); ok = false; }
+    if ($.CT_DIAG_VERSION != 1)     { logger.error("CT_DIAG_VERSION changed to " + $.CT_DIAG_VERSION); ok = false; }
+    if ($.CT_DIAG_MAX != 65535)     { logger.error("CT_DIAG_MAX must be the UINT16 ceiling, got " + $.CT_DIAG_MAX); ok = false; }
+    if ($.CT_DIAG_NONE != 0xFFFF)   { logger.error("CT_DIAG_NONE changed to " + $.CT_DIAG_NONE); ok = false; }
+    return ok;
+}
+
+// Every slot index must be distinct and inside the array. A duplicated index is
+// the failure this guards: two counters would write the same slot, one would be
+// invisible and the other wrong, and every other test here would still pass
+// because each one reads the slot it just wrote.
+(:test) function test_ct_diagSlotIndicesDistinct(logger) {
+    var idx = [$.CT_DIAG_I_VERSION, $.CT_DIAG_I_OPEN_ATTEMPTS, $.CT_DIAG_I_OPEN_OK,
+               $.CT_DIAG_I_OPEN_THROW, $.CT_DIAG_I_MSG_TOTAL, $.CT_DIAG_I_BCAST,
+               $.CT_DIAG_I_SHORT_PAY, $.CT_DIAG_I_PAGE1, $.CT_DIAG_I_PAGE_OTHER,
+               $.CT_DIAG_I_CORE_OK, $.CT_DIAG_I_CORE_SENTINEL, $.CT_DIAG_I_CORE_CLAMP,
+               $.CT_DIAG_I_SKIN_OK, $.CT_DIAG_I_SKIN_SENTINEL, $.CT_DIAG_I_SKIN_CLAMP,
+               $.CT_DIAG_I_CHAN_CLOSED, $.CT_DIAG_I_MAX_FAILS, $.CT_DIAG_I_FLAGS,
+               $.CT_DIAG_I_PAGE_FIRST, $.CT_DIAG_I_PAGE_OTHER_LAST,
+               $.CT_DIAG_I_ACQ_PERIOD];
+    var ok = true;
+    if (idx.size() != $.CT_DIAG_SLOTS) {
+        logger.error("this test lists " + idx.size() + " indices but CT_DIAG_SLOTS is " +
+                     $.CT_DIAG_SLOTS + " -- a slot was added without a pin");
+        ok = false;
+    }
+    for (var i = 0; i < idx.size(); i++) {
+        if (idx[i] < 0 || idx[i] >= $.CT_DIAG_SLOTS) {
+            logger.error("index " + i + " = " + idx[i] + " is outside 0.." + ($.CT_DIAG_SLOTS - 1));
+            ok = false;
+        }
+        for (var j = i + 1; j < idx.size(); j++) {
+            if (idx[i] == idx[j]) {
+                logger.error("slot index collision: entries " + i + " and " + j + " both = " + idx[i]);
+                ok = false;
+            }
+        }
+    }
+    return ok;
+}
+
+// Shape of the readout, independent of what the counters happen to hold: the
+// array is exactly CT_DIAG_SLOTS long, slot 0 carries the version, and no slot
+// can leave the UINT16 range the field's base type admits.
+(:test) function test_ct_diagSnapshotShape(logger) {
+    var s = new CoreTempSensor();
+    var a = s.diagSnapshot();
+    var ok = true;
+    if (a == null) {
+        logger.error("diagSnapshot returned null");
+        return false;
+    }
+    if (a.size() != $.CT_DIAG_SLOTS) {
+        logger.error("diagSnapshot size " + a.size() + " != CT_DIAG_SLOTS " + $.CT_DIAG_SLOTS);
+        ok = false;
+    }
+    if (a[$.CT_DIAG_I_VERSION] != $.CT_DIAG_VERSION) {
+        logger.error("version slot = " + a[$.CT_DIAG_I_VERSION] + ", expected " + $.CT_DIAG_VERSION);
+        ok = false;
+    }
+    for (var i = 0; i < a.size(); i++) {
+        if (a[i] == null || a[i] < 0 || a[i] > $.CT_DIAG_MAX) {
+            logger.error("slot " + i + " = " + a[i] + " is not a UINT16");
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// The readout clamp. Saturation is what keeps a long row honest: a counter past
+// the UINT16 ceiling must read "at least CT_DIAG_MAX", never a wrapped number.
+(:test) function test_ct_diagClampSaturates(logger) {
+    var ok = true;
+    if (CoreTempSensor.ctDiagClamp(0)      != 0)            { logger.error("clamp(0) = " + CoreTempSensor.ctDiagClamp(0)); ok = false; }
+    if (CoreTempSensor.ctDiagClamp(123)    != 123)          { logger.error("clamp(123) = " + CoreTempSensor.ctDiagClamp(123)); ok = false; }
+    if (CoreTempSensor.ctDiagClamp(65535)  != 65535)        { logger.error("clamp(65535) must pass through, got " + CoreTempSensor.ctDiagClamp(65535)); ok = false; }
+    if (CoreTempSensor.ctDiagClamp(65536)  != $.CT_DIAG_MAX){ logger.error("clamp(65536) must saturate, got " + CoreTempSensor.ctDiagClamp(65536)); ok = false; }
+    if (CoreTempSensor.ctDiagClamp(999999) != $.CT_DIAG_MAX){ logger.error("clamp(999999) must saturate, got " + CoreTempSensor.ctDiagClamp(999999)); ok = false; }
+    if (CoreTempSensor.ctDiagClamp(-1)     != 0)            { logger.error("clamp(-1) must floor at 0, got " + CoreTempSensor.ctDiagClamp(-1)); ok = false; }
+    if (CoreTempSensor.ctDiagClamp(null)   != 0)            { logger.error("clamp(null) must be 0, got " + CoreTempSensor.ctDiagClamp(null)); ok = false; }
+    return ok;
+}
+
+// The extraction that keeps the diagnostic sentinel test and decodeCoreC
+// reading the same bytes: bytes 6-7, little endian, byte 7 the high half.
+(:test) function test_ct_coreRaw16Assembly(logger) {
+    var ok = true;
+    if (CoreTempSensor.coreRaw16(ctPayload(660, 0x0C8, 3742)) != 3742) {
+        logger.error("coreRaw16 = " + CoreTempSensor.coreRaw16(ctPayload(660, 0x0C8, 3742)) + ", expected 3742");
+        ok = false;
+    }
+    if (CoreTempSensor.coreRaw16(ctPayload(660, 0x0C8, 0xFFFF)) != 0xFFFF) {
+        logger.error("coreRaw16 of the marker = " + CoreTempSensor.coreRaw16(ctPayload(660, 0x0C8, 0xFFFF)));
+        ok = false;
+    }
+    if (CoreTempSensor.coreRaw16(ctPayload(660, 0x0C8, 0x0100)) != 256) {
+        logger.error("byte 7 must be the HIGH half: got " + CoreTempSensor.coreRaw16(ctPayload(660, 0x0C8, 0x0100)));
+        ok = false;
+    }
+    if (CoreTempSensor.coreRaw16(ctPayload(660, 0x0C8, 0)) != 0) {
+        logger.error("coreRaw16 of 0 = " + CoreTempSensor.coreRaw16(ctPayload(660, 0x0C8, 0)));
+        ok = false;
+    }
+    return ok;
+}
+
+// The two sentinel classifiers. They answer a question decodeCoreC/decodeSkinC
+// structurally cannot -- both gates return null -- so they must agree with the
+// decoders about WHICH pattern is the marker, and must not fire on a value the
+// clamp rejected instead.
+(:test) function test_ct_diagSentinelClassifiers(logger) {
+    var ok = true;
+    if (CoreTempSensor.ctCoreSentinel(ctPayload(660, 0x0C8, 0xFFFF)) != true) {
+        logger.error("ctCoreSentinel must fire on raw 0xFFFF");
+        ok = false;
+    }
+    // 100 -> 1.00 C: rejected by the clamp, NOT by the marker.
+    if (CoreTempSensor.ctCoreSentinel(ctPayload(660, 0x0C8, 100)) != false) {
+        logger.error("ctCoreSentinel must not fire on a clamp rejection (raw 100)");
+        ok = false;
+    }
+    if (CoreTempSensor.ctSkinSentinel(ctPayload(0x800, 0x0C8, 3742)) != true) {
+        logger.error("ctSkinSentinel must fire on raw12 0x800");
+        ok = false;
+    }
+    // 0xFFF -> -1 -> -0.05 C: rejected by the clamp, NOT by the marker. This is
+    // the case the pre-sign-extension test exists for.
+    if (CoreTempSensor.ctSkinSentinel(ctPayload(0xFFF, 0x0C8, 3742)) != false) {
+        logger.error("ctSkinSentinel must not fire on a clamp rejection (raw12 0xFFF)");
+        ok = false;
+    }
+    if (CoreTempSensor.ctSkinSentinel(ctPayload(660, 0x0C8, 3742)) != false) {
+        logger.error("ctSkinSentinel must not fire on a valid reading");
+        ok = false;
+    }
+    return ok;
+}
