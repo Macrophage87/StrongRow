@@ -57,6 +57,15 @@ class LifeTimer {
     }
 }
 
+// Stand-in for a FitContributor field handle. Only identity and non-nullness
+// matter to the invariant tests; setData is present so nothing faults if a
+// future test reaches a write.
+class LifeField {
+    var writes;
+    function initialize() { writes = 0; }
+    function setData(v) { writes++; }
+}
+
 class LifeCoreSensor {
     var closes;       // close() call count
     var log;          // shared ordered event log owned by the probe, or null
@@ -182,6 +191,17 @@ class LifeProbe extends StrongRowView {
     function sensorCount() { if (madeSensors == null) { madeSensors = []; } return madeSensors.size(); }
     function timerAt(i)    { return madeTimers[i]; }
     function sensorAt(i)   { return madeSensors[i]; }
+
+    // Stand up the two record-scope CORE field handles without a Session, so
+    // the invariant that couples them to mCoreSensor is drivable. mSession is
+    // deliberately left null: stopAndSave's body is then skipped entirely, so
+    // nothing but the finally can clear these.
+    function armCoreField() {
+        mFitCore = new LifeField();
+        mFitSkin = new LifeField();
+    }
+    function coreFieldHandle() { return mFitCore; }
+    function skinFieldHandle() { return mFitSkin; }
 
     function saveCount()          { return (saves == null) ? 0 : saves; }
     function sensorLiveAtSave()   { return sensorAtSave == true; }
@@ -592,6 +612,59 @@ class LifeThrowingCloseProbe extends LifeProbe {
     if (p.timerCount() != 2) {
         logger.error("onLayout must re-arm after shutdown, timers made = " +
                      p.timerCount() + " (expected a second one)");
+        ok = false;
+    }
+    return ok;
+}
+
+// The INVARIANT `mFitCore != null => mCoreSensor != null` on the throw path.
+//
+// coreFieldsWanted's null term exists to keep that invariant local to one line,
+// and onTick dereferences mCoreSensor guarded ONLY by mFitCore. Round 2's
+// try/finally made the invariant violable: a throw partway through
+// stopAndSave(), before it reaches `mFitCore = null`, still runs the finally
+// and clears mCoreSensor -- leaving mFitCore set and mCoreSensor null. A
+// subsequent onTick is then a HARD FAULT, not a catchable exception, which is
+// strictly worse than the exception that caused it.
+//
+// The fix clears the dependent field handles together with the sensor in the
+// same finally, so they cannot be observed disagreeing. This test drives it
+// with mSession null, so stopAndSave's body is skipped entirely and mFitCore
+// is untouched by it -- isolating the finally as the only thing that can
+// restore the invariant.
+//
+// This is a LISTED scope decision, not a smuggled one: review raised the stale
+// comment as non-blocking and asked for the comment to be corrected. Fixing the
+// hazard instead is a behaviour change beyond that, taken because the fix is
+// two assignments in a finally this PR already added, and because the failure
+// mode is an uncatchable fault. Flagged for review rather than assumed agreed.
+(:test) function test_life_shutdownKeepsCoreFieldInvariantOnThrow(logger) {
+    var p = new LifeThrowingSaveProbe();
+    p.onLayout(null as Gfx.Dc);
+    p.armCoreField();     // mFitCore/mFitSkin set, mSession left null
+
+    try {
+        p.shutdown();
+    } catch (e) {
+        // expected: this probe's stopAndSave throws
+    }
+
+    var ok = true;
+    if (p.sensorHandle() != null) {
+        logger.error("the sensor handle should have been cleared by the finally");
+        ok = false;
+    }
+    if (p.coreFieldHandle() != null) {
+        logger.error("mFitCore outlived mCoreSensor: the invariant " +
+                     "`mFitCore != null => mCoreSensor != null` is violated, and " +
+                     "onTick dereferences mCoreSensor guarded only by mFitCore -- " +
+                     "a subsequent tick is a HARD FAULT, not a catchable throw. " +
+                     "Clear the dependent field handles in the same finally");
+        ok = false;
+    }
+    if (p.skinFieldHandle() != null) {
+        logger.error("mFitSkin outlived mCoreSensor; same invariant, same line " +
+                     "in onTick");
         ok = false;
     }
     return ok;
