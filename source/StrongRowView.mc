@@ -795,9 +795,34 @@ class StrongRowView extends Ui.View {
     // Parameters are UNTYPED on purpose, matching every static above: `rate`
     // arrives as a Float from outputRate() and `lo`/`hi` as Numbers from the
     // app settings, and Monkey C compares those directly.
+    //
+    // #107: THREE-way, not binary. The old selector returned COLOR_ORANGE for
+    // both sides of the band, so it answered "am I wrong" without answering
+    // "which way do I correct" -- rowing 14 and rowing 22 rendered identically.
+    //
+    // Constant choice, and the one that is easy to get backwards: Gfx.COLOR_BLUE
+    // is 0x00AAFF and Gfx.COLOR_DK_BLUE is 0x0000FF. Garmin's naming is inverted
+    // relative to the obvious reading, and the difference decides legibility on
+    // the six 8 bpp transflective MIP devices in the manifest. Against the black
+    // background onUpdate clears to, WCAG contrast is:
+    //     COLOR_GREEN   00FF00  15.30:1
+    //     COLOR_BLUE    00AAFF   8.19:1   <- chosen
+    //     COLOR_ORANGE  FF5500   6.55:1   <- what this replaces
+    //     COLOR_RED     FF0000   5.25:1   <- chosen
+    //     COLOR_DK_BLUE 0000FF   2.44:1   <- rejected, below the 3:1 floor
+    // So the blue used here is BRIGHTER than the orange it replaces. All three
+    // are exact entries in the 64-colour palette those devices declare (the
+    // 4x4x4 cube over {00,55,AA,FF}), so nothing is dithered or snapped.
+    // What none of that settles is how they read on a wrist in sunlight; that
+    // needs a device, not arithmetic.
+    //
+    // Boundary inclusivity is unchanged from the binary predicate: `rate == lo`
+    // is neither `< lo` nor `> hi`, so it is green, and likewise `rate == hi`.
     static function rateColour(isWork, rate, lo, hi) {
         if (isWork && rate > 0.0) {
-            return (rate >= lo && rate <= hi) ? Gfx.COLOR_GREEN : Gfx.COLOR_ORANGE;
+            if (rate < lo) { return Gfx.COLOR_BLUE; }   // below band: rate up
+            if (rate > hi) { return Gfx.COLOR_RED; }    // above band: rate down
+            return Gfx.COLOR_GREEN;                     // in band: hold
         }
         return Gfx.COLOR_WHITE;
     }
