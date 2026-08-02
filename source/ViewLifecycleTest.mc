@@ -41,19 +41,29 @@ class LifeTimer {
     var stops;       // stop() call count
     var lastMs;      // interval of the most recent start()
     var lastRepeat;  // repeat flag of the most recent start()
+    var throwOnStop; // make stop() fail, to measure the unwind path
     function initialize() {
         starts = 0; stops = 0; lastMs = 0; lastRepeat = false;
+        throwOnStop = false;
     }
     function start(cb, ms, repeat) {
         starts++; lastMs = ms; lastRepeat = repeat;
     }
-    function stop() { stops++; }
+    // Records FIRST, then fails: the call did happen, and a test asserting on
+    // stops must not be unable to tell "never called" from "called and threw".
+    function stop() {
+        stops++;
+        if (throwOnStop) { throw new Lang.Exception(); }
+    }
 }
 
 class LifeCoreSensor {
-    var closes;      // close() call count
-    var log;         // shared ordered event log owned by the probe, or null
-    function initialize(sharedLog) { closes = 0; log = sharedLog; }
+    var closes;       // close() call count
+    var log;          // shared ordered event log owned by the probe, or null
+    var throwOnClose; // make close() fail, to measure the unwind path
+    function initialize(sharedLog) {
+        closes = 0; log = sharedLog; throwOnClose = false;
+    }
     function close() {
         closes++;
         // Ordered, not just counted: #103 latches its ANT diagnostics at
@@ -61,6 +71,7 @@ class LifeCoreSensor {
         // stopAndSave(), so the relative order is a contract another PR
         // depends on and not an implementation detail.
         if (log != null) { log.add("close"); }
+        if (throwOnClose) { throw new Lang.Exception(); }
     }
     // Not called on any path these tests drive, but present so a future test
     // that reaches drawGps or onTick does not measure a missing-member throw
@@ -483,15 +494,147 @@ class LifeProbe extends StrongRowView {
     return ok;
 }
 
-// A probe whose stopAndSave() THROWS, so the teardown's behaviour on the
-// failure path is measurable. Subclasses LifeProbe so every seam, stub and
-// recorder is shared -- only the outcome of stopAndSave differs.
+// Probes for the three points in shutdown() where a release call can fail.
+// Each subclasses LifeProbe so every seam, stub and recorder is shared and only
+// the failing call differs.
+//
+// SHUTDOWN HAS THREE UNWIND POINTS, not one, and each is its own defect if the
+// teardown does not survive it:
+//   mTimer.stop()      -- upstream of everything; a throw here skips the sensor
+//                         close, the save, AND both clears
+//   mCoreSensor.close() -- a throw here skips the save and the sensor clear
+//   stopAndSave()      -- a throw here skips the sensor clear
+// The tests below cover all three. Round 2 fixed only the third, which is how
+// the first two survived into round 3.
+
 class LifeThrowingSaveProbe extends LifeProbe {
     function initialize() { LifeProbe.initialize(); }
     function stopAndSave() {
         LifeProbe.stopAndSave();     // record the call, run the real body
         throw new Lang.Exception();  // then fail, as a throwing save would
     }
+}
+
+class LifeThrowingStopProbe extends LifeProbe {
+    function initialize() { LifeProbe.initialize(); }
+    hidden function makeTimer() {
+        var t = LifeProbe.makeTimer();
+        t.throwOnStop = true;
+        return t;
+    }
+}
+
+class LifeThrowingCloseProbe extends LifeProbe {
+    function initialize() { LifeProbe.initialize(); }
+    hidden function makeCoreSensor() {
+        var s = LifeProbe.makeCoreSensor();
+        s.throwOnClose = true;
+        return s;
+    }
+}
+
+// mTimer.stop() throwing. THE round-3 finding, and the third instance of one
+// pattern in this function.
+//
+// Before the fix, `mTimer = null` sat inside the same block as `mTimer.stop()`,
+// so the clear was conditional on stop() returning normally. A throw then:
+//   * skipped the clear, so the guard this PR added to onLayout reads a stopped
+//     Timer as live and NEVER re-arms -- zero live timers, permanently;
+//   * propagated out of shutdown() from a point UPSTREAM of the round-2
+//     try/finally, so the sensor close and stopAndSave() never ran at all --
+//     the sensor is left non-null-but-live and THE ROW IS NEVER SAVED.
+//
+// On base main this was harmless: onLayout allocated unconditionally, so a
+// throwing stop() left an orphan but recovery still worked. This PR is what
+// converts "orphaned timer, recovery works" into "no timer ever again", so the
+// unwind protection is this PR's to add -- the same argument, symmetric, that
+// justified the sensor's finally in round 2.
+//
+// Asserts the OUTCOME (a later onLayout really does re-allocate), not just the
+// proxy (handle is null). The proxy is what the guard reads, but re-arming is
+// what the user gets.
+(:test) function test_life_shutdownClearsTimerEvenIfStopThrows(logger) {
+    var p = new LifeThrowingStopProbe();
+    p.onLayout(null as Gfx.Dc);
+
+    try {
+        p.shutdown();
+    } catch (e) {
+        logger.error("a throwing stop() must not propagate out of shutdown: it " +
+                     "is upstream of the save, so the row is lost as well");
+        return false;
+    }
+
+    var ok = true;
+    if (p.timerAt(0).stops != 1) {
+        logger.error("stop() must still have been attempted once, got " +
+                     p.timerAt(0).stops);
+        ok = false;
+    }
+    if (p.timerHandle() != null) {
+        logger.error("a throw in stop() skipped the clear: shutdown left a " +
+                     "STOPPED Timer in mTimer, so onLayout's guard reads it as " +
+                     "live and never re-arms -- ZERO live timers, permanently");
+        ok = false;
+    }
+    if (p.saveCount() != 1) {
+        logger.error("a throw in stop() skipped stopAndSave entirely -- the row " +
+                     "is never saved. saveCount=" + p.saveCount());
+        ok = false;
+    }
+    if (p.sensorHandle() != null) {
+        logger.error("the sensor handle must be cleared too; a throw upstream " +
+                     "of the try/finally skips that clear as well");
+        ok = false;
+    }
+    // The outcome, not the proxy: recovery must actually work.
+    p.onLayout(null as Gfx.Dc);
+    if (p.timerCount() != 2) {
+        logger.error("onLayout must re-arm after shutdown, timers made = " +
+                     p.timerCount() + " (expected a second one)");
+        ok = false;
+    }
+    return ok;
+}
+
+// mCoreSensor.close() throwing -- the near neighbour of the finding above, one
+// line further down and structurally identical. A throw here is downstream of
+// the timer but still UPSTREAM of the try/finally, so it skips both the save
+// and the sensor clear. Not reported in review; found by looking one line out
+// from the reported defect, which is this repository's documented habit.
+(:test) function test_life_shutdownSavesEvenIfSensorCloseThrows(logger) {
+    var p = new LifeThrowingCloseProbe();
+    p.onLayout(null as Gfx.Dc);
+
+    try {
+        p.shutdown();
+    } catch (e) {
+        logger.error("a throwing close() must not propagate out of shutdown: " +
+                     "the save is downstream of it and the row would be lost");
+        return false;
+    }
+
+    var ok = true;
+    if (p.sensorAt(0).closes != 1) {
+        logger.error("close() must still have been attempted once, got " +
+                     p.sensorAt(0).closes);
+        ok = false;
+    }
+    if (p.saveCount() != 1) {
+        logger.error("a throw in close() skipped stopAndSave -- the row is " +
+                     "never saved. saveCount=" + p.saveCount());
+        ok = false;
+    }
+    if (p.sensorHandle() != null) {
+        logger.error("a throw in close() skipped the sensor clear, leaving a " +
+                     "dead handle onLayout's guard reads as live");
+        ok = false;
+    }
+    if (p.timerHandle() != null) {
+        logger.error("mTimer must be null: it is cleared before this point");
+        ok = false;
+    }
+    return ok;
 }
 
 // The regression the round-2 delta created, and the mirror image of the defect
@@ -552,8 +695,18 @@ class LifeThrowingSaveProbe extends LifeProbe {
         ok = false;
     }
     if (p.timerHandle() != null) {
-        logger.error("mTimer must be null too; it is cleared before the throw " +
-                     "point, so this failing means the ordering changed");
+        logger.error("mTimer must be null too. It is cleared earlier in " +
+                     "shutdown than this throw point -- but 'earlier' is not " +
+                     "the same as 'unconditionally', which is what " +
+                     "test_life_shutdownClearsTimerEvenIfStopThrows covers");
+        ok = false;
+    }
+    // The outcome, not just the proxy: after a failed save the app must still
+    // be able to re-arm. Cheap to assert here and it is what the user gets.
+    p.onLayout(null as Gfx.Dc);
+    if (p.sensorCount() != 2) {
+        logger.error("onLayout must re-open a sensor after shutdown, sensors " +
+                     "made = " + p.sensorCount() + " (expected a second one)");
         ok = false;
     }
     return ok;
