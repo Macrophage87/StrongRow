@@ -373,13 +373,39 @@ class StrongRowView extends Ui.View {
     // replaces; and enableLocationEvents sets a mode. Guarding them would also
     // destroy the only path that could ever recover from the double
     // registration failure startSensor handles by setting mSensorOk = false.
+    // BUILD, THEN PUBLISH -- the allocation-side half of the rule shutdown()
+    // states for teardown. There, a handle is cleared BEFORE the release call
+    // that might throw; here, a handle is assigned only AFTER the call that
+    // arms it has succeeded. Both say the same thing: a field must never hold
+    // something the guard would read as live but which is not.
+    //
+    // `mTimer = makeTimer()` followed by `mTimer.start(...)` published a Timer
+    // that was not yet armed, so a throw from start() left a non-null,
+    // never-started Timer -- and the guard above reads that as live and never
+    // re-arms, for the life of the app. On base main the same throw was
+    // harmless: onLayout allocated unconditionally, so the next call simply
+    // tried again. The guard is what converts "retry next time" into "never
+    // again", which is why the protection belongs here.
+    //
+    // mCoreSensor needs no equivalent and deliberately does not get one:
+    // `mCoreSensor = makeCoreSensor()` assigns only if the constructor
+    // returns, so a throw from the ANT channel open leaves the field null and
+    // the next onLayout retries. (That such a throw also skips the timer block
+    // is base main's behaviour, unchanged by the guards, so it is not fixed
+    // here.)
+    //
+    // The throw still PROPAGATES; no catch is added. shutdown() swallows
+    // because a throw there would lose the recorded row -- allocation has no
+    // such asset to protect, and silently continuing without a tick timer would
+    // hide an app that cannot function. Base main propagated it too.
     function onLayout(dc) {
         startSensor();
         startGps();
         if (mCoreSensor == null) { mCoreSensor = makeCoreSensor(); }
         if (mTimer == null) {
-            mTimer = makeTimer();
-            mTimer.start(method(:onTick), 250, true);
+            var t = makeTimer();
+            t.start(method(:onTick), 250, true);
+            mTimer = t;
         }
     }
 
@@ -822,34 +848,49 @@ class StrongRowView extends Ui.View {
     // dereference mCoreSensor guarded only by the field handle, so keeping it
     // holds the invariant `mFitCore != null => mCoreSensor != null` local to
     // one adjacent line instead of resting on a whole-file lifecycle argument.
-    // Where the invariant is actually maintained, stated as the enumeration it
-    // is rather than as an absolute -- this parenthesis has now been wrong
-    // twice for claiming more than it could support, so it claims less:
+    // WHAT MAINTAINS IT, stated as a rule rather than as a census of call
+    // sites. Every previous version of this paragraph was an enumeration, and
+    // every one of them went stale or overreached (see the corrections below),
+    // so it is deliberately phrased as something that cannot be invalidated by
+    // adding code elsewhere:
     //
-    //   * initialize()   -- sets mFitCore and mCoreSensor null together;
-    //   * stopAndSave()  -- nulls the field handles while mCoreSensor is still
-    //                       set, which satisfies the implication (antecedent
-    //                       false), and is the ordinary end-of-row path;
-    //   * shutdown()     -- clears mFitCore, mFitSkin and mCoreSensor in ONE
-    //                       finally, so a throw partway through stopAndSave
-    //                       cannot leave the field set with the sensor gone.
-    //                       Pinned by test_life_shutdownKeepsCoreFieldInvariantOnThrow.
+    //   Clearing mFitCore / mFitSkin ALONE is always safe -- it makes the
+    //   antecedent false, so the implication holds trivially. Only an
+    //   assignment that nulls mCoreSensor can break the invariant. The rule is
+    //   therefore one line:
     //
-    // Those are the only three sites that assign either to null today. That is
-    // an enumeration of current code, NOT a guarantee about code not yet
-    // written: any future site that nulls mCoreSensor without the field handles
-    // reintroduces the hazard, and it is a hard fault rather than a catchable
-    // throw, because onTick dereferences mCoreSensor guarded only by mFitCore.
-    // The null term here is what keeps that coupling visible at one line.
+    //       never null mCoreSensor without nulling mFitCore and mFitSkin in
+    //       the same breath.
     //
-    // Corrections, kept rather than edited away, because the pattern is the
-    // point: revision 1 said "assigned null only in initialize()", which #11
-    // made false. Revision 2 justified the window by single-threaded dispatch
-    // and a shared event loop -- two platform properties nothing here measures.
-    // Revision 3 said the window was "unreachable BY CONSTRUCTION"; the
-    // try/finally added in the same round falsified that, and review measured
-    // the violation. Each was stronger than its evidence. The list above is
-    // scoped to what the code does today and is pinned by a test.
+    // Two places null mCoreSensor and both obey it: initialize(), which sets
+    // all of them null together, and shutdown()'s finally, which clears the
+    // three as a unit precisely so a throw partway through stopAndSave cannot
+    // leave a field set with the sensor gone -- pinned by
+    // test_life_shutdownKeepsCoreFieldInvariantOnThrow. Sites that clear only
+    // the field handles (stopAndSave; startSession's createField catch) need no
+    // audit under the rule above, which is the point of phrasing it that way.
+    //
+    // The stakes, unchanged: onTick dereferences mCoreSensor guarded only by
+    // mFitCore, so a violation is a HARD FAULT, not a catchable throw. The null
+    // term here is what keeps that coupling visible at one line.
+    //
+    // Corrections, kept rather than edited away, because the pattern -- one
+    // comment, one claim outrunning its evidence, once per review round -- is
+    // itself the thing worth recording:
+    //   1. "assigned null only in initialize()"          -- #11 made it false.
+    //   2. justified the window by single-threaded dispatch and a shared event
+    //      loop                                          -- two platform
+    //      properties nothing in this repository measures.
+    //   3. "unreachable BY CONSTRUCTION"                 -- the try/finally
+    //      added in the same round falsified it, and review measured the
+    //      violation.
+    //   4. "the only three sites that assign either to null" -- false; the
+    //      createField catch in startSession is a fourth. Behaviourally
+    //      harmless, but the sentence's whole job was to be exhaustive.
+    // A fifth revision that merely recounted the sites would fail the same way,
+    // which is why this one states an invariant-preserving rule instead. No
+    // count of revisions appears in this paragraph, because that count is one
+    // more thing that would need updating and did in fact go stale once.
     static function coreFieldsWanted(sensor) {
         return sensor != null;
     }
