@@ -31,6 +31,87 @@ const CT_BURST_TRIES     = 4;     // back-to-back searches before backoff starts
 const CT_BACKOFF_BASE_MS = 30000;
 const CT_BACKOFF_MAX_MS  = 300000;
 
+// ---- #102 diagnostic counters ----------------------------------------------
+//
+// A 68-minute row logged core_temperature = 0.0 in all 4109 records and the
+// file could not say WHY: no pod in range, a channel that never opened, and
+// frames that arrived and were discarded are three failures with three
+// different fixes and one identical footprint. These counters exist to
+// separate them, and nothing else -- they must never change a decoded value,
+// a clamp, a freshness window or the retry ladder.
+//
+// They are read out ONCE, in stopAndSave, into a single session-scope UINT16
+// ARRAY developer field ("ct_diag", id 10, :count => CT_DIAG_SLOTS). One array
+// rather than ~20 scalars: developer field ids 0-9 are already allocated and
+// #77 is open on whether the SDK caps fields per session, so this costs ONE
+// more id instead of twenty, and one field_description message instead of
+// twenty -- while every slot stays an ordinary readable integer, which a
+// bit-packed encoding would not. Slot 0 carries the layout version so a future
+// reader can tell which key below applies.
+//
+// MEASURED, in the SIMULATOR on fr965 / SDK 9.2.0 (treat hardware and other
+// SDKs as expected-same but unmeasured): a session-scope UINT16 field with
+// :count is created without throwing, setData on it after session.stop() and
+// before session.save() does not throw, and the values survive to the file --
+// a saved activity driven through the real startSession/stopAndSave path
+// decoded with fitparse carrying all CT_DIAG_SLOTS values in order, unscaled,
+// under native_mesg_num='session', alongside all ten pre-existing developer
+// fields. Whether a real device agrees, and whether it caps developer fields
+// below 11, is NOT measured; #77 owns that question.
+//
+// Counters are plain 32-bit Number increments on the ANT callback path: no
+// saturation test, no allocation, no branch beyond the ones already present.
+// A 4 Hz channel for 24 h is ~3.5e5 increments, nearly four orders of
+// magnitude below the 2^31-1 overflow, so clamping to the UINT16 range happens
+// ONCE at readout instead. A slot reading CT_DIAG_MAX therefore means "at
+// least CT_DIAG_MAX": the READOUT clamp bites long before overflow does --
+// 65535 messages is ~4.6 h at PERIOD_B, ~9.1 h at PERIOD_A. Only quantitative
+// ratios degrade there; every discrimination below turns on zero versus
+// non-zero, which survives any session length.
+const CT_DIAG_SLOTS   = 21;
+const CT_DIAG_MAX     = 65535;    // UINT16 ceiling; readout clamps, not the counter
+const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
+
+// Slot indices. These ARE the wire format: renumbering one without bumping
+// CT_DIAG_VERSION silently mis-labels every field already recorded.
+const CT_DIAG_VERSION = 1;        // value stored in slot CT_DIAG_I_VERSION
+
+const CT_DIAG_I_VERSION       = 0;
+const CT_DIAG_I_OPEN_ATTEMPTS = 1;   // openChannel() entries
+const CT_DIAG_I_OPEN_OK       = 2;   // open() RETURNED TRUE -- the channel opened
+const CT_DIAG_I_OPEN_THROW    = 3;   // openChannel()'s catch entered
+// openAttempts - openOk - openThrow is the QUIET-FAILURE count: open() returned
+// false without throwing. Reading openOk as "did not throw" is the misdiagnosis
+// this key exists to prevent -- a quietly failed open is not a podless row.
+const CT_DIAG_I_MSG_TOTAL     = 4;   // onMessage() entries -- any ANT message
+const CT_DIAG_I_BCAST         = 5;   // broadcast payloads reaching onBroadcast
+const CT_DIAG_I_SHORT_PAY     = 6;   // rejected: null or fewer than 8 bytes
+const CT_DIAG_I_PAGE1         = 7;   // page byte == 0x01
+const CT_DIAG_I_PAGE_OTHER    = 8;   // page byte != 0x01 -- the page-filter reject
+const CT_DIAG_I_CORE_OK       = 9;   // decodeCoreC returned a value
+const CT_DIAG_I_CORE_SENTINEL = 10;  // rejected: raw16 == 0xFFFF
+const CT_DIAG_I_CORE_CLAMP    = 11;  // rejected: outside CT_CORE_MIN_C..MAX_C
+const CT_DIAG_I_SKIN_OK       = 12;  // decodeSkinC returned a value
+const CT_DIAG_I_SKIN_SENTINEL = 13;  // rejected: raw12 == CT_SKIN_INVALID
+const CT_DIAG_I_SKIN_CLAMP    = 14;  // rejected: outside CT_SKIN_MIN_C..MAX_C
+const CT_DIAG_I_CHAN_CLOSED   = 15;  // onChannelClosed() entries
+const CT_DIAG_I_MAX_FAILS     = 16;  // HIGHEST mFails reached (mFails itself resets)
+const CT_DIAG_I_FLAGS         = 17;  // see CT_DIAG_F_* below
+const CT_DIAG_I_PAGE_FIRST    = 18;  // first page byte ever observed
+const CT_DIAG_I_PAGE_OTHER_LAST = 19; // most recent page byte != 0x01
+const CT_DIAG_I_ACQ_PERIOD    = 20;  // mPeriod at the FIRST broadcast frame (#84)
+// Slot 20 answers #84 in the AFFIRMATIVE ONLY. PERIOD_A is always tried first,
+// so 16384 proves nothing about the fallback; only 8192 is evidence that
+// PERIOD_B can acquire. And it reads 0 on precisely the zero-frame rows where
+// the question bites, because it is set inside onBroadcast. A value seen in a
+// synthetic run shows the slot populates and reaches the file -- it is not
+// evidence that a pod acquired at 4 Hz.
+
+// Bits of CT_DIAG_I_FLAGS.
+const CT_DIAG_F_CHANNEL_HELD = 1;   // a channel handle was still held at readout
+const CT_DIAG_F_CLOSED       = 2;   // close() had run
+const CT_DIAG_F_EVER_SEEN    = 4;   // a reading was accepted at some point
+
 // Listens for a CORE (greenTEG) body-temperature pod over a generic ANT+
 // channel (ANT+ Core Body Temperature profile, device type 127). Connect IQ's
 // AntPlus module has no CBT profile and a watch app cannot host the official
@@ -56,6 +137,36 @@ class CoreTempSensor {
     hidden var mClosed;
     hidden var mRetryTimer;
 
+    // #102 diagnostic counters. Plain Numbers, incremented bare on the ANT
+    // callback path and clamped once at readout -- see the CT_DIAG_* block at
+    // the top of this file. Named fields rather than one array so each
+    // increment site names what it counts and costs a single field store.
+    hidden var mDiagOpenAttempts;
+    hidden var mDiagOpenOk;
+    hidden var mDiagOpenThrow;
+    hidden var mDiagMsgTotal;
+    hidden var mDiagBcast;
+    hidden var mDiagShortPay;
+    hidden var mDiagPage1;
+    hidden var mDiagPageOther;
+    hidden var mDiagCoreOk;
+    hidden var mDiagCoreSentinel;
+    hidden var mDiagCoreClamp;
+    hidden var mDiagSkinOk;
+    hidden var mDiagSkinSentinel;
+    hidden var mDiagSkinClamp;
+    hidden var mDiagChanClosed;
+    hidden var mDiagMaxFails;
+    hidden var mDiagPageFirst;
+    hidden var mDiagPageOtherLast;
+    hidden var mDiagAcqPeriod;
+    // Flags latched at close(), because shutdown() calls close() BEFORE
+    // stopAndSave() (StrongRowView.shutdown) -- reading the live channel state
+    // at readout would therefore always report "released, closed" and say
+    // nothing about the state the session actually ended in. Negative means
+    // "not latched", in which case the readout computes them live.
+    hidden var mDiagFlags;
+
     function initialize() {
         mChannel    = null;
         mPeriod     = PERIOD_A;
@@ -68,7 +179,37 @@ class CoreTempSensor {
         mFails      = 0;
         mClosed     = false;
         mRetryTimer = null;
+        // Diagnostics MUST be zeroed before openChannel() below: the
+        // constructor's own open attempt is a real attempt and has to be
+        // counted, so initialising after it would silently discard it.
+        resetDiag();
         openChannel();
+    }
+
+    // Zero every diagnostic counter. Split out of initialize() so the ordering
+    // note above is enforced by one call rather than by field order, and so a
+    // test can re-baseline without reconstructing the sensor.
+    hidden function resetDiag() {
+        mDiagOpenAttempts  = 0;
+        mDiagOpenOk        = 0;
+        mDiagOpenThrow     = 0;
+        mDiagMsgTotal      = 0;
+        mDiagBcast         = 0;
+        mDiagShortPay      = 0;
+        mDiagPage1         = 0;
+        mDiagPageOther     = 0;
+        mDiagCoreOk        = 0;
+        mDiagCoreSentinel  = 0;
+        mDiagCoreClamp     = 0;
+        mDiagSkinOk        = 0;
+        mDiagSkinSentinel  = 0;
+        mDiagSkinClamp     = 0;
+        mDiagChanClosed    = 0;
+        mDiagMaxFails      = 0;
+        mDiagPageFirst     = $.CT_DIAG_NONE;
+        mDiagPageOtherLast = $.CT_DIAG_NONE;
+        mDiagAcqPeriod     = 0;
+        mDiagFlags         = -1;
     }
 
     // ---- pure helpers -------------------------------------------------------
@@ -121,12 +262,52 @@ class CoreTempSensor {
     // actually rejects an invalid frame, and it admits only values where a
     // signed and an unsigned reading agree, so the divergence is unreachable
     // rather than merely harmless. See #87; no behaviour change is intended.
+    // The raw 16-bit core field: bytes 6-7, little endian. Extracted (#102) so
+    // the diagnostic sentinel classifier below and decodeCoreC read the SAME
+    // expression -- two hand-copied assemblies is exactly how the two would
+    // drift apart. Behaviour-preserving: the body is the line it replaces.
+    static function coreRaw16(p) {
+        return (p[6] & 0xFF) + 256 * (p[7] & 0xFF);
+    }
+
     static function decodeCoreC(p) {
-        var raw = (p[6] & 0xFF) + 256 * (p[7] & 0xFF);
+        var raw = coreRaw16(p);
         if (raw == 0xFFFF) { return null; }
         var t = raw * 0.01;
         if (t < $.CT_CORE_MIN_C || t > $.CT_CORE_MAX_C) { return null; }
         return t;
+    }
+
+    // ---- #102 diagnostic helpers -------------------------------------------
+    // Pure, so they are (:test)-able without a channel and so the classifier
+    // and the decoder cannot disagree about what a sentinel is.
+
+    // Did decodeCoreC reject this payload because of the invalid marker rather
+    // than the plausibility clamp? Only meaningful when decodeCoreC returned
+    // null -- it does NOT re-check the clamp. The distinction cannot be
+    // recovered from the return value (both are null), which is why #102 has
+    // to ask the question separately instead of instrumenting the decoder and
+    // changing its behaviour.
+    static function ctCoreSentinel(p) {
+        return coreRaw16(p) == 0xFFFF;
+    }
+
+    // The skin analogue. Tested on the RAW 12-bit pattern BEFORE sign
+    // extension, for the same reason decodeSkinC does: afterwards 0x800 has
+    // become -2048 and the comparison can never fire.
+    static function ctSkinSentinel(p) {
+        return skinRaw12(p[3], p[4]) == $.CT_SKIN_INVALID;
+    }
+
+    // Clamp a counter into the UINT16 range for the ct_diag field. Applied
+    // once at readout rather than per increment, so the ANT callback path
+    // carries no saturation test -- see the CT_DIAG_* block. A value that
+    // saturates reads as "at least CT_DIAG_MAX", never as a wrapped number.
+    static function ctDiagClamp(v) {
+        if (v == null)         { return 0; }
+        if (v < 0)             { return 0; }
+        if (v > $.CT_DIAG_MAX) { return $.CT_DIAG_MAX; }
+        return v;
     }
 
     // Skin temperature in C from a page-1 payload, or null when the frame
@@ -184,10 +365,31 @@ class CoreTempSensor {
     }
 
     hidden function openChannel() {
+        mDiagOpenAttempts++;
         try {
             if (mChannel == null) {
                 mChannel = makeChannel();
             }
+            // setDeviceConfig() ALSO returns a documented Boolean ("Returns
+            // Boolean true on success, otherwise false" -- SDK 9.2.0
+            // api.debug.xml), and so does release(), called from
+            // discardChannel(). Neither return is counted, and that is a
+            // decision rather than an oversight:
+            //
+            //   * every free slot would be a NEW slot, and a new slot is a
+            //     wire-format change requiring a CT_DIAG_VERSION bump -- not
+            //     something to fold into a revision of the counter whose
+            //     meaning was just corrected;
+            //   * folding a false setDeviceConfig into openOk would redefine
+            //     openOk a second time, silently, with no version change to
+            //     signal it -- worse for a reader of an existing file than
+            //     leaving the gap visible here.
+            //
+            // The consequence, stated so it is not rediscovered as a surprise:
+            // a config that quietly fails and is then followed by an open()
+            // returning true reads as openOk > 0. That is a KNOWN BLIND SPOT of
+            // this layout, tracked separately; it is not covered by the
+            // quiet-failure arithmetic above, which sees only open().
             mChannel.setDeviceConfig(new Ant.DeviceConfig({
                 :deviceNumber => 0,              // wildcard: first pod found
                 :deviceType => DEVICE_TYPE,
@@ -197,8 +399,39 @@ class CoreTempSensor {
                 :searchTimeoutLowPriority => 12, // 30 s per attempt
                 :searchThreshold => 0
             }));
-            mChannel.open();
+            // Ant.GenericChannel.open() reports failure TWO ways: it throws,
+            // and it returns false ("Returns Boolean true on success,
+            // otherwise false" -- SDK 9.2.0 api.debug.xml). #102 counted only
+            // the first, so a channel that failed quietly was recorded as a
+            // success and produced a snapshot identical in all 21 slots to a
+            // row with no pod in range -- the key would have named the wrong
+            // hypothesis, inside the discriminator built to prevent exactly
+            // that.
+            //
+            // The return value is NOT acted on beyond counting: no retry is
+            // scheduled, no channel released, nothing that was not done
+            // before. This stays diagnostic-only.
+            //
+            // NOT MEASURED: whether open() ever actually returns false on this
+            // path. There is no ANT radio in any environment this repository
+            // can run, so the false-return branch has never been observed --
+            // the API documents it and the previous code assumed it away. If
+            // it never fires, openOk is unchanged from before.
+            var opened = mChannel.open();
+
+            // #102: reached only when nothing above threw. openAttempts minus
+            // openOk is not the throw count -- openThrow is counted explicitly
+            // below -- because that difference has to stay readable even if a
+            // future edit adds a return path between here and the catch. With
+            // the guard below, attempts - openOk - openThrow is exactly the
+            // quiet-failure count; before it, that residual was always zero.
+            if (opened) { mDiagOpenOk++; }
         } catch (e) {
+            // #102: the counter this issue was filed on. This catch was
+            // completely silent, so a channel that could never be acquired and
+            // a channel that opened and heard nothing left identical files.
+            mDiagOpenThrow++;
+
             // Hand the channel back before dropping the reference. ANT channels
             // are a scarce hardware resource, and the `if (mChannel == null)`
             // guard above only protects the ALLOCATION -- setDeviceConfig() and
@@ -215,6 +448,12 @@ class CoreTempSensor {
             // re-enters openChannel(), which against the un-fixed catch would
             // have turned a one-shot leak into one orphaned channel per retry.
             mFails++;
+            // #102 high-water mark. mFails is reset to 0 by any tracked page-1
+            // frame, so at save time it carries the CURRENT ladder depth and
+            // says nothing about the depth reached. Two copies of this line
+            // exist (here and in onChannelClosed) because mFails is incremented
+            // in exactly those two places; keep them together.
+            if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
             scheduleReopen(ctBackoffMs(mFails));
         }
     }
@@ -258,6 +497,16 @@ class CoreTempSensor {
     // ---- message handling ---------------------------------------------------
 
     function onMessage(msg as Ant.Message) as Void {
+        // #102: every ANT message, before any dispatch -- the counter that
+        // says the radio produced traffic at all.
+        //
+        // CORROBORATING, not load-bearing. openOk alone separates "the channel
+        // opened and nothing broadcast" from "the channel never opened": if a
+        // real podless row turns out to deliver no channel-response events at
+        // all, the first reads (openOk > 0, 0, 0) and the second still reads
+        // (0, 0, 0). That matters because whether a podless row generates
+        // those events on-watch is NOT measured -- see the readout key.
+        mDiagMsgTotal++;
         var id = msg.messageId;
         if (id == Ant.MSG_ID_BROADCAST_DATA) {
             onBroadcast(msg.getPayload());
@@ -274,8 +523,32 @@ class CoreTempSensor {
     // Decode one broadcast payload. Split out of onMessage so a test can feed
     // synthetic bytes directly at the decoder.
     hidden function onBroadcast(p) {
-        if (p == null || p.size() < 8) { return; }
-        if ((p[0] & 0xFF) != 0x01) { return; }   // CBT data page 1 only
+        // #102. Counted here rather than in onMessage's broadcast branch so
+        // that bcast means "a broadcast payload reached the decoder", which is
+        // the same number either way and is reachable from a test that feeds
+        // bytes directly.
+        mDiagBcast++;
+        // The period a frame FIRST arrived on -- #84 asks whether the 4 Hz
+        // PERIOD_B fallback ever acquires, and mPeriod keeps alternating while
+        // nothing has been seen, so its value at save time is the last period
+        // TRIED. Set before the guards below: a payload arriving at all means
+        // the carrier was tracked, however unusable its contents.
+        if (mDiagAcqPeriod == 0) { mDiagAcqPeriod = mPeriod; }
+
+        if (p == null || p.size() < 8) { mDiagShortPay++; return; }
+
+        // Behaviour-identical to the single expression this replaces; the local
+        // exists so the page byte can be recorded as well as tested. A
+        // truncated frame and a wrong page are counted separately because they
+        // point at different defects.
+        var page = p[0] & 0xFF;
+        if (mDiagPageFirst == $.CT_DIAG_NONE) { mDiagPageFirst = page; }
+        if (page != 0x01) {                      // CBT data page 1 only
+            mDiagPageOther++;
+            mDiagPageOtherLast = page;
+            return;
+        }
+        mDiagPage1++;
 
         var now = System.getTimer();
 
@@ -298,18 +571,33 @@ class CoreTempSensor {
         // exist today and must not be introduced while fixing this.
         var c = decodeCoreC(p);
         if (c != null) {
+            mDiagCoreOk++;
             mCore     = c;
             mCoreMs   = now;
             mLastMs   = now;
             mEverSeen = true;
+        } else if (ctCoreSentinel(p)) {
+            // #102: decodeCoreC returns null for BOTH the invalid marker and a
+            // clamp rejection, so the cause has to be recovered here. The
+            // classifier calls coreRaw16 -- the same assembly the decoder uses
+            // -- so the two cannot disagree about what the marker is. Runs only
+            // on the rejection path, and changes nothing the decoder decided.
+            mDiagCoreSentinel++;
+        } else {
+            mDiagCoreClamp++;
         }
 
         var s = decodeSkinC(p);
         if (s != null) {
+            mDiagSkinOk++;
             mSkin     = s;
             mSkinMs   = now;
             mLastMs   = now;
             mEverSeen = true;
+        } else if (ctSkinSentinel(p)) {
+            mDiagSkinSentinel++;
+        } else {
+            mDiagSkinClamp++;
         }
     }
 
@@ -340,7 +628,13 @@ class CoreTempSensor {
     // lifecycle hook in StrongRowView, which is #11's coordination point.
     hidden function onChannelClosed() {
         if (mClosed) { return; }
+        // #102: counted after the mClosed guard, so this means "a search timed
+        // out or the pod dropped and we re-armed", not "a close event arrived
+        // after shutdown".
+        mDiagChanClosed++;
         mFails++;
+        // See the note on the identical pair in openChannel's catch.
+        if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
         if (!mEverSeen) {
             mPeriod = (mPeriod == PERIOD_A) ? PERIOD_B : PERIOD_A;
         }
@@ -390,6 +684,102 @@ class CoreTempSensor {
 
     function everSeen() { return mEverSeen; }
 
+    // ---- #102 diagnostic readout --------------------------------------------
+
+    // Terminal channel state as a bit set. Live form; close() latches it (see
+    // mDiagFlags) because shutdown() releases the channel before stopAndSave
+    // reads the counters.
+    hidden function diagFlagsNow() {
+        var f = 0;
+        if (mChannel != null) { f |= $.CT_DIAG_F_CHANNEL_HELD; }
+        if (mClosed)          { f |= $.CT_DIAG_F_CLOSED; }
+        if (mEverSeen)        { f |= $.CT_DIAG_F_EVER_SEEN; }
+        return f;
+    }
+
+    // ---- reading a ct_diag tuple -------------------------------------------
+    //
+    // The discriminator is (openOk, msgTotal, bcast). Each row states what the
+    // COUNTERS OBSERVED; the equipment verdict in brackets is the inference a
+    // reader draws, and is only as good as the alternatives having been
+    // excluded. Keeping those two apart is not pedantry -- stating the
+    // inference as though it were the observation is how a channel whose
+    // open() returned false came to be recorded as "no pod".
+    //
+    //   (0,  0,  0)  nothing opened, nothing arrived
+    //                [the channel could not be acquired; openThrow and
+    //                 maxFails say how hard it tried]
+    //   (>0, >0,  0)  the channel opened, the radio produced traffic, nothing
+    //                 broadcast on it  [no pod in range]
+    //   (>0, >0, >0)  the channel opened and frames arrived  [something
+    //                 broadcast and was discarded] -- then shortPay, or
+    //                 pageOther with pageFirst/pageOtherLast naming the actual
+    //                 page byte, or the four core/skin reason slots, say which
+    //                 gate dropped it
+    //
+    // openOk is the load-bearing leg: it alone separates the first two rows.
+    // The separation therefore does NOT depend on the unmeasured premise that
+    // a podless row generates channel-response events -- if it generates none,
+    // row two reads (>0, 0, 0) and is still distinct from row one. msgTotal
+    // corroborates.
+    //
+    // A fourth reading exists and is not in the table because it is not a
+    // hypothesis about the pod: openOk > 0 with msgTotal == 0 AND
+    // chanClosed == 0 means the channel opened and then went silent. The retry
+    // ladder is predicated on MSG_CODE_EVENT_CHANNEL_CLOSED arriving, so if it
+    // never does the ladder never advances. That has not been measured either;
+    // it is left visible rather than assumed away.
+    //
+    // The whole diagnostic state as one CT_DIAG_SLOTS-element array, ready for
+    // the ct_diag developer field. Called ONCE per session, from stopAndSave,
+    // so the array allocation here is not on any hot path -- which is the
+    // entire reason the counters are named fields and the packing lives here.
+    //
+    // THE LENGTH IS SAFETY-CRITICAL, not merely tidy. MEASURED (simulator,
+    // fr965 / SDK 9.2.0): calling setData with an array LONGER than the
+    // field's :count raises
+    //
+    //   Error: System Error
+    //   Details: setData input array too long for allocated space
+    //
+    // which is NOT catchable -- it escapes an enclosing try/catch and aborts,
+    // exactly as setData(null) does (#48). A shorter array is accepted without
+    // complaint. So if this size and the :count at the createField call in
+    // StrongRowView ever diverge upward, the app dies at save time, taking the
+    // whole activity with it -- a far worse outcome than a mis-recorded
+    // counter. Both sites read $.CT_DIAG_SLOTS and must keep doing so; do not
+    // substitute a literal in either. test_ct_diagSnapshotShape pins this
+    // side's length, and CT_DIAG_VERSION exists so a deliberate change is
+    // visible in the file rather than silent.
+    //
+    // Every slot is clamped into the UINT16 range on the way out; the counters
+    // themselves are unclamped 32-bit Numbers.
+    function diagSnapshot() {
+        var a = new [$.CT_DIAG_SLOTS];
+        a[$.CT_DIAG_I_VERSION]         = $.CT_DIAG_VERSION;
+        a[$.CT_DIAG_I_OPEN_ATTEMPTS]   = ctDiagClamp(mDiagOpenAttempts);
+        a[$.CT_DIAG_I_OPEN_OK]         = ctDiagClamp(mDiagOpenOk);
+        a[$.CT_DIAG_I_OPEN_THROW]      = ctDiagClamp(mDiagOpenThrow);
+        a[$.CT_DIAG_I_MSG_TOTAL]       = ctDiagClamp(mDiagMsgTotal);
+        a[$.CT_DIAG_I_BCAST]           = ctDiagClamp(mDiagBcast);
+        a[$.CT_DIAG_I_SHORT_PAY]       = ctDiagClamp(mDiagShortPay);
+        a[$.CT_DIAG_I_PAGE1]           = ctDiagClamp(mDiagPage1);
+        a[$.CT_DIAG_I_PAGE_OTHER]      = ctDiagClamp(mDiagPageOther);
+        a[$.CT_DIAG_I_CORE_OK]         = ctDiagClamp(mDiagCoreOk);
+        a[$.CT_DIAG_I_CORE_SENTINEL]   = ctDiagClamp(mDiagCoreSentinel);
+        a[$.CT_DIAG_I_CORE_CLAMP]      = ctDiagClamp(mDiagCoreClamp);
+        a[$.CT_DIAG_I_SKIN_OK]         = ctDiagClamp(mDiagSkinOk);
+        a[$.CT_DIAG_I_SKIN_SENTINEL]   = ctDiagClamp(mDiagSkinSentinel);
+        a[$.CT_DIAG_I_SKIN_CLAMP]      = ctDiagClamp(mDiagSkinClamp);
+        a[$.CT_DIAG_I_CHAN_CLOSED]     = ctDiagClamp(mDiagChanClosed);
+        a[$.CT_DIAG_I_MAX_FAILS]       = ctDiagClamp(mDiagMaxFails);
+        a[$.CT_DIAG_I_FLAGS]           = ctDiagClamp((mDiagFlags >= 0) ? mDiagFlags : diagFlagsNow());
+        a[$.CT_DIAG_I_PAGE_FIRST]      = ctDiagClamp(mDiagPageFirst);
+        a[$.CT_DIAG_I_PAGE_OTHER_LAST] = ctDiagClamp(mDiagPageOtherLast);
+        a[$.CT_DIAG_I_ACQ_PERIOD]      = ctDiagClamp(mDiagAcqPeriod);
+        return a;
+    }
+
     function close() {
         // mClosed FIRST, then cancel, then release. If release() synchronously
         // delivers CHANNEL_CLOSED, the handler would otherwise run after the
@@ -397,6 +787,14 @@ class CoreTempSensor {
         // `mEverSeen || mTries < 3` predicate was an accidental brake on that;
         // removing it removes the brake, so the guard is explicit now.
         mClosed = true;
+        // #102: latch the terminal state HERE, after mClosed is set and before
+        // the channel is released. StrongRowView.shutdown calls close() before
+        // stopAndSave, so a readout that computed these live would report
+        // "no channel held, closed" on every row ever recorded and carry no
+        // information. The other stopAndSave caller (onBack) runs without a
+        // preceding close(), and there diagSnapshot's live fallback is the
+        // correct answer -- the channel really is still up.
+        mDiagFlags = diagFlagsNow();
         cancelReopen();
         discardChannel();
     }
