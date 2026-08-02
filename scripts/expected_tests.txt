@@ -35,6 +35,7 @@ test_life_repeatOnLayoutMakesOneTimer
 test_life_repeatOnLayoutMakesOneCoreSensor
 test_life_repeatOnLayoutLeavesNoOrphanTimer
 test_life_shutdownKeepsSensorReadableUntilSaved
+test_life_shutdownClearsSensorEvenIfSaveThrows
 test_life_shutdownClearsTheHandles
 
 # source/RateColourTest.mc

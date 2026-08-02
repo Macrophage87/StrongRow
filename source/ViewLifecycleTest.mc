@@ -1,5 +1,6 @@
 using Toybox.Test;
 using Toybox.Graphics as Gfx;
+using Toybox.Lang;
 
 // Lifecycle tests for issue #11: onLayout allocates the 250 ms tick Timer and
 // the CoreTempSensor (which owns an ANT channel) with no idempotency guard, so
@@ -173,6 +174,7 @@ class LifeProbe extends StrongRowView {
 
     function saveCount()          { return (saves == null) ? 0 : saves; }
     function sensorLiveAtSave()   { return sensorAtSave == true; }
+    function timerLiveAtSave()    { return timerAtSave == true; }
 
     // Index of the first occurrence of `what` in the teardown log, or -1.
     function eventIndex(what) {
@@ -401,18 +403,6 @@ class LifeProbe extends StrongRowView {
     return ok;
 }
 
-// The near neighbour, and the reason the guard alone is not the whole fix.
-// shutdown() releases both resources but leaves the dead handles in the fields.
-// Once onLayout is guarded on those fields, "non-null" has to mean "live" or
-// the guard reads a stopped timer as a running one and declines to allocate --
-// leaving ZERO live timers where the unfixed code left two. That is #11's
-// mirror image, reachable under exactly the same unverified condition, so both
-// halves ship together.
-//
-// This asserts only that the handles are CLEARED.
-// test_life_shutdownReleasesTheLiveResources above asserts that the resources
-// were RELEASED first, and it reads the recorded stubs rather than these
-// fields precisely so the two cannot be satisfied by nulling without releasing.
 // The CROSS-PR interaction, and the one nothing else in either suite can see.
 //
 // shutdown() clears mCoreSensor, and stopAndSave() is where every session-scope
@@ -477,9 +467,110 @@ class LifeProbe extends StrongRowView {
                      "or onLayout's guard reads a closed sensor as live");
         ok = false;
     }
+    // The mTimer half of the same contract, and it is the OPPOSITE of the
+    // sensor's. Nothing in stopAndSave() reads mTimer, and the timer must be
+    // stopped before any of the teardown runs, so it is cleared FIRST -- the
+    // asymmetry is deliberate and is what the two constraints demand. Asserted
+    // rather than merely recorded: without this, the symmetric form of the
+    // #103 defect (something in stopAndSave growing a dependency on mTimer)
+    // would red nothing here.
+    if (p.timerLiveAtSave()) {
+        logger.error("mTimer must already be cleared when stopAndSave() runs: " +
+                     "it is stopped first so no onTick is scheduled during " +
+                     "teardown, and nothing in stopAndSave reads it");
+        ok = false;
+    }
     return ok;
 }
 
+// A probe whose stopAndSave() THROWS, so the teardown's behaviour on the
+// failure path is measurable. Subclasses LifeProbe so every seam, stub and
+// recorder is shared -- only the outcome of stopAndSave differs.
+class LifeThrowingSaveProbe extends LifeProbe {
+    function initialize() { LifeProbe.initialize(); }
+    function stopAndSave() {
+        LifeProbe.stopAndSave();     // record the call, run the real body
+        throw new Lang.Exception();  // then fail, as a throwing save would
+    }
+}
+
+// The regression the round-2 delta created, and the mirror image of the defect
+// this whole PR exists to fix.
+//
+// Moving `mCoreSensor = null` after stopAndSave() (constraint 2 above) made it
+// the LAST statement of shutdown() -- which makes it the one statement a throw
+// can skip. If stopAndSave() throws, shutdown() unwinds holding a CLOSED
+// CoreTempSensor, and onLayout's guard then reads that dead handle as live and
+// declines to allocate: ZERO live sensors, exactly the state the comment on
+// shutdown() exists to prevent. Neither main nor this PR's own c3 could reach
+// it -- both left onLayout free to re-allocate -- so this is the delta's own
+// defect, not an inherited one.
+//
+// `try { stopAndSave(); } finally { mCoreSensor = null; }` is the fix: the
+// clear survives the unwind while the throw still propagates, which is what
+// keeps this from silently swallowing a failed save.
+//
+// UNVERIFIED IN BOTH DIRECTIONS, and stated rather than assumed: the throw here
+// is INJECTED, and nothing in this repository has observed stopAndSave()
+// throwing on a device. But mSession.save() and the setData calls it performs
+// are unguarded and shutdown() has no catch, so the path is not obviously
+// unreachable either. The guard is correct under either answer and costs a
+// finally block -- the same trade, and the same argument, as #11's own guard.
+(:test) function test_life_shutdownClearsSensorEvenIfSaveThrows(logger) {
+    var p = new LifeThrowingSaveProbe();
+    p.onLayout(null as Gfx.Dc);
+
+    var threw = false;
+    try {
+        p.shutdown();
+    } catch (e) {
+        threw = true;
+    }
+
+    if (!threw) {
+        logger.error("the probe's stopAndSave must throw, or this test is " +
+                     "measuring the ordinary path and proves nothing");
+        return false;
+    }
+
+    var ok = true;
+    if (p.saveCount() != 1) {
+        logger.error("stopAndSave must still have been reached once, got " +
+                     p.saveCount());
+        ok = false;
+    }
+    if (p.sensorAt(0).closes != 1) {
+        logger.error("the sensor must still have been closed before the throw");
+        ok = false;
+    }
+    if (p.sensorHandle() != null) {
+        logger.error("a throw in stopAndSave skipped the clear: shutdown left " +
+                     "a CLOSED CoreTempSensor in mCoreSensor, so onLayout's " +
+                     "guard reads it as live and never re-opens the ANT " +
+                     "channel -- ZERO live sensors, the mirror image of #11. " +
+                     "Clear it in a finally");
+        ok = false;
+    }
+    if (p.timerHandle() != null) {
+        logger.error("mTimer must be null too; it is cleared before the throw " +
+                     "point, so this failing means the ordering changed");
+        ok = false;
+    }
+    return ok;
+}
+
+// The near neighbour, and the reason the guard alone is not the whole fix.
+// shutdown() releases both resources but leaves the dead handles in the fields.
+// Once onLayout is guarded on those fields, "non-null" has to mean "live" or
+// the guard reads a stopped timer as a running one and declines to allocate --
+// leaving ZERO live timers where the unfixed code left two. That is #11's
+// mirror image, reachable under exactly the same unverified condition, so both
+// halves ship together.
+//
+// This asserts only that the handles are CLEARED.
+// test_life_shutdownReleasesTheLiveResources above asserts that the resources
+// were RELEASED first, and it reads the recorded stubs rather than these
+// fields precisely so the two cannot be satisfied by nulling without releasing.
 (:test) function test_life_shutdownClearsTheHandles(logger) {
     var p = new LifeProbe();
     p.onLayout(null as Gfx.Dc);
