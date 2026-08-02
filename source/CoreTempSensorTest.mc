@@ -186,6 +186,37 @@ class FakeChannel {
     function release() { released = true; return true; }
 }
 
+// A channel whose open() FAILS QUIETLY: it returns false, as
+// Ant.GenericChannel.open() is documented to do ("Returns Boolean true on
+// success, otherwise false" -- SDK 9.2.0 api.debug.xml), and throws nothing.
+//
+// FakeChannel above cannot express this: its open() either returns true or
+// throws, so the whole "did not throw but did not open" region was unreachable
+// from any test. That is exactly the region where openChannel's diagnostics
+// were wrong.
+//
+// NOT MEASURED, and not claimable: whether open() ever actually returns false
+// on this code path. There is no ANT radio here and none of this repository's
+// simulator runs can produce one. What is measurable, and is what the test
+// below asserts, is that the counters must not mislabel the case if it occurs.
+class QuietFailChannel {
+    var opened;
+    function initialize() { opened = false; }
+    function setDeviceConfig(cfg) { }
+    function open() { opened = true; return false; }
+    function release() { return true; }
+}
+
+// A probe wired to a quietly-failing channel, counters re-baselined -- the
+// ctFreshProbe analogue for the false-return case.
+function ctQuietFailProbe() {
+    var p = new CoreProbe();
+    p.useFakeChannel(new QuietFailChannel());
+    p.resetRecorders();
+    p.diagReset();
+    return p;
+}
+
 // A duck-typed stand-in for Ant.Message (#102). onMessage is annotated
 // `msg as Ant.Message`, but this codebase is compiled untyped (CI passes no
 // -l typecheck level -- see docs/CI.md), so runtime duck typing applies and an
@@ -985,12 +1016,96 @@ function ctSlot(p, i) {
     return ok;
 }
 
+// openOk must mean "the channel opened", not "openChannel() did not throw".
+//
+// Ant.GenericChannel.open() reports failure by RETURN VALUE as well as by
+// throwing, and openChannel discarded the return. A channel that failed
+// quietly therefore counted as a success, and -- measured on the pre-fix code
+// -- produced a snapshot identical in ALL 21 SLOTS to the no-pod profile. A
+// reader applying the slot key would have diagnosed "no pod" and gone to
+// re-shake a working sensor: the exact failure #102 exists to eliminate,
+// occurring inside the discriminator meant to eliminate it.
+//
+// Asserted two ways, because either alone is too weak. The counter identity
+// (openOk == 0) can be satisfied by a mistake that breaks the other profiles
+// too; the non-collision against a live H1 profile is the property that
+// actually matters and cannot be satisfied by accident.
+//
+// This does NOT bear on ANT channel exhaustion, #102's named suspect: that
+// raises Ant.UnableToAcquireChannelException from the GenericChannel
+// constructor, which sits inside openChannel's try and is already counted as
+// openThrow. The quiet-false path is a different, and unmeasured, mode.
+(:test) function test_ct_diagOpenOkRequiresOpenToReturnTrue(logger) {
+    var f = ctQuietFailProbe();
+    for (var i = 0; i < 4; i++) { f.deliver(ctChannelClosedMsg()); }
+
+    // The same stimulus against a channel that really opens: the no-pod row.
+    var h1 = ctFreshProbe(false);
+    for (var i = 0; i < 4; i++) { h1.deliver(ctChannelClosedMsg()); }
+
+    var ok = true;
+
+    if (ctSlot(f, $.CT_DIAG_I_OPEN_ATTEMPTS) != 4) {
+        logger.error("openAttempts = " + ctSlot(f, $.CT_DIAG_I_OPEN_ATTEMPTS) + ", expected 4; the attempts happened either way");
+        ok = false;
+    }
+    if (ctSlot(f, $.CT_DIAG_I_OPEN_OK) != 0) {
+        logger.error("openOk = " + ctSlot(f, $.CT_DIAG_I_OPEN_OK) +
+                     "; open() returned false every time, so nothing opened -- openOk must count successes, not non-throws");
+        ok = false;
+    }
+    if (ctSlot(f, $.CT_DIAG_I_OPEN_THROW) != 0) {
+        logger.error("openThrow = " + ctSlot(f, $.CT_DIAG_I_OPEN_THROW) + "; a quiet false is not a throw");
+        ok = false;
+    }
+    // The residual is the false-return count, which is the arithmetic
+    // openChannel's own comment reasons about and which was always 0 before.
+    var residual = ctSlot(f, $.CT_DIAG_I_OPEN_ATTEMPTS) - ctSlot(f, $.CT_DIAG_I_OPEN_OK) -
+                   ctSlot(f, $.CT_DIAG_I_OPEN_THROW);
+    if (residual != 4) {
+        logger.error("attempts - openOk - openThrow = " + residual + ", expected 4 quiet failures");
+        ok = false;
+    }
+
+    // The property that actually matters: this must not read as a no-pod row.
+    if (ctSlot(h1, $.CT_DIAG_I_OPEN_OK) <= 0) {
+        logger.error("the control profile did not open a channel; the comparison below would be vacuous");
+        return false;
+    }
+    var a = f.diagSnapshot();
+    var b = h1.diagSnapshot();
+    var same = (a.size() == b.size());
+    if (same) {
+        for (var i = 0; i < a.size(); i++) {
+            if (a[i] != b[i]) { same = false; }
+        }
+    }
+    if (same) {
+        logger.error("a channel that failed to open is byte-identical to the no-pod profile in all " +
+                     a.size() + " slots; the key would name the wrong hypothesis");
+        ok = false;
+    }
+    return ok;
+}
+
 // THE acceptance test for #102: the three hypotheses must be separable from ONE
 // row's counters. The discriminating triple is (openOk, msgTotal, bcast):
 //
-//   no pod              opened, ANT live, nothing broadcast  -> (>0, >0,  0)
-//   channel never open  nothing opened, nothing arrived      -> ( 0,  0,  0)
-//   frames discarded    opened and frames arrived            -> (>0, >0, >0)
+//   opened, radio live, nothing broadcast   -> (>0, >0,  0)
+//   nothing opened, nothing arrived         -> ( 0,  0,  0)
+//   opened and frames arrived               -> (>0, >0, >0)
+//
+// The left column deliberately describes what the COUNTERS observed, not what
+// was wrong with the equipment. "(>0, >0, 0)" means the channel opened and the
+// radio was live and nothing broadcast on it; "no pod in range" is the
+// inference a reader draws from that, and it is only as good as the
+// alternatives having been excluded. The labels used to state the inference,
+// which is how a false-returning open() came to be filed under "no pod".
+//
+// openOk is the load-bearing leg. It alone separates the first two rows, so
+// the separation does NOT depend on the unmeasured premise that a real podless
+// row generates channel-response events -- if it generates none, the first row
+// reads (>0, 0, 0) and is still distinct from (0, 0, 0). msgTotal corroborates.
 //
 // Asserted as pairwise distinctness AND against the documented signature, so
 // neither a collapsed encoding nor a re-labelled one can pass.
@@ -1030,7 +1145,8 @@ function ctSlot(p, i) {
                      ctSlot(h2, $.CT_DIAG_I_MSG_TOTAL) + ", " + ctSlot(h2, $.CT_DIAG_I_BCAST) + "), expected (0, 0, 0)");
         ok = false;
     }
-    if (!(ctSlot(h3, $.CT_DIAG_I_OPEN_OK) > 0 && ctSlot(h3, $.CT_DIAG_I_BCAST) > 0)) {
+    if (!(ctSlot(h3, $.CT_DIAG_I_OPEN_OK) > 0 && ctSlot(h3, $.CT_DIAG_I_MSG_TOTAL) > 0 &&
+          ctSlot(h3, $.CT_DIAG_I_BCAST) > 0)) {
         logger.error("frames-discarded triple = (" + ctSlot(h3, $.CT_DIAG_I_OPEN_OK) + ", " +
                      ctSlot(h3, $.CT_DIAG_I_MSG_TOTAL) + ", " + ctSlot(h3, $.CT_DIAG_I_BCAST) + "), expected (>0, >0, >0)");
         ok = false;

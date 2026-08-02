@@ -95,4 +95,5 @@ test_ct_diagRecordsMaxFails
 test_ct_diagFlagsLatchedAtClose
 test_ct_diagAcqPeriodIsTheFirstOne
 test_ct_diagNoPodRowProfile
+test_ct_diagOpenOkRequiresOpenToReturnTrue
 test_ct_diagThreeHypothesesDistinct
