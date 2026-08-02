@@ -78,8 +78,11 @@ const CT_DIAG_VERSION = 1;        // value stored in slot CT_DIAG_I_VERSION
 
 const CT_DIAG_I_VERSION       = 0;
 const CT_DIAG_I_OPEN_ATTEMPTS = 1;   // openChannel() entries
-const CT_DIAG_I_OPEN_OK       = 2;   // openChannel() completed without throwing
+const CT_DIAG_I_OPEN_OK       = 2;   // open() RETURNED TRUE -- the channel opened
 const CT_DIAG_I_OPEN_THROW    = 3;   // openChannel()'s catch entered
+// openAttempts - openOk - openThrow is the QUIET-FAILURE count: open() returned
+// false without throwing. Reading openOk as "did not throw" is the misdiagnosis
+// this key exists to prevent -- a quietly failed open is not a podless row.
 const CT_DIAG_I_MSG_TOTAL     = 4;   // onMessage() entries -- any ANT message
 const CT_DIAG_I_BCAST         = 5;   // broadcast payloads reaching onBroadcast
 const CT_DIAG_I_SHORT_PAY     = 6;   // rejected: null or fewer than 8 bytes
@@ -367,6 +370,26 @@ class CoreTempSensor {
             if (mChannel == null) {
                 mChannel = makeChannel();
             }
+            // setDeviceConfig() ALSO returns a documented Boolean ("Returns
+            // Boolean true on success, otherwise false" -- SDK 9.2.0
+            // api.debug.xml), and so does release(), called from
+            // discardChannel(). Neither return is counted, and that is a
+            // decision rather than an oversight:
+            //
+            //   * every free slot would be a NEW slot, and a new slot is a
+            //     wire-format change requiring a CT_DIAG_VERSION bump -- not
+            //     something to fold into a revision of the counter whose
+            //     meaning was just corrected;
+            //   * folding a false setDeviceConfig into openOk would redefine
+            //     openOk a second time, silently, with no version change to
+            //     signal it -- worse for a reader of an existing file than
+            //     leaving the gap visible here.
+            //
+            // The consequence, stated so it is not rediscovered as a surprise:
+            // a config that quietly fails and is then followed by an open()
+            // returning true reads as openOk > 0. That is a KNOWN BLIND SPOT of
+            // this layout, tracked separately; it is not covered by the
+            // quiet-failure arithmetic above, which sees only open().
             mChannel.setDeviceConfig(new Ant.DeviceConfig({
                 :deviceNumber => 0,              // wildcard: first pod found
                 :deviceType => DEVICE_TYPE,

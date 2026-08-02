@@ -161,9 +161,16 @@ class CoreProbe extends CoreTempSensor {
     }
 }
 
-// A stand-in for Ant.GenericChannel. `open()` optionally throws, so the failure
-// path in openChannel() becomes reachable; `release()` is recorded so a test
-// can prove the channel was handed back rather than orphaned.
+// A stand-in for Ant.GenericChannel. `open()` optionally throws, so ONE of
+// openChannel()'s failure paths becomes reachable; `release()` is recorded so a
+// test can prove the channel was handed back rather than orphaned.
+//
+// "ONE of" is load-bearing and this comment used to say "the failure path",
+// which was wrong: Ant.GenericChannel.open() also reports failure by RETURNING
+// FALSE, and that region is unreachable from this double because its open()
+// returns true whenever it does not throw. QuietFailChannel below exists for
+// exactly that region. Treating a throw as the only way to fail is what let a
+// quietly failed open be recorded as a success.
 class FakeChannel {
     var released;
     var opened;
@@ -199,11 +206,13 @@ class FakeChannel {
 // on this code path. There is no ANT radio here and none of this repository's
 // simulator runs can produce one. What is measurable, and is what the test
 // below asserts, is that the counters must not mislabel the case if it occurs.
+// It carries no `opened` flag on purpose. An earlier version set one to true
+// and then returned false -- the double built to model a channel that did NOT
+// open, recording that it had. Nothing read it. The counters are the observable
+// here: openAttempts proves openChannel ran, and openOk proves what it decided.
 class QuietFailChannel {
-    var opened;
-    function initialize() { opened = false; }
-    function setDeviceConfig(cfg) { }
-    function open() { opened = true; return false; }
+    function setDeviceConfig(cfg) { return true; }
+    function open() { return false; }
     function release() { return true; }
 }
 
@@ -250,7 +259,7 @@ function ctChannelClosedMsg() {
                           [Ant.MSG_ID_RF_EVENT, Ant.MSG_CODE_EVENT_CHANNEL_CLOSED]);
 }
 
-// A probe with a channel whose open() succeeds, counters re-baselined. Every
+// A probe with a channel whose open() returns true, counters re-baselined. Every
 // #102 differential starts here: a bare `new CoreProbe()` has already run
 // initialize() -> openChannel(), which throws under the headless simulator, so
 // nothing starts from zero and the real allocation's retries would otherwise
@@ -503,9 +512,12 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
 // silence, so a pod donned after rigging is never found.
 (:test) function test_ct_retryContinuesPastPreAcquisitionBound(logger) {
     var p = new CoreProbe();
-    // A channel whose open() SUCCEEDS, so the retry ladder is measured on its
-    // own. The real allocation always throws under the headless simulator,
-    // which would drive the failure path and mix its retries into the count.
+    // A channel whose open() RETURNS TRUE, so the retry ladder is measured on
+    // its own. The real allocation always throws under the headless simulator,
+    // which would drive a failure path and mix its retries into the count.
+    // Stated as the return value rather than as "succeeds": not throwing and
+    // succeeding are different things for this API, and conflating them is the
+    // defect the openOk counter was corrected for.
     p.useFakeChannel(new FakeChannel(false));
     p.resetRecorders();
     for (var i = 0; i < 6; i++) { p.closeEvent(); }
