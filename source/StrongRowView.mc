@@ -1425,9 +1425,17 @@ class StrongRowView extends Ui.View {
     // later onLayout decline to allocate and leave the app with ZERO live
     // timers where the unguarded code left two: the defect's mirror image,
     // reachable under exactly the same unverified condition, which is why both
-    // halves ship together. It also makes shutdown() idempotent by
-    // construction rather than by the coincidence that stop()/close()/save()
-    // each happen to tolerate a second call.
+    // halves ship together. It also means a second shutdown() cannot re-stop
+    // the timer, re-close the sensor or re-save the session -- those three are
+    // guarded by the handles, rather than relying on each tolerating a repeat
+    // call. That is narrower than "idempotent by construction", which an
+    // earlier revision of this comment claimed and which is not true of the
+    // whole function: mSensorOk is never reset, so
+    // unregisterSensorDataListener() re-runs on every call, and the
+    // enableLocationEvents(LOCATION_DISABLE) below is unconditional. Both are
+    // wrapped in try/catch -- i.e. they rely on exactly the tolerance that
+    // sentence disowned. shutdown() IS idempotent in observed behaviour; only
+    // the "by construction" part was stronger than the evidence.
     //
     // ORDER IS LOAD-BEARING, and the sensor's clear is deliberately the LAST
     // statement rather than sitting next to its close(). Three constraints have
@@ -1484,10 +1492,18 @@ class StrongRowView extends Ui.View {
         }
         try { Position.enableLocationEvents(Position.LOCATION_DISABLE, method(:onPosition)); } catch (e) {}
         if (mCoreSensor != null) { mCoreSensor.close(); }
-        stopAndSave();
-        // LAST, not next to close() above -- see constraint 2. stopAndSave()
-        // has to be able to read the sensor it is writing diagnostics from.
-        mCoreSensor = null;
+        // AFTER stopAndSave, not next to close() above -- see constraint 2;
+        // stopAndSave has to be able to read the sensor it writes diagnostics
+        // from. And in a FINALLY, because being last makes it the one statement
+        // a throw could otherwise skip: an unwound shutdown() holding a CLOSED
+        // sensor would leave onLayout's guard reading a dead handle as live and
+        // never re-opening the ANT channel -- ZERO live sensors, the mirror
+        // image of #11. The throw still propagates; nothing is swallowed.
+        try {
+            stopAndSave();
+        } finally {
+            mCoreSensor = null;
+        }
     }
 
     hidden function alert(stepType) {
