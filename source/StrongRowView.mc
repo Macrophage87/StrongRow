@@ -1152,6 +1152,14 @@ class StrongRowView extends Ui.View {
                     // session-scope UINT16 array field was measured landing in
                     // the file verbatim (SIMULATOR, fr965 / SDK 9.2.0; treat
                     // hardware and other SDKs as expected-same but unmeasured).
+                    //
+                    // :count MUST stay $.CT_DIAG_SLOTS, the same constant
+                    // diagSnapshot() sizes its array from -- never a literal.
+                    // MEASURED: a setData array longer than :count raises an
+                    // UNCATCHABLE "System Error: setData input array too long
+                    // for allocated space" that escapes try/catch and kills the
+                    // app at save time, losing the whole activity. See the
+                    // fuller note on diagSnapshot in CoreTempSensor.mc.
                     try {
                         mFitCtDiag = mSession.createField(
                             "ct_diag", 10, Fit.DATA_TYPE_UINT16,

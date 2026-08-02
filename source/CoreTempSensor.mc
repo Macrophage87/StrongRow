@@ -712,6 +712,23 @@ class CoreTempSensor {
     // so the array allocation here is not on any hot path -- which is the
     // entire reason the counters are named fields and the packing lives here.
     //
+    // THE LENGTH IS SAFETY-CRITICAL, not merely tidy. MEASURED (simulator,
+    // fr965 / SDK 9.2.0): calling setData with an array LONGER than the
+    // field's :count raises
+    //
+    //   Error: System Error
+    //   Details: setData input array too long for allocated space
+    //
+    // which is NOT catchable -- it escapes an enclosing try/catch and aborts,
+    // exactly as setData(null) does (#48). A shorter array is accepted without
+    // complaint. So if this size and the :count at the createField call in
+    // StrongRowView ever diverge upward, the app dies at save time, taking the
+    // whole activity with it -- a far worse outcome than a mis-recorded
+    // counter. Both sites read $.CT_DIAG_SLOTS and must keep doing so; do not
+    // substitute a literal in either. test_ct_diagSnapshotShape pins this
+    // side's length, and CT_DIAG_VERSION exists so a deliberate change is
+    // visible in the file rather than silent.
+    //
     // Every slot is clamped into the UINT16 range on the way out; the counters
     // themselves are unclamped 32-bit Numbers.
     function diagSnapshot() {
