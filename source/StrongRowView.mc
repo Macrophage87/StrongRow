@@ -1090,9 +1090,21 @@ class StrongRowView extends Ui.View {
     //
     // TWO independent conditions, and #110 requires both: an EXPLICIT
     // "have we ever had a reading" flag, AND freshness. Never `bpm > 0`.
-    // `lastMs > 0` is a third, cheap consistency check on the stamp itself
-    // (System.getTimer() is monotonic from app start, so 0 means "never
-    // stamped") -- it is not the presence test, it backs one up.
+    // `lastMs > 0` is a third, cheap consistency check on the stamp itself --
+    // it is not the presence test, it backs one up.
+    //
+    // Two corrections to an earlier revision of this comment, both mine:
+    // System.getTimer() counts from DEVICE start, not app start, and it is a
+    // 32-bit millisecond counter, so it WRAPS. Around a wrap `nowMs - lastMs`
+    // goes large-negative and `< threshMs` reads as fresh -- measured,
+    // hrHave(true, 2147483000, -2147483000, 5000) is true.
+    //
+    // NOT FIXED HERE, deliberately. rrIsFresh above is byte-for-byte the same
+    // shape and predates this change, so this is an existing repository-wide
+    // pattern rather than something #110 introduces, and **#70** owns it.
+    // Fixing it in one of the two would leave the pair disagreeing about a
+    // shared hazard, which is worse than a consistent one that is tracked. If
+    // #70 is taken, a `(nowMs - lastMs) >= 0` term closes it in both.
     //
     // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
     // freshness is about R-R batch arrival and this is about a bpm read. Two
@@ -2208,8 +2220,40 @@ class StrongRowView extends Ui.View {
         //
         // Free-row mode never reaches here (the early return above), and WARM /
         // COOL / DONE / pre-start are unchanged, per #110's acceptance list.
+        // PAUSED does reach here: pausing does not change the step type, so the
+        // arc stays up and sampleHr keeps feeding it (onTick calls it
+        // unconditionally). That is a decision, not an oversight -- a paused
+        // rower still has a heart rate.
+        //
+        // WRAPPED, and the wrap is the whole point of drawing it first. The
+        // z-order rationale above wants the arc under the text; that same
+        // ordering means an unguarded throw from any primitive here takes the
+        // title, the countdown, the stroke rate, the pace row, the sub row and
+        // the footer with it -- measured: 9 text elements become 3. The wrap
+        // keeps the ordering and removes the blast radius.
+        //
+        // This is the SAME posture sampleHr states for the read side and the
+        // OPPOSITE of onLayout's, deliberately: onLayout propagates because an
+        // app running with no tick timer should not do so silently, whereas the
+        // heart-rate arc is an ornament on two priorities that must keep
+        // working without it. Losing the arc is a degradation; losing the
+        // stroke rate mid-interval is the failure this whole feature is
+        // supposed to avoid causing.
+        //
+        // REACHABILITY IS UNVERIFIED, IN BOTH DIRECTIONS, and this comment
+        // claims neither answer: no input has been found that makes a Dc
+        // primitive throw here, and nothing shows none can. The guard is
+        // correct under either answer, which is why it lands ahead of the
+        // question -- this is the first drawArc in the codebase, it compiles
+        // for twelve devices, and it has never run on hardware.
+        //
+        // Swallowed rather than logged: onUpdate runs at 4 Hz, so a throw that
+        // recurred would emit four log lines a second for the life of the app.
         if (type == STEP_WORK || type == STEP_REST || type == STEP_GATE) {
-            drawHrArc(dc, w, h);
+            try {
+                drawHrArc(dc, w, h);
+            } catch (e) {
+            }
         }
 
         var title;
