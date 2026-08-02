@@ -334,12 +334,47 @@ class StrongRowView extends Ui.View {
     hidden function makeCoreSensor() { return new CoreTempSensor(); }
     hidden function makeTimer()      { return new Timer.Timer(); }
 
+    // #11: the two allocations below are guarded, so a repeat onLayout cannot
+    // orphan the previous Timer or the previous CORE ANT channel.
+    //
+    // REACHABILITY IS UNVERIFIED, IN BOTH DIRECTIONS, and this comment claims
+    // neither answer: nothing in this repository has produced a second onLayout
+    // on a live view, and nothing here shows one is impossible. Settling it
+    // needs a human-driven simulator session -- the [Local] issue linked from
+    // #11. The guards are correct under either answer, which is why they land
+    // ahead of it:
+    //   * if a second onLayout is reachable, they stop a second 250 ms timer
+    //     that would double every onTick. mCorrAccum (in onTick) and the
+    //     total_corrective_strokes stopAndSave derives from it come out at
+    //     exactly 2x, and the previous CoreTempSensor's ANT channel keeps
+    //     searching with nothing left able to close() it;
+    //   * if it is not reachable, behaviour is identical -- one call, one
+    //     allocation -- for two null comparisons per app launch.
+    //
+    // PRESERVE, do not tear down and rebuild. #11 suggests either. Rebuilding
+    // the sensor mid-row would release a tracking ANT channel and reset the
+    // retry ladder (CoreTempSensor.mc:341-348), trading a leak for a data
+    // dropout; the timer is guarded the same way for the same reason.
+    // shutdown() stays the single teardown point.
+    //
+    // mTimer.start is INSIDE the guard, not after it: restarting a timer that
+    // is already running is the same defect measured from the other end.
+    //
+    // startSensor()/startGps() are deliberately NOT guarded. Neither allocates
+    // something that can be orphaned: Sensor.unregisterSensorDataListener()
+    // takes no argument (see shutdown), which is what says Connect IQ holds a
+    // single listener slot rather than a list, so a second registration
+    // replaces; and enableLocationEvents sets a mode. Guarding them would also
+    // destroy the only path that could ever recover from the double
+    // registration failure startSensor handles by setting mSensorOk = false.
     function onLayout(dc) {
         startSensor();
         startGps();
-        mCoreSensor = makeCoreSensor();
-        mTimer = makeTimer();
-        mTimer.start(method(:onTick), 250, true);
+        if (mCoreSensor == null) { mCoreSensor = makeCoreSensor(); }
+        if (mTimer == null) {
+            mTimer = makeTimer();
+            mTimer.start(method(:onTick), 250, true);
+        }
     }
 
     function onTick() as Void {
@@ -781,12 +816,17 @@ class StrongRowView extends Ui.View {
     // dereference mCoreSensor guarded only by the field handle, so keeping it
     // holds the invariant `mFitCore != null => mCoreSensor != null` local to
     // one adjacent line instead of resting on a whole-file lifecycle argument.
-    // (Traced separately: mCoreSensor is assigned null only in initialize(),
-    // and onTick is registered two straight-line statements after it is
-    // constructed in onLayout, so a null dereference there is not reachable
-    // today. The term is kept because it is free and matches the defensive
-    // style used elsewhere in this file -- not because removing it would
-    // crash.)
+    // (Traced separately: mCoreSensor is assigned null in initialize() and, as
+    // of #11, in shutdown() -- but shutdown() stops the tick timer as its FIRST
+    // statement, before that clear, and Monkey C dispatches timer callbacks
+    // from the single event loop shutdown() itself runs on, so no onTick can
+    // observe the cleared handle. Within onLayout, onTick is registered two
+    // straight-line statements after the sensor is constructed. A null
+    // dereference in onTick is therefore still not reachable today. The term is
+    // kept because it is free and matches the defensive style used elsewhere in
+    // this file -- not because removing it would crash. An earlier revision of
+    // this parenthesis read "assigned null only in initialize()", which #11
+    // made false.)
     static function coreFieldsWanted(sensor) {
         return sensor != null;
     }
@@ -1258,13 +1298,41 @@ class StrongRowView extends Ui.View {
         mStarted = false;
     }
 
+    // #11: release, then CLEAR. Clearing is not tidiness -- these two fields
+    // are what onLayout's guards read, so "non-null" has to mean "live".
+    // Leaving a stopped Timer and a closed CoreTempSensor in them would make a
+    // later onLayout decline to allocate and leave the app with ZERO live
+    // timers where the unguarded code left two: the defect's mirror image,
+    // reachable under exactly the same unverified condition, which is why both
+    // halves ship together. It also makes shutdown() idempotent by
+    // construction rather than by the coincidence that stop()/close()/save()
+    // each happen to tolerate a second call.
+    //
+    // mTimer.stop() stays FIRST. Monkey C is single-threaded and timer
+    // callbacks dispatch from the same event loop, so stopping before anything
+    // else is cleared means no onTick can observe the window where mCoreSensor
+    // is null but mFitCore is not yet (stopAndSave nulls the field handles) --
+    // preserving the `mFitCore != null => mCoreSensor != null` invariant that
+    // coreFieldsWanted's null term is documented to hold.
+    //
+    // There is deliberately NO onHide counterpart. Tearing down when the view
+    // is merely backgrounded -- a menu, a notification overlay -- would stop
+    // the tick timer and silently stop writing every FIT field mid-row, which
+    // is a worse defect than the one being fixed. StrongRowApp.onStop ->
+    // shutdown() is the single teardown point.
     function shutdown() {
-        if (mTimer != null) { mTimer.stop(); }
+        if (mTimer != null) {
+            mTimer.stop();
+            mTimer = null;
+        }
         if (mSensorOk) {
             try { Sensor.unregisterSensorDataListener(); } catch (e) {}
         }
         try { Position.enableLocationEvents(Position.LOCATION_DISABLE, method(:onPosition)); } catch (e) {}
-        if (mCoreSensor != null) { mCoreSensor.close(); }
+        if (mCoreSensor != null) {
+            mCoreSensor.close();
+            mCoreSensor = null;
+        }
         stopAndSave();
     }
 
