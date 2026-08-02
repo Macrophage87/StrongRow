@@ -25,6 +25,10 @@ test_core_gateTrueWhenPodSeen
 test_core_gateTrueWhenPodNotYetSeen
 test_core_gateIgnoresEverSeen
 
+# source/ViewLifecycleTest.mc
+test_life_freshViewHoldsNoTimer
+test_life_freshViewHoldsNoCoreSensor
+
 # source/DspTimeBaseTest.mc
 test_dsp_timeBaseInvariantToBatchSize
 test_dsp_timeBaseIs25Hz
