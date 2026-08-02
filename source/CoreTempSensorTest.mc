@@ -500,3 +500,88 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
     }
     return true;
 }
+
+// ============================================================================
+// #102 -- ANT diagnostic counters. A separate commit partition from everything
+// above, with its own c0/c1/c2 sections below.
+//
+// The change is DIAGNOSTIC ONLY: it must not move a decoded value, a clamp, a
+// freshness window or the retry ladder by one bit. The c0 pins immediately
+// below are the mechanical half of that promise -- they fix the exact
+// boundaries the new counters classify by, so a fix commit that shifted one of
+// them could not stay green.
+// ============================================================================
+
+// -- #102 c0: characterization pins on existing symbols -----------------------
+// Every assertion in this section is true on the code as it stands AND after
+// the diagnostic counters land. They exist to prove the change is
+// behaviour-preserving, not to describe a defect.
+
+// decodeCoreC's documented invalid marker. Pinned as OBSERVABLE behaviour only:
+// 0xFFFF is also outside the CT_CORE_MIN_C..MAX_C clamp (655.35 C), so this
+// assertion cannot tell which of the two gates rejected it -- and that
+// indistinguishability from outside is exactly why #102's counters have to
+// re-test the sentinel themselves rather than read it off the return value.
+// See the divergence note at CoreTempSensor.mc decodeCoreC (#87).
+(:test) function test_ct_coreSentinelRejected(logger) {
+    var got = CoreTempSensor.decodeCoreC(ctPayload(660, 0x0C8, 0xFFFF));
+    if (got != null) {
+        logger.error("core raw 0xFFFF must decode as invalid, got " + got);
+        return false;
+    }
+    return true;
+}
+
+// The core plausibility clamp, at its bounds. raw * 0.01 against
+// CT_CORE_MIN_C = 25.0 and CT_CORE_MAX_C = 45.0, both INCLUSIVE (the guard is
+// `t < MIN || t > MAX`). These four values are the boundary the coreClamp
+// counter keys off, so pinning them keeps the counter's meaning stable.
+(:test) function test_ct_coreClampBounds(logger) {
+    var ok = true;
+    if (CoreTempSensor.decodeCoreC(ctPayload(660, 0x0C8, 2499)) != null) {
+        logger.error("core 24.99 C is below the clamp and must be rejected");
+        ok = false;
+    }
+    if (!ctAlmostEq(CoreTempSensor.decodeCoreC(ctPayload(660, 0x0C8, 2500)), 25.00)) {
+        logger.error("core 25.00 C is the inclusive lower bound and must be accepted, got " +
+                     CoreTempSensor.decodeCoreC(ctPayload(660, 0x0C8, 2500)));
+        ok = false;
+    }
+    if (!ctAlmostEq(CoreTempSensor.decodeCoreC(ctPayload(660, 0x0C8, 4500)), 45.00)) {
+        logger.error("core 45.00 C is the inclusive upper bound and must be accepted, got " +
+                     CoreTempSensor.decodeCoreC(ctPayload(660, 0x0C8, 4500)));
+        ok = false;
+    }
+    if (CoreTempSensor.decodeCoreC(ctPayload(660, 0x0C8, 4501)) != null) {
+        logger.error("core 45.01 C is above the clamp and must be rejected");
+        ok = false;
+    }
+    return ok;
+}
+
+// The skin plausibility clamp, at its bounds. sext12(raw) / 20.0 against
+// CT_SKIN_MIN_C = 15.0 and CT_SKIN_MAX_C = 45.0, both inclusive -- so raw 300
+// and raw 900 are the edge code points. Same role as the core pin above: the
+// skinClamp counter's meaning is only stable while these hold.
+(:test) function test_ct_skinClampBounds(logger) {
+    var ok = true;
+    if (CoreTempSensor.decodeSkinC(ctPayload(299, 0x0C8, 3742)) != null) {
+        logger.error("skin 14.95 C is below the clamp and must be rejected");
+        ok = false;
+    }
+    if (!ctAlmostEq(CoreTempSensor.decodeSkinC(ctPayload(300, 0x0C8, 3742)), 15.00)) {
+        logger.error("skin 15.00 C is the inclusive lower bound and must be accepted, got " +
+                     CoreTempSensor.decodeSkinC(ctPayload(300, 0x0C8, 3742)));
+        ok = false;
+    }
+    if (!ctAlmostEq(CoreTempSensor.decodeSkinC(ctPayload(900, 0x0C8, 3742)), 45.00)) {
+        logger.error("skin 45.00 C is the inclusive upper bound and must be accepted, got " +
+                     CoreTempSensor.decodeSkinC(ctPayload(900, 0x0C8, 3742)));
+        ok = false;
+    }
+    if (CoreTempSensor.decodeSkinC(ctPayload(901, 0x0C8, 3742)) != null) {
+        logger.error("skin 45.05 C is above the clamp and must be rejected");
+        ok = false;
+    }
+    return ok;
+}

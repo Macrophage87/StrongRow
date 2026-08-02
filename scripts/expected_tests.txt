@@ -76,3 +76,6 @@ test_ct_backoffLadderAndReset
 test_ct_openThrowReleasesChannel
 test_ct_openThrowSchedulesRetry
 test_ct_closeCancelsPendingRetry
+test_ct_coreSentinelRejected
+test_ct_coreClampBounds
+test_ct_skinClampBounds
