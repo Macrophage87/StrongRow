@@ -1004,7 +1004,16 @@ function ctSlot(p, i) {
     for (var i = 0; i < 4; i++) { h2.closeEvent(); }
 
     // H3 -- frames arrived and were discarded by the page filter.
+    //
+    // The closeEvent() is load-bearing, not incidental: ctFreshProbe zeroes the
+    // counters AFTER the constructor's own open, so without an open inside the
+    // counted window this profile would read openOk == 0 -- which is H2's
+    // signature, not H3's. It also models the real sequence, where the first
+    // search times out and the second finds the pod before any frame arrives.
+    // Frames cannot reach a channel that was never opened, so a profile that
+    // claimed otherwise would be asserting something unreachable.
     var h3 = ctFreshProbe(false);
+    h3.closeEvent();
     var other = ctPayload(660, 0x0C8, 3742);
     other[0] = 0x50;
     for (var i = 0; i < 4; i++) { h3.deliver(ctBroadcastMsg(other)); }
