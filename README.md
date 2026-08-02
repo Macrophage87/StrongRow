@@ -77,13 +77,25 @@ laps.)
   Core Body Temperature profile — Connect IQ has no built-in support for it,
   and a watch app can't host the official CORE data field) and logs core and
   skin temperature. A **CT indicator** joins GPS/RR and turns green while pod
-  data is fresh. No pod → no empty fields, no errors.
+  data is fresh. A row with no pod records no errors, but it does **not**
+  record nothing: since #75 the core/skin fields are declared on every row, so
+  a podless row logs `0.0` for both, and the diagnostic field below is written
+  unconditionally. `max_core_temperature` is still suppressed when no reading
+  was ever accepted.
 - FIT developer fields written for offline analysis: `row_stroke_rate` (spm),
   `dist_per_stroke` (m), `corrective_rate` (spm of blade movements that are
   not drives), `rr_interval` (up to 4 raw ms values per record), `rmssd` (ms),
-  `core_temperature` and `skin_temperature` (°C, when a pod is present) per
-  record, plus session-level `avg_rmssd` (ms), `total_corrective_strokes`
-  and `max_core_temperature`.
+  `core_temperature` and `skin_temperature` (°C) per record, plus session-level
+  `avg_rmssd` (ms), `total_corrective_strokes`, `max_core_temperature` and
+  `ct_diag`.
+- `ct_diag` is a session-level **diagnostic** array of counters describing what
+  the app's own ANT channel did — opens attempted and succeeded, messages and
+  broadcast frames received, page numbers seen, and the reason any frame was
+  rejected. It exists so that a row which logged no core temperature can be
+  told apart from one where no pod was present, without guessing (#102). It is
+  not a training metric; the slot-by-slot key lives with the `CT_DIAG_*`
+  constants in [`source/CoreTempSensor.mc`](source/CoreTempSensor.mc), and slot
+  0 carries a layout version so an older file stays readable.
 
 ### ⚠️ Stroke-rate timing fix — older sessions are not comparable
 

@@ -53,16 +53,21 @@ const CT_BACKOFF_MAX_MS  = 300000;
 // SDKs as expected-same but unmeasured): a session-scope UINT16 field with
 // :count is created without throwing, setData on it after session.stop() and
 // before session.save() does not throw, and the values survive to the file --
-// a saved probe activity decoded with fitparse carried all 16 written values
-// in order, unscaled, under native_mesg_num='session'. Whether a real device
-// agrees, and whether it caps developer fields below 11, is NOT measured; #77
-// owns that question.
+// a saved activity driven through the real startSession/stopAndSave path
+// decoded with fitparse carrying all CT_DIAG_SLOTS values in order, unscaled,
+// under native_mesg_num='session', alongside all ten pre-existing developer
+// fields. Whether a real device agrees, and whether it caps developer fields
+// below 11, is NOT measured; #77 owns that question.
 //
 // Counters are plain 32-bit Number increments on the ANT callback path: no
 // saturation test, no allocation, no branch beyond the ones already present.
-// A 4 Hz channel for 24 h is ~3.5e5 increments, five orders of magnitude below
-// overflow, so clamping to the UINT16 range happens ONCE at readout instead.
-// A slot reading CT_DIAG_MAX therefore means "at least CT_DIAG_MAX".
+// A 4 Hz channel for 24 h is ~3.5e5 increments, nearly four orders of
+// magnitude below the 2^31-1 overflow, so clamping to the UINT16 range happens
+// ONCE at readout instead. A slot reading CT_DIAG_MAX therefore means "at
+// least CT_DIAG_MAX": the READOUT clamp bites long before overflow does --
+// 65535 messages is ~4.6 h at PERIOD_B, ~9.1 h at PERIOD_A. Only quantitative
+// ratios degrade there; every discrimination below turns on zero versus
+// non-zero, which survives any session length.
 const CT_DIAG_SLOTS   = 21;
 const CT_DIAG_MAX     = 65535;    // UINT16 ceiling; readout clamps, not the counter
 const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
@@ -92,6 +97,12 @@ const CT_DIAG_I_FLAGS         = 17;  // see CT_DIAG_F_* below
 const CT_DIAG_I_PAGE_FIRST    = 18;  // first page byte ever observed
 const CT_DIAG_I_PAGE_OTHER_LAST = 19; // most recent page byte != 0x01
 const CT_DIAG_I_ACQ_PERIOD    = 20;  // mPeriod at the FIRST broadcast frame (#84)
+// Slot 20 answers #84 in the AFFIRMATIVE ONLY. PERIOD_A is always tried first,
+// so 16384 proves nothing about the fallback; only 8192 is evidence that
+// PERIOD_B can acquire. And it reads 0 on precisely the zero-frame rows where
+// the question bites, because it is set inside onBroadcast. A value seen in a
+// synthetic run shows the slot populates and reaches the file -- it is not
+// evidence that a pod acquired at 4 Hz.
 
 // Bits of CT_DIAG_I_FLAGS.
 const CT_DIAG_F_CHANNEL_HELD = 1;   // a channel handle was still held at readout
@@ -365,12 +376,33 @@ class CoreTempSensor {
                 :searchTimeoutLowPriority => 12, // 30 s per attempt
                 :searchThreshold => 0
             }));
-            mChannel.open();
+            // Ant.GenericChannel.open() reports failure TWO ways: it throws,
+            // and it returns false ("Returns Boolean true on success,
+            // otherwise false" -- SDK 9.2.0 api.debug.xml). #102 counted only
+            // the first, so a channel that failed quietly was recorded as a
+            // success and produced a snapshot identical in all 21 slots to a
+            // row with no pod in range -- the key would have named the wrong
+            // hypothesis, inside the discriminator built to prevent exactly
+            // that.
+            //
+            // The return value is NOT acted on beyond counting: no retry is
+            // scheduled, no channel released, nothing that was not done
+            // before. This stays diagnostic-only.
+            //
+            // NOT MEASURED: whether open() ever actually returns false on this
+            // path. There is no ANT radio in any environment this repository
+            // can run, so the false-return branch has never been observed --
+            // the API documents it and the previous code assumed it away. If
+            // it never fires, openOk is unchanged from before.
+            var opened = mChannel.open();
+
             // #102: reached only when nothing above threw. openAttempts minus
             // openOk is not the throw count -- openThrow is counted explicitly
             // below -- because that difference has to stay readable even if a
-            // future edit adds a return path between here and the catch.
-            mDiagOpenOk++;
+            // future edit adds a return path between here and the catch. With
+            // the guard below, attempts - openOk - openThrow is exactly the
+            // quiet-failure count; before it, that residual was always zero.
+            if (opened) { mDiagOpenOk++; }
         } catch (e) {
             // #102: the counter this issue was filed on. This catch was
             // completely silent, so a channel that could never be acquired and
@@ -442,11 +474,15 @@ class CoreTempSensor {
     // ---- message handling ---------------------------------------------------
 
     function onMessage(msg as Ant.Message) as Void {
-        // #102: every ANT message, before any dispatch. This is the counter
-        // that says the radio was alive at all -- a row with no pod still
-        // receives channel-response events as each search times out, so
-        // msgTotal > 0 with bcast == 0 reads as "no pod", where
-        // msgTotal == 0 with openOk == 0 reads as "the channel never opened".
+        // #102: every ANT message, before any dispatch -- the counter that
+        // says the radio produced traffic at all.
+        //
+        // CORROBORATING, not load-bearing. openOk alone separates "the channel
+        // opened and nothing broadcast" from "the channel never opened": if a
+        // real podless row turns out to deliver no channel-response events at
+        // all, the first reads (openOk > 0, 0, 0) and the second still reads
+        // (0, 0, 0). That matters because whether a podless row generates
+        // those events on-watch is NOT measured -- see the readout key.
         mDiagMsgTotal++;
         var id = msg.messageId;
         if (id == Ant.MSG_ID_BROADCAST_DATA) {
@@ -638,6 +674,39 @@ class CoreTempSensor {
         return f;
     }
 
+    // ---- reading a ct_diag tuple -------------------------------------------
+    //
+    // The discriminator is (openOk, msgTotal, bcast). Each row states what the
+    // COUNTERS OBSERVED; the equipment verdict in brackets is the inference a
+    // reader draws, and is only as good as the alternatives having been
+    // excluded. Keeping those two apart is not pedantry -- stating the
+    // inference as though it were the observation is how a channel whose
+    // open() returned false came to be recorded as "no pod".
+    //
+    //   (0,  0,  0)  nothing opened, nothing arrived
+    //                [the channel could not be acquired; openThrow and
+    //                 maxFails say how hard it tried]
+    //   (>0, >0,  0)  the channel opened, the radio produced traffic, nothing
+    //                 broadcast on it  [no pod in range]
+    //   (>0, >0, >0)  the channel opened and frames arrived  [something
+    //                 broadcast and was discarded] -- then shortPay, or
+    //                 pageOther with pageFirst/pageOtherLast naming the actual
+    //                 page byte, or the four core/skin reason slots, say which
+    //                 gate dropped it
+    //
+    // openOk is the load-bearing leg: it alone separates the first two rows.
+    // The separation therefore does NOT depend on the unmeasured premise that
+    // a podless row generates channel-response events -- if it generates none,
+    // row two reads (>0, 0, 0) and is still distinct from row one. msgTotal
+    // corroborates.
+    //
+    // A fourth reading exists and is not in the table because it is not a
+    // hypothesis about the pod: openOk > 0 with msgTotal == 0 AND
+    // chanClosed == 0 means the channel opened and then went silent. The retry
+    // ladder is predicated on MSG_CODE_EVENT_CHANNEL_CLOSED arriving, so if it
+    // never does the ladder never advances. That has not been measured either;
+    // it is left visible rather than assumed away.
+    //
     // The whole diagnostic state as one CT_DIAG_SLOTS-element array, ready for
     // the ct_diag developer field. Called ONCE per session, from stopAndSave,
     // so the array allocation here is not on any hot path -- which is the
