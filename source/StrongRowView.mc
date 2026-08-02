@@ -344,10 +344,14 @@ class StrongRowView extends Ui.View {
     // #11. The guards are correct under either answer, which is why they land
     // ahead of it:
     //   * if a second onLayout is reachable, they stop a second 250 ms timer
-    //     that would double every onTick. mCorrAccum (in onTick) and the
-    //     total_corrective_strokes stopAndSave derives from it come out at
-    //     exactly 2x, and the previous CoreTempSensor's ANT channel keeps
-    //     searching with nothing left able to close() it;
+    //     that would double every onTick from then on. mCorrAccum integrates
+    //     across the whole recording, so the total_corrective_strokes
+    //     stopAndSave derives from it is inflated by a factor strictly between
+    //     1x and 2x -- 2x only if the second onLayout lands before START, and
+    //     approaching 1x the later it lands. (An earlier revision of this
+    //     comment said "exactly 2x" unconditionally, which is true only for
+    //     the pre-START case.) The previous CoreTempSensor's ANT channel also
+    //     keeps searching with nothing left able to close() it;
     //   * if it is not reachable, behaviour is identical -- one call, one
     //     allocation -- for two null comparisons per app launch.
     //
@@ -817,16 +821,20 @@ class StrongRowView extends Ui.View {
     // holds the invariant `mFitCore != null => mCoreSensor != null` local to
     // one adjacent line instead of resting on a whole-file lifecycle argument.
     // (Traced separately: mCoreSensor is assigned null in initialize() and, as
-    // of #11, in shutdown() -- but shutdown() stops the tick timer as its FIRST
-    // statement, before that clear, and Monkey C dispatches timer callbacks
-    // from the single event loop shutdown() itself runs on, so no onTick can
-    // observe the cleared handle. Within onLayout, onTick is registered two
-    // straight-line statements after the sensor is constructed. A null
-    // dereference in onTick is therefore still not reachable today. The term is
-    // kept because it is free and matches the defensive style used elsewhere in
-    // this file -- not because removing it would crash. An earlier revision of
-    // this parenthesis read "assigned null only in initialize()", which #11
-    // made false.)
+    // of #11, in shutdown() -- where it is the LAST statement, after
+    // stopAndSave(), which nulls mFitCore. The two therefore go null together
+    // and `mFitCore != null && mCoreSensor == null` is unreachable BY
+    // CONSTRUCTION rather than by an argument about dispatch. Within onLayout,
+    // onTick is registered two straight-line statements after the sensor is
+    // constructed. A null dereference in onTick is therefore still not
+    // reachable today. The term is kept because it is free and matches the
+    // defensive style used elsewhere in this file -- not because removing it
+    // would crash. Two earlier revisions of this parenthesis were weaker and
+    // are corrected here rather than edited away: the first read "assigned null
+    // only in initialize()", which #11 made false; the second justified the
+    // window by single-threaded dispatch and a shared event loop, two platform
+    // properties nothing in this repository measures. The reorder in shutdown()
+    // removes the window instead of arguing about it.)
     static function coreFieldsWanted(sensor) {
         return sensor != null;
     }
@@ -1366,12 +1374,45 @@ class StrongRowView extends Ui.View {
     // construction rather than by the coincidence that stop()/close()/save()
     // each happen to tolerate a second call.
     //
-    // mTimer.stop() stays FIRST. Monkey C is single-threaded and timer
-    // callbacks dispatch from the same event loop, so stopping before anything
-    // else is cleared means no onTick can observe the window where mCoreSensor
-    // is null but mFitCore is not yet (stopAndSave nulls the field handles) --
-    // preserving the `mFitCore != null => mCoreSensor != null` invariant that
-    // coreFieldsWanted's null term is documented to hold.
+    // ORDER IS LOAD-BEARING, and the sensor's clear is deliberately the LAST
+    // statement rather than sitting next to its close(). Three constraints have
+    // to hold at once:
+    //
+    //   1. close() must PRECEDE stopAndSave(). #103 latches its ANT diagnostics
+    //      at close() for exactly this reason ("Flags latched at close(),
+    //      because shutdown() calls close() BEFORE stopAndSave()"): reading the
+    //      live channel state at readout would report "released, closed" and
+    //      say nothing about the state the session ended in.
+    //   2. mCoreSensor must still be READABLE while stopAndSave() runs.
+    //      stopAndSave() is where every session-scope field is written, and
+    //      #103's ct_diag write is guarded `mFitCtDiag != null && mCoreSensor
+    //      != null` -- so clearing the handle first does not fail loudly, it
+    //      silently skips the write. That breaks ONLY the onStop path, because
+    //      BACK reaches stopAndSave() through the delegate without entering
+    //      shutdown() -- and the onStop path is the entire reason shutdown()
+    //      calls stopAndSave() at all.
+    //   3. mCoreSensor must be null once shutdown() RETURNS, or onLayout's
+    //      guard reads a closed sensor as live and never re-opens the channel.
+    //
+    // Clearing after stopAndSave() is the only order that satisfies all three.
+    // An earlier revision of this PR cleared it immediately after close(),
+    // which satisfied 1 and 3 and broke 2; nothing caught it, because each
+    // suite alone is blind to it -- this file has no ct_diag and #103's has no
+    // lifecycle probe. test_life_shutdownKeepsSensorReadableUntilSaved pins all
+    // three parts now.
+    //
+    // This ordering also removes a window rather than arguing it unreachable.
+    // Clearing before stopAndSave() left an interval in which mStarted &&
+    // mFitCore != null && mCoreSensor == null, which onTick dereferences
+    // guarded only by mFitCore. That was defensible only via two platform
+    // properties nothing here measures (single-threaded dispatch, and timer
+    // callbacks sharing this event loop), and the window did not exist before
+    // this PR. stopAndSave() nulls mFitCore, so after the reorder mFitCore and
+    // mCoreSensor go null together and the window is gone by construction --
+    // which is a better argument than an unreachability claim.
+    //
+    // mTimer.stop() stays FIRST: it is what stops new onTick work from being
+    // scheduled during the rest of the teardown.
     //
     // There is deliberately NO onHide counterpart. Tearing down when the view
     // is merely backgrounded -- a menu, a notification overlay -- would stop
@@ -1387,11 +1428,11 @@ class StrongRowView extends Ui.View {
             try { Sensor.unregisterSensorDataListener(); } catch (e) {}
         }
         try { Position.enableLocationEvents(Position.LOCATION_DISABLE, method(:onPosition)); } catch (e) {}
-        if (mCoreSensor != null) {
-            mCoreSensor.close();
-            mCoreSensor = null;
-        }
+        if (mCoreSensor != null) { mCoreSensor.close(); }
         stopAndSave();
+        // LAST, not next to close() above -- see constraint 2. stopAndSave()
+        // has to be able to read the sensor it is writing diagnostics from.
+        mCoreSensor = null;
     }
 
     hidden function alert(stepType) {

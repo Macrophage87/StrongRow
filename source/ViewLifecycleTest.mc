@@ -95,13 +95,30 @@ class LifeCoreSensor {
 // The cast is erased at runtime; only duck typing applies there, and onLayout
 // never touches dc.
 //
-// The enforcement is NOT uniform across call sites, which is why the rule here
-// is "cast every one" rather than "cast the ones that complain". Measured on
-// SDK 9.2.0 / fr965: an earlier revision of this file with three uncast call
-// sites compiled clean (and passed CI on all 12 devices); adding four more
-// tests made the compiler reject seven of the ten -- including two that had
-// just compiled unchanged. The selection rule is unknown and is not guessed at
-// here. Casting unconditionally makes the file independent of it.
+// NONE OF THE CASTS IS REDUNDANT, and that is measured rather than assumed.
+// The root cause is that StrongRowView.onLayout(dc) is an UNANNOTATED override
+// of Ui.View.onLayout(dc as Graphics.Dc). Measured on SDK 9.2.0 / fr965, with
+// every call site in this file uncast:
+//
+//   * onLayout ANNOTATED `dc as Gfx.Dc`  -> all 11 call sites rejected,
+//     uniformly. So every cast here is load-bearing; removing any one of them
+//     would break the build the moment that annotation is added.
+//   * onLayout UNANNOTATED (as it is today) -> 7 of the 11 rejected, and WHICH
+//     seven is stable across rebuilds but not predictable from the call site:
+//     the four accepted sites are byte-identical to rejected ones.
+//
+// The selection is keyed on the ENCLOSING FUNCTION'S NAME, which is a
+// measurement and not a mechanism: renaming one test whose call site was
+// accepted -- body and call site byte-identical, nothing else touched -- flips
+// that site to rejected, reproducibly. That is why the rule here is "cast every
+// one" rather than "cast the ones that complain": a later rename of an
+// unrelated test would otherwise break the build for no visible reason.
+//
+// Annotating onLayout (and onUpdate, also unannotated) is the real fix and is
+// deliberately NOT done in this PR -- it is a separate change with its own
+// blast radius. Widening the parameter instead is illegal: Monkey C rejects
+// `Cannot override parameter 1 ... with type 'PolyType<Null or
+// $.Toybox.Graphics.Dc>'`.
 
 class LifeProbe extends StrongRowView {
     var madeTimers;    // every LifeTimer handed to the shipping code, in order
