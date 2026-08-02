@@ -822,21 +822,34 @@ class StrongRowView extends Ui.View {
     // dereference mCoreSensor guarded only by the field handle, so keeping it
     // holds the invariant `mFitCore != null => mCoreSensor != null` local to
     // one adjacent line instead of resting on a whole-file lifecycle argument.
-    // (Traced separately: mCoreSensor is assigned null in initialize() and, as
-    // of #11, in shutdown() -- where it is the LAST statement, after
-    // stopAndSave(), which nulls mFitCore. The two therefore go null together
-    // and `mFitCore != null && mCoreSensor == null` is unreachable BY
-    // CONSTRUCTION rather than by an argument about dispatch. Within onLayout,
-    // onTick is registered two straight-line statements after the sensor is
-    // constructed. A null dereference in onTick is therefore still not
-    // reachable today. The term is kept because it is free and matches the
-    // defensive style used elsewhere in this file -- not because removing it
-    // would crash. Two earlier revisions of this parenthesis were weaker and
-    // are corrected here rather than edited away: the first read "assigned null
-    // only in initialize()", which #11 made false; the second justified the
-    // window by single-threaded dispatch and a shared event loop, two platform
-    // properties nothing in this repository measures. The reorder in shutdown()
-    // removes the window instead of arguing about it.)
+    // Where the invariant is actually maintained, stated as the enumeration it
+    // is rather than as an absolute -- this parenthesis has now been wrong
+    // twice for claiming more than it could support, so it claims less:
+    //
+    //   * initialize()   -- sets mFitCore and mCoreSensor null together;
+    //   * stopAndSave()  -- nulls the field handles while mCoreSensor is still
+    //                       set, which satisfies the implication (antecedent
+    //                       false), and is the ordinary end-of-row path;
+    //   * shutdown()     -- clears mFitCore, mFitSkin and mCoreSensor in ONE
+    //                       finally, so a throw partway through stopAndSave
+    //                       cannot leave the field set with the sensor gone.
+    //                       Pinned by test_life_shutdownKeepsCoreFieldInvariantOnThrow.
+    //
+    // Those are the only three sites that assign either to null today. That is
+    // an enumeration of current code, NOT a guarantee about code not yet
+    // written: any future site that nulls mCoreSensor without the field handles
+    // reintroduces the hazard, and it is a hard fault rather than a catchable
+    // throw, because onTick dereferences mCoreSensor guarded only by mFitCore.
+    // The null term here is what keeps that coupling visible at one line.
+    //
+    // Corrections, kept rather than edited away, because the pattern is the
+    // point: revision 1 said "assigned null only in initialize()", which #11
+    // made false. Revision 2 justified the window by single-threaded dispatch
+    // and a shared event loop -- two platform properties nothing here measures.
+    // Revision 3 said the window was "unreachable BY CONSTRUCTION"; the
+    // try/finally added in the same round falsified that, and review measured
+    // the violation. Each was stronger than its evidence. The list above is
+    // scoped to what the code does today and is pinned by a test.
     static function coreFieldsWanted(sensor) {
         return sensor != null;
     }
@@ -1482,26 +1495,71 @@ class StrongRowView extends Ui.View {
     // the tick timer and silently stop writing every FIT field mid-row, which
     // is a worse defect than the one being fixed. StrongRowApp.onStop ->
     // shutdown() is the single teardown point.
+    // UNWIND DISCIPLINE. shutdown() has three points where a release call can
+    // fail -- stop(), close() and stopAndSave() -- and every one of them is
+    // upstream of work that must still happen, so none may abort the teardown.
+    // This was learned one point at a time across three review rounds; the rule
+    // below is what all three collapse to.
+    //
+    //   RULE: clear a handle so the clear cannot be skipped, and let the
+    //   release call fail without taking the rest of the teardown with it.
+    //
+    // Swallowing a teardown failure is this file's existing convention (see
+    // addLap, unregisterSensorDataListener, enableLocationEvents) and it is
+    // load-bearing here rather than merely conventional: a throw from stop() or
+    // close() would otherwise skip stopAndSave() and LOSE THE ROW, which is a
+    // far worse outcome than an unreported failure to release a resource the
+    // app is finished with anyway.
     function shutdown() {
+        // Cleared BEFORE stop(), not after. `mTimer = null` inside this block
+        // after the call made the clear conditional on stop() returning
+        // normally, and the onLayout guard added by #11 then reads a stopped
+        // Timer as live and never re-arms -- zero live timers, permanently.
+        // On base main that same throw was harmless (onLayout allocated
+        // unconditionally, so recovery still worked), which is exactly why the
+        // protection belongs to this PR.
+        //
+        // The residual cost, stated rather than hidden: if stop() throws, the
+        // timer may still be running and its reference is now gone. That orphan
+        // is unavoidable -- the timer could not be stopped -- and it is the
+        // lesser evil, because the alternative forfeits re-arming AND the save.
         if (mTimer != null) {
-            mTimer.stop();
+            var t = mTimer;
             mTimer = null;
+            try { t.stop(); } catch (e) {}
         }
         if (mSensorOk) {
             try { Sensor.unregisterSensorDataListener(); } catch (e) {}
         }
         try { Position.enableLocationEvents(Position.LOCATION_DISABLE, method(:onPosition)); } catch (e) {}
-        if (mCoreSensor != null) { mCoreSensor.close(); }
-        // AFTER stopAndSave, not next to close() above -- see constraint 2;
-        // stopAndSave has to be able to read the sensor it writes diagnostics
-        // from. And in a FINALLY, because being last makes it the one statement
-        // a throw could otherwise skip: an unwound shutdown() holding a CLOSED
-        // sensor would leave onLayout's guard reading a dead handle as live and
-        // never re-opening the ANT channel -- ZERO live sensors, the mirror
-        // image of #11. The throw still propagates; nothing is swallowed.
+        // close() must precede stopAndSave (constraint 1, #103's latch), and it
+        // must not be able to prevent it: unwrapped, a throw here skipped the
+        // save and the clear below, exactly as a throwing stop() did.
+        try {
+            if (mCoreSensor != null) { mCoreSensor.close(); }
+        } catch (e) {}
+        // The sensor's clear cannot move up here -- stopAndSave has to read it
+        // (constraint 2) -- so it goes in a finally instead, where a throw
+        // cannot skip it.
+        //
+        // mFitCore/mFitSkin are cleared WITH it, and that is not tidiness.
+        // onTick dereferences mCoreSensor guarded only by mFitCore, so
+        // `mFitCore != null && mCoreSensor == null` is an uncatchable fault
+        // rather than an exception. A throw partway through stopAndSave --
+        // before it reaches its own `mFitCore = null` -- would leave exactly
+        // that pairing. Clearing all three together is what keeps the invariant
+        // `mFitCore != null => mCoreSensor != null` true on the failure path as
+        // well as the success path. Redundant on the success path, where
+        // stopAndSave has already nulled both.
+        //
+        // Unlike stop() and close(), a throw from stopAndSave PROPAGATES: it
+        // means the row may not have been saved, which the caller should see.
+        // Nothing is swallowed here.
         try {
             stopAndSave();
         } finally {
+            mFitCore = null;
+            mFitSkin = null;
             mCoreSensor = null;
         }
     }
