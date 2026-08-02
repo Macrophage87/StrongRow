@@ -72,6 +72,7 @@ test_hr_narrowBandSurvivesAngleTruncation
 test_hr_fillIsSkippedWhenItWouldBeSubDegree
 test_hr_clampIsDetectedAtBothEnds
 test_hr_absentSourceBreaksTheTrack
+test_hr_arcThrowLeavesTheRestOfTheScreenIntact
 
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork

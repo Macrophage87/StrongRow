@@ -797,3 +797,64 @@ class HrProbe extends StrongRowView {
     }
     return true;
 }
+
+// -- Review round 1, finding 1 -------------------------------------------------
+// RED against the head this case lands on, green against the fix that follows.
+//
+// drawHrArc is called BEFORE every text element, and it is not guarded. A throw
+// out of any Dc primitive it issues therefore propagates through onUpdate and
+// takes the title, the countdown, the stroke rate, the pace row, the sub row
+// and the footer with it -- which is precisely the outcome the sampler's own
+// comment says the design must avoid: "a heart rate is an ornament on two
+// priorities that must keep working without it". The sampling is wrapped for
+// exactly that reason; the drawing was not.
+//
+// REACHABILITY IS UNVERIFIED, IN BOTH DIRECTIONS, and this case claims neither
+// answer. No input has been found that makes a Dc primitive throw, and nothing
+// establishes that none can. The property pinned here -- "a throw from the arc
+// must not change the rest of the screen" -- is the correct contract under
+// either answer, and the case can drive it directly with a Dc that throws on
+// demand. That is the same posture ViewLifecycleTest.mc:12-18 takes for a
+// second onLayout.
+//
+// The insurance is one line, this is the FIRST drawArc in the codebase, it runs
+// on twelve devices, and it has never run on hardware. That is why the fix
+// lands ahead of any reachability answer rather than behind one.
+//
+// Phrased as an EQUALITY against a clean render rather than as a text count, so
+// it keeps guarding this property if the layout is legitimately changed later:
+// whatever the screen is, a throwing arc must not alter it.
+(:test) function test_hr_arcThrowLeavesTheRestOfTheScreenIntact(logger) {
+    var p = new HrProbe();
+    p.driveStrokes();
+    p.enterWorkStep(true);
+    p.setHrState(128, System.getTimer(), true);
+
+    var clean = new HrDc(240, 240);
+    p.runUpdate(clean);
+
+    var bad = new HrDc(240, 240);
+    bad.throwAtArc = 1;
+    var escaped = false;
+    try {
+        p.runUpdate(bad);
+    } catch (e) {
+        escaped = true;
+    }
+
+    if (!bad.textLog().equals(clean.textLog())) {
+        logger.error("a throw from the heart-rate arc changed the rest of the " +
+                     "screen. Escaped onUpdate: " + escaped + ". Clean render " +
+                     "drew " + clean.texts.size() + " text elements, the " +
+                     "throwing one drew " + bad.texts.size() +
+                     " -- the arc is drawn before every text element, so an " +
+                     "unguarded throw takes glance priorities 1 and 2 with it.");
+        return false;
+    }
+    if (clean.texts.size() < 6) {
+        logger.error("the clean render drew only " + clean.texts.size() +
+                     " text elements, so the comparison above is vacuous");
+        return false;
+    }
+    return true;
+}
