@@ -192,6 +192,12 @@ class StrongRowView extends Ui.View {
         computeCoeffs();
         mSensorOk   = false;
         mGpsQual    = 0;
+        // Explicit, though Monkey C already defaults an unassigned member to
+        // null. shutdown()'s `if (mTimer != null)` and onLayout's idempotency
+        // guard both read this before anything writes it, and a precondition
+        // that load-bearing should be a statement in this file rather than a
+        // language default a reader has to know. Behaviour-identical.
+        mTimer      = null;
         mSession    = null;
         mFitRate    = null;
         mFitDps     = null;
@@ -314,12 +320,93 @@ class StrongRowView extends Ui.View {
         mAcLowConf   = 0;
     }
 
+    // Allocation seams for the two app-lifetime resources onLayout owns. Split
+    // out for exactly the reason CoreTempSensor.makeChannel is
+    // (CoreTempSensor.mc:171-174): the real constructors are unreachable from a
+    // (:test). A real Timer.Timer would keep firing onTick inside the test
+    // process for the rest of the run, and a real CoreTempSensor's ANT
+    // allocation always throws under the headless simulator and drives the
+    // retry ladder -- so without this seam nothing can reach the code that
+    // decides WHETHER to allocate, which is the whole of #11.
+    //
+    // `hidden` is protected in Monkey C, so a probe subclass substitutes
+    // counting stubs. The calls in onLayout below are UNQUALIFIED on purpose so
+    // they dispatch to the override -- the trap CoreProbe.scheduleReopen
+    // documents at CoreTempSensorTest.mc:79-81.
+    hidden function makeCoreSensor() { return new CoreTempSensor(); }
+    hidden function makeTimer()      { return new Timer.Timer(); }
+
+    // #11: the two allocations below are guarded, so a repeat onLayout cannot
+    // orphan the previous Timer or the previous CORE ANT channel.
+    //
+    // REACHABILITY IS UNVERIFIED, IN BOTH DIRECTIONS, and this comment claims
+    // neither answer: nothing in this repository has produced a second onLayout
+    // on a live view, and nothing here shows one is impossible. Settling it
+    // needs a human-driven simulator session -- the [Local] issue linked from
+    // #11. The guards are correct under either answer, which is why they land
+    // ahead of it:
+    //   * if a second onLayout is reachable, they stop a second 250 ms timer
+    //     that would double every onTick from then on. mCorrAccum integrates
+    //     across the whole recording, so the total_corrective_strokes
+    //     stopAndSave derives from it is inflated by a factor strictly between
+    //     1x and 2x -- 2x only if the second onLayout lands before START, and
+    //     approaching 1x the later it lands. (An earlier revision of this
+    //     comment said "exactly 2x" unconditionally, which is true only for
+    //     the pre-START case.) The previous CoreTempSensor's ANT channel also
+    //     keeps searching with nothing left able to close() it;
+    //   * if it is not reachable, behaviour is identical -- one call, one
+    //     allocation -- for two null comparisons per app launch.
+    //
+    // PRESERVE, do not tear down and rebuild. #11 suggests either. Rebuilding
+    // the sensor mid-row would release a tracking ANT channel and reset the
+    // retry ladder (CoreTempSensor.mc:341-348), trading a leak for a data
+    // dropout; the timer is guarded the same way for the same reason.
+    // shutdown() stays the single teardown point.
+    //
+    // mTimer.start is INSIDE the guard, not after it: restarting a timer that
+    // is already running is the same defect measured from the other end.
+    //
+    // startSensor()/startGps() are deliberately NOT guarded. Neither allocates
+    // something that can be orphaned: Sensor.unregisterSensorDataListener()
+    // takes no argument (see shutdown), which is what says Connect IQ holds a
+    // single listener slot rather than a list, so a second registration
+    // replaces; and enableLocationEvents sets a mode. Guarding them would also
+    // destroy the only path that could ever recover from the double
+    // registration failure startSensor handles by setting mSensorOk = false.
+    // BUILD, THEN PUBLISH -- the allocation-side half of the rule shutdown()
+    // states for teardown. There, a handle is cleared BEFORE the release call
+    // that might throw; here, a handle is assigned only AFTER the call that
+    // arms it has succeeded. Both say the same thing: a field must never hold
+    // something the guard would read as live but which is not.
+    //
+    // `mTimer = makeTimer()` followed by `mTimer.start(...)` published a Timer
+    // that was not yet armed, so a throw from start() left a non-null,
+    // never-started Timer -- and the guard above reads that as live and never
+    // re-arms, for the life of the app. On base main the same throw was
+    // harmless: onLayout allocated unconditionally, so the next call simply
+    // tried again. The guard is what converts "retry next time" into "never
+    // again", which is why the protection belongs here.
+    //
+    // mCoreSensor needs no equivalent and deliberately does not get one:
+    // `mCoreSensor = makeCoreSensor()` assigns only if the constructor
+    // returns, so a throw from the ANT channel open leaves the field null and
+    // the next onLayout retries. (That such a throw also skips the timer block
+    // is base main's behaviour, unchanged by the guards, so it is not fixed
+    // here.)
+    //
+    // The throw still PROPAGATES; no catch is added. shutdown() swallows
+    // because a throw there would lose the recorded row -- allocation has no
+    // such asset to protect, and silently continuing without a tick timer would
+    // hide an app that cannot function. Base main propagated it too.
     function onLayout(dc) {
         startSensor();
         startGps();
-        mCoreSensor = new CoreTempSensor();
-        mTimer = new Timer.Timer();
-        mTimer.start(method(:onTick), 250, true);
+        if (mCoreSensor == null) { mCoreSensor = makeCoreSensor(); }
+        if (mTimer == null) {
+            var t = makeTimer();
+            t.start(method(:onTick), 250, true);
+            mTimer = t;
+        }
     }
 
     function onTick() as Void {
@@ -761,12 +848,49 @@ class StrongRowView extends Ui.View {
     // dereference mCoreSensor guarded only by the field handle, so keeping it
     // holds the invariant `mFitCore != null => mCoreSensor != null` local to
     // one adjacent line instead of resting on a whole-file lifecycle argument.
-    // (Traced separately: mCoreSensor is assigned null only in initialize(),
-    // and onTick is registered two straight-line statements after it is
-    // constructed in onLayout, so a null dereference there is not reachable
-    // today. The term is kept because it is free and matches the defensive
-    // style used elsewhere in this file -- not because removing it would
-    // crash.)
+    // WHAT MAINTAINS IT, stated as a rule rather than as a census of call
+    // sites. Every previous version of this paragraph was an enumeration, and
+    // every one of them went stale or overreached (see the corrections below),
+    // so it is deliberately phrased as something that cannot be invalidated by
+    // adding code elsewhere:
+    //
+    //   Clearing mFitCore / mFitSkin ALONE is always safe -- it makes the
+    //   antecedent false, so the implication holds trivially. Only an
+    //   assignment that nulls mCoreSensor can break the invariant. The rule is
+    //   therefore one line:
+    //
+    //       never null mCoreSensor without nulling mFitCore and mFitSkin in
+    //       the same breath.
+    //
+    // Two places null mCoreSensor and both obey it: initialize(), which sets
+    // all of them null together, and shutdown()'s finally, which clears the
+    // three as a unit precisely so a throw partway through stopAndSave cannot
+    // leave a field set with the sensor gone -- pinned by
+    // test_life_shutdownKeepsCoreFieldInvariantOnThrow. Sites that clear only
+    // the field handles (stopAndSave; startSession's createField catch) need no
+    // audit under the rule above, which is the point of phrasing it that way.
+    //
+    // The stakes, unchanged: onTick dereferences mCoreSensor guarded only by
+    // mFitCore, so a violation is a HARD FAULT, not a catchable throw. The null
+    // term here is what keeps that coupling visible at one line.
+    //
+    // Corrections, kept rather than edited away, because the pattern -- one
+    // comment, one claim outrunning its evidence, once per review round -- is
+    // itself the thing worth recording:
+    //   1. "assigned null only in initialize()"          -- #11 made it false.
+    //   2. justified the window by single-threaded dispatch and a shared event
+    //      loop                                          -- two platform
+    //      properties nothing in this repository measures.
+    //   3. "unreachable BY CONSTRUCTION"                 -- the try/finally
+    //      added in the same round falsified it, and review measured the
+    //      violation.
+    //   4. "the only three sites that assign either to null" -- false; the
+    //      createField catch in startSession is a fourth. Behaviourally
+    //      harmless, but the sentence's whole job was to be exhaustive.
+    // A fifth revision that merely recounted the sites would fail the same way,
+    // which is why this one states an invariant-preserving rule instead. No
+    // count of revisions appears in this paragraph, because that count is one
+    // more thing that would need updating and did in fact go stale once.
     static function coreFieldsWanted(sensor) {
         return sensor != null;
     }
@@ -1349,14 +1473,136 @@ class StrongRowView extends Ui.View {
         mStarted = false;
     }
 
+    // #11: release, then CLEAR. Clearing is not tidiness -- these two fields
+    // are what onLayout's guards read, so "non-null" has to mean "live".
+    // Leaving a stopped Timer and a closed CoreTempSensor in them would make a
+    // later onLayout decline to allocate and leave the app with ZERO live
+    // timers where the unguarded code left two: the defect's mirror image,
+    // reachable under exactly the same unverified condition, which is why both
+    // halves ship together. It also means a second shutdown() cannot re-stop
+    // the timer, re-close the sensor or re-save the session -- those three are
+    // guarded by the handles, rather than relying on each tolerating a repeat
+    // call. That is narrower than "idempotent by construction", which an
+    // earlier revision of this comment claimed and which is not true of the
+    // whole function: mSensorOk is never reset, so
+    // unregisterSensorDataListener() re-runs on every call, and the
+    // enableLocationEvents(LOCATION_DISABLE) below is unconditional. Both are
+    // wrapped in try/catch -- i.e. they rely on exactly the tolerance that
+    // sentence disowned. shutdown() IS idempotent in observed behaviour; only
+    // the "by construction" part was stronger than the evidence.
+    //
+    // ORDER IS LOAD-BEARING, and the sensor's clear is deliberately the LAST
+    // statement rather than sitting next to its close(). Three constraints have
+    // to hold at once:
+    //
+    //   1. close() must PRECEDE stopAndSave(). #103 latches its ANT diagnostics
+    //      at close() for exactly this reason ("Flags latched at close(),
+    //      because shutdown() calls close() BEFORE stopAndSave()"): reading the
+    //      live channel state at readout would report "released, closed" and
+    //      say nothing about the state the session ended in.
+    //   2. mCoreSensor must still be READABLE while stopAndSave() runs.
+    //      stopAndSave() is where every session-scope field is written, and
+    //      #103's ct_diag write is guarded `mFitCtDiag != null && mCoreSensor
+    //      != null` -- so clearing the handle first does not fail loudly, it
+    //      silently skips the write. That breaks ONLY the onStop path, because
+    //      BACK reaches stopAndSave() through the delegate without entering
+    //      shutdown() -- and the onStop path is the entire reason shutdown()
+    //      calls stopAndSave() at all.
+    //   3. mCoreSensor must be null once shutdown() RETURNS, or onLayout's
+    //      guard reads a closed sensor as live and never re-opens the channel.
+    //
+    // Clearing after stopAndSave() is the only order that satisfies all three.
+    // An earlier revision of this PR cleared it immediately after close(),
+    // which satisfied 1 and 3 and broke 2; nothing caught it, because each
+    // suite alone is blind to it -- this file has no ct_diag and #103's has no
+    // lifecycle probe. test_life_shutdownKeepsSensorReadableUntilSaved pins all
+    // three parts now.
+    //
+    // This ordering also removes a window rather than arguing it unreachable.
+    // Clearing before stopAndSave() left an interval in which mStarted &&
+    // mFitCore != null && mCoreSensor == null, which onTick dereferences
+    // guarded only by mFitCore. That was defensible only via two platform
+    // properties nothing here measures (single-threaded dispatch, and timer
+    // callbacks sharing this event loop), and the window did not exist before
+    // this PR. stopAndSave() nulls mFitCore, so after the reorder mFitCore and
+    // mCoreSensor go null together and the window is gone by construction --
+    // which is a better argument than an unreachability claim.
+    //
+    // mTimer.stop() stays FIRST: it is what stops new onTick work from being
+    // scheduled during the rest of the teardown.
+    //
+    // There is deliberately NO onHide counterpart. Tearing down when the view
+    // is merely backgrounded -- a menu, a notification overlay -- would stop
+    // the tick timer and silently stop writing every FIT field mid-row, which
+    // is a worse defect than the one being fixed. StrongRowApp.onStop ->
+    // shutdown() is the single teardown point.
+    // UNWIND DISCIPLINE. shutdown() has three points where a release call can
+    // fail -- stop(), close() and stopAndSave() -- and every one of them is
+    // upstream of work that must still happen, so none may abort the teardown.
+    // This was learned one point at a time across three review rounds; the rule
+    // below is what all three collapse to.
+    //
+    //   RULE: clear a handle so the clear cannot be skipped, and let the
+    //   release call fail without taking the rest of the teardown with it.
+    //
+    // Swallowing a teardown failure is this file's existing convention (see
+    // addLap, unregisterSensorDataListener, enableLocationEvents) and it is
+    // load-bearing here rather than merely conventional: a throw from stop() or
+    // close() would otherwise skip stopAndSave() and LOSE THE ROW, which is a
+    // far worse outcome than an unreported failure to release a resource the
+    // app is finished with anyway.
     function shutdown() {
-        if (mTimer != null) { mTimer.stop(); }
+        // Cleared BEFORE stop(), not after. `mTimer = null` inside this block
+        // after the call made the clear conditional on stop() returning
+        // normally, and the onLayout guard added by #11 then reads a stopped
+        // Timer as live and never re-arms -- zero live timers, permanently.
+        // On base main that same throw was harmless (onLayout allocated
+        // unconditionally, so recovery still worked), which is exactly why the
+        // protection belongs to this PR.
+        //
+        // The residual cost, stated rather than hidden: if stop() throws, the
+        // timer may still be running and its reference is now gone. That orphan
+        // is unavoidable -- the timer could not be stopped -- and it is the
+        // lesser evil, because the alternative forfeits re-arming AND the save.
+        if (mTimer != null) {
+            var t = mTimer;
+            mTimer = null;
+            try { t.stop(); } catch (e) {}
+        }
         if (mSensorOk) {
             try { Sensor.unregisterSensorDataListener(); } catch (e) {}
         }
         try { Position.enableLocationEvents(Position.LOCATION_DISABLE, method(:onPosition)); } catch (e) {}
-        if (mCoreSensor != null) { mCoreSensor.close(); }
-        stopAndSave();
+        // close() must precede stopAndSave (constraint 1, #103's latch), and it
+        // must not be able to prevent it: unwrapped, a throw here skipped the
+        // save and the clear below, exactly as a throwing stop() did.
+        try {
+            if (mCoreSensor != null) { mCoreSensor.close(); }
+        } catch (e) {}
+        // The sensor's clear cannot move up here -- stopAndSave has to read it
+        // (constraint 2) -- so it goes in a finally instead, where a throw
+        // cannot skip it.
+        //
+        // mFitCore/mFitSkin are cleared WITH it, and that is not tidiness.
+        // onTick dereferences mCoreSensor guarded only by mFitCore, so
+        // `mFitCore != null && mCoreSensor == null` is an uncatchable fault
+        // rather than an exception. A throw partway through stopAndSave --
+        // before it reaches its own `mFitCore = null` -- would leave exactly
+        // that pairing. Clearing all three together is what keeps the invariant
+        // `mFitCore != null => mCoreSensor != null` true on the failure path as
+        // well as the success path. Redundant on the success path, where
+        // stopAndSave has already nulled both.
+        //
+        // Unlike stop() and close(), a throw from stopAndSave PROPAGATES: it
+        // means the row may not have been saved, which the caller should see.
+        // Nothing is swallowed here.
+        try {
+            stopAndSave();
+        } finally {
+            mFitCore = null;
+            mFitSkin = null;
+            mCoreSensor = null;
+        }
     }
 
     hidden function alert(stepType) {
