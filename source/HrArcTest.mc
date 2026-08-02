@@ -1,6 +1,7 @@
 using Toybox.Test;
 using Toybox.Graphics as Gfx;
 using Toybox.Lang;
+using Toybox.System;
 
 // Unit tests for issue #110: the left-edge heart-rate arc -- glance priority 3,
 // "is my heart rate in target?", answered in peripheral vision while the eye is
@@ -47,13 +48,81 @@ using Toybox.Lang;
 // adds is a class-scope static taking plain numbers and booleans, and the probe
 // methods below take no arguments. That keeps this file clear of the call-site
 // type-enforcement problem #117 describes and ViewLifecycleTest.mc:115-146
-// measures -- there is no `as Gfx.Dc` cast here because there is nothing to
-// cast.
+// measures. The one call site that DOES pass a Dc is HrProbe.runUpdate below,
+// and it carries the cast unconditionally -- #117's mitigation applied without
+// guessing which sites would be rejected.
+//
+// -- Recording Dc --------------------------------------------------------------
+// A duck-typed stand-in that logs every primitive the shipping draw path issues.
+// mTimer and mCoreSensor are untyped fields and onUpdate's dc is used only
+// through method calls, so at runtime only duck typing applies and this needs
+// just the members onUpdate and its helpers actually call.
+//
+// Two things it records, for two different jobs:
+//   arcs / lines  the arc widget's own geometry, which is all this class can
+//                 see of it -- a count and an order, never an appearance.
+//   texts         every drawText, fully argument-qualified. The arc draws NO
+//                 text at all, so the text log is exactly the screen OUTSIDE
+//                 the arc, which is what makes "a missing heart rate must not
+//                 degrade priorities 1 and 2" checkable by comparison rather
+//                 than by assertion.
+//
+// It records what the code CALLS. It says nothing about what a panel shows.
+class HrDc {
+    var w; var h;
+    var arcs;        // drawArc call count
+    var lines;       // drawLine call count
+    var texts;       // every drawText, as "x|y|font|string|justify"
+    var throwAtArc;  // 1-based index of the drawArc that should throw; 0 = none
+
+    function initialize(width, height) {
+        w = width; h = height;
+        arcs = 0; lines = 0; texts = []; throwAtArc = 0;
+    }
+
+    function getWidth()  { return w; }
+    function getHeight() { return h; }
+    function setColor(fg, bg) { }
+    function setPenWidth(p)   { }
+    function clear()          { }
+
+    // Counts FIRST, then fails -- the same rule LifeTimer.start states
+    // (ViewLifecycleTest.mc:50-55): "never called" and "called and threw" must
+    // stay distinguishable.
+    function drawArc(x, y, r, attr, degStart, degEnd) {
+        arcs++;
+        if (throwAtArc > 0 && arcs >= throwAtArc) { throw new Lang.Exception(); }
+    }
+
+    function drawLine(x1, y1, x2, y2) { lines++; }
+
+    function drawText(x, y, font, s, just) {
+        texts.add(x.toString() + "|" + y.toString() + "|" + font.toString() +
+                  "|" + s + "|" + just.toString());
+    }
+
+    // The whole text log as one comparable string.
+    function textLog() {
+        var out = "";
+        for (var i = 0; i < texts.size(); i++) { out += texts[i] + "\n"; }
+        return out;
+    }
+}
+
 class HrProbe extends StrongRowView {
     function initialize() { StrongRowView.initialize(); }
 
     hidden function startSensor() { }
     hidden function startGps()    { }
+
+    // Neutralised for determinism, and ONLY these two beyond the sensor pair
+    // above: both read Activity.getActivityInfo(), whose value is not under
+    // test here and is not under this test's control. Everything else in
+    // onUpdate is the shipping code, so the draw cases below drive the ACTUAL
+    // call site rather than a transcription of it -- the rule
+    // DspTimeBaseTest.mc:19-21 states for onSensorData.
+    hidden function currentSpeed() { return 0.0; }
+    hidden function elapsedDist()  { return 0.0; }
 
     // Priority 1's value path, read straight from the shipping method.
     function rateValue() { return outputRate(); }
@@ -82,6 +151,61 @@ class HrProbe extends StrongRowView {
         mLastHrMs = lastMs;
         mHrEver   = ever;
     }
+
+    // Put the view into a live, TIME-STABLE work step.
+    //
+    // Time stability is the whole difficulty and it is deliberate, not
+    // incidental. onUpdate renders two clocks -- the countdown from
+    // stepRemaining() and the footer from totalElapsed() -- and a case that
+    // compares two renders a few milliseconds apart would flake the moment one
+    // of them ticked. So:
+    //   * mStepStartMs is pushed far enough into the past that stepRemaining()
+    //     is clamped at 0.0, giving a constant "0:00";
+    //   * mPaused selects drawFoot's PAUSED branch, which carries a stroke
+    //     count and no elapsed time.
+    // Both are real states of the shipping code, not test-only shims -- and
+    // PAUSED is a state #110 has to answer for anyway, since the arc is drawn
+    // during it.
+    function enterWorkStep(paused) {
+        mStarted = true;
+        mPaused  = paused;
+        mStartMs = System.getTimer();
+        mStepStartMs = System.getTimer() - 3600000;
+        for (var i = 0; i < mSteps.size(); i++) {
+            if (mSteps[i][:type] == STEP_WORK) { mStepIdx = i; return; }
+        }
+    }
+
+    // Free-row mode: onUpdate returns before the workout branch, so the arc is
+    // never reached. Driven through the real flag rather than by asserting the
+    // early return exists.
+    function setFreeRow() { mWorkoutEnabled = false; }
+
+    // Drive real strokes through the shipping detector so outputRate() is
+    // NON-ZERO. Without this, "the rate is unchanged by HR state" compares 0.0
+    // against 0.0 and would hold even if the rate were a constant.
+    //
+    // 3.3333 s between drives is 18.0 spm: inside registerStroke's accepted
+    // period band, below FAST_NEEDS_LOCK, and below MAX_RATE, so outputRate()
+    // passes the median straight through with no autocorrelation lock.
+    function driveStrokes() {
+        var t = 0.0;
+        for (var i = 0; i < 7; i++) {
+            registerStroke(t);
+            t += 3.3333333;
+        }
+    }
+
+    // The ONE Dc-passing call site in this file, and it carries the cast
+    // unconditionally. onUpdate is an unannotated override of
+    // Ui.View.onUpdate(dc as Graphics.Dc) and monkeyc enforces that inherited
+    // type at call sites with no -l level; #117 measures the enforcement as
+    // deterministic but NOT predictable from the call site, keyed on the
+    // enclosing symbol's name. The rule that follows from that measurement is
+    // "cast every one" rather than "cast the ones that complain", so this is
+    // cast whether or not it would be rejected today. Erased at runtime; only
+    // duck typing applies there.
+    function runUpdate(d) { onUpdate(d as Gfx.Dc); }
 }
 
 // -- c0: characterization pins -------------------------------------------------
@@ -381,26 +505,141 @@ class HrProbe extends StrongRowView {
     return true;
 }
 
-// #110's negative acceptance criterion as a test rather than a promise: the
-// stroke rate and the interval countdown must be IDENTICAL with and without a
-// heart rate. Driven by putting one view into both states and reading the two
-// value paths back.
+// #110's negative acceptance criterion as a test rather than a promise: a
+// missing heart rate must leave glance priorities 1 and 2 IDENTICAL.
 //
-// Green from the commit that introduces the HR fields onward. The point is not
-// that it can fail today; it is that a later edit routing either priority
-// through HR state would move it.
-(:test) function test_hr_rateAndCountdownIgnoreHrState(logger) {
+// AN EARLIER VERSION OF THIS CASE WAS DEGENERATE, and it is worth recording why
+// rather than quietly replacing it. It compared outputRate() before and after
+// setting the HR fields on a FRESH probe -- 0.0 against 0.0 -- and mmss(240.0)
+// against itself, mmss being a pure formatter. Both comparisons hold for a
+// stroke rate replaced by a constant, so the case asserted almost nothing.
+//
+// This version fixes both halves:
+//   * driveStrokes() puts a real, non-zero rate through the shipping detector,
+//     so the compared quantity is live. The case asserts that explicitly before
+//     comparing, so a future change that stopped the strokes registering would
+//     red here rather than silently returning the case to vacuity;
+//   * the comparison is the FULL TEXT LOG of a real onUpdate, not two scalars.
+//     The arc draws no text at all, so the text log is exactly the screen
+//     outside the arc -- every element of it, in order, with its coordinates,
+//     font and justification.
+//
+// Green in every epoch of this change; the point is that a later edit routing
+// any part of the screen through HR state would move it.
+(:test) function test_hr_screenOutsideTheArcIgnoresHrState(logger) {
     var p = new HrProbe();
+    p.driveStrokes();
+    p.enterWorkStep(true);
+
+    var live = p.rateValue();
+    if (live <= 0.0) {
+        logger.error("the comparison below is only worth making against a LIVE " +
+                     "rate; driveStrokes() left outputRate() at " + live);
+        return false;
+    }
+
     p.setHrState(0, 0, false);
-    var rateAbsent = p.rateValue();
-    var cdAbsent = p.fmtCountdown(240.0);
-    p.setHrState(128, 1000, true);
-    var ratePresent = p.rateValue();
-    var cdPresent = p.fmtCountdown(240.0);
-    if (rateAbsent != ratePresent || !cdAbsent.equals(cdPresent)) {
-        logger.error("a heart rate must not change glance priorities 1 or 2: " +
-                     "rate " + rateAbsent + " -> " + ratePresent +
-                     ", countdown " + cdAbsent + " -> " + cdPresent);
+    var absent = new HrDc(240, 240);
+    p.runUpdate(absent);
+
+    p.setHrState(128, System.getTimer(), true);
+    var present = new HrDc(240, 240);
+    p.runUpdate(present);
+
+    if (!absent.textLog().equals(present.textLog())) {
+        logger.error("a heart rate changed the screen OUTSIDE the arc, which " +
+                     "#110 forbids. Without HR:\n" + absent.textLog() +
+                     "With HR:\n" + present.textLog());
+        return false;
+    }
+    if (absent.texts.size() < 6) {
+        logger.error("only " + absent.texts.size() + " text elements drew; the " +
+                     "comparison above is vacuous if the screen is empty");
+        return false;
+    }
+    return true;
+}
+
+// -- Draw-path pins ------------------------------------------------------------
+// Green in every epoch of this change. Up to here the arc was pinned only
+// through its pure statics; these drive the REAL onUpdate call site, which the
+// statics explicitly do not cover (the scope caveat rateColour states for
+// itself, and which these cases exist to narrow).
+//
+// They count primitives and nothing else. A count is not an appearance, and no
+// case in this file claims one.
+
+// With a heart rate: one continuous track arc, one fill arc, one band rail arc,
+// two band edge ticks and one head tick.
+(:test) function test_hr_workViewDrawsTheArcWhenHrIsPresent(logger) {
+    var p = new HrProbe();
+    p.enterWorkStep(false);
+    p.setHrState(128, System.getTimer(), true);
+    var d = new HrDc(240, 240);
+    p.runUpdate(d);
+    if (d.arcs != 3 || d.lines != 3) {
+        logger.error("a work step with a live heart rate must draw 3 arcs " +
+                     "(track, fill, band rail) and 3 lines (2 band ticks, " +
+                     "1 head tick); got " + d.arcs + " arcs, " + d.lines + " lines");
+        return false;
+    }
+    return true;
+}
+
+// Without one: the track is drawn in three segments, the fill and the head tick
+// are absent, and the band rail with its two ticks stays. The end-to-end form
+// of the no-data state, which until now was pinned only at hrTrackParts.
+(:test) function test_hr_workViewBreaksTheTrackWhenHrIsAbsent(logger) {
+    var p = new HrProbe();
+    p.enterWorkStep(false);
+    p.setHrState(0, 0, false);
+    var d = new HrDc(240, 240);
+    p.runUpdate(d);
+    if (d.arcs != 4 || d.lines != 2) {
+        logger.error("a work step with no heart rate must draw 4 arcs (3 " +
+                     "track segments + the band rail) and 2 lines (the band " +
+                     "ticks, no head tick); got " + d.arcs + " arcs, " +
+                     d.lines + " lines");
+        return false;
+    }
+    return true;
+}
+
+// PAUSED is a work step, so the arc is still drawn -- and sampleHr is called
+// unconditionally in onTick, so the reading behind it keeps updating while
+// paused. Recorded as a behaviour rather than left to be discovered.
+(:test) function test_hr_pausedWorkStepStillDrawsTheArc(logger) {
+    var p = new HrProbe();
+    p.enterWorkStep(true);
+    p.setHrState(128, System.getTimer(), true);
+    var d = new HrDc(240, 240);
+    p.runUpdate(d);
+    if (d.arcs != 3 || d.lines != 3) {
+        logger.error("pausing must not remove the heart-rate arc: got " +
+                     d.arcs + " arcs, " + d.lines + " lines");
+        return false;
+    }
+    return true;
+}
+
+// Free-row mode returns before the workout branch, so the arc is never reached.
+// #108 requires free row to be behaviourally unchanged, and this is #110's half
+// of that promise -- driven through the real mWorkoutEnabled flag rather than
+// by asserting that an early return exists.
+(:test) function test_hr_freeRowNeverDrawsTheArc(logger) {
+    var p = new HrProbe();
+    p.setFreeRow();
+    p.setHrState(128, System.getTimer(), true);
+    var d = new HrDc(240, 240);
+    p.runUpdate(d);
+    if (d.arcs != 0 || d.lines != 0) {
+        logger.error("free-row mode must draw no arc geometry at all; got " +
+                     d.arcs + " arcs, " + d.lines + " lines");
+        return false;
+    }
+    if (d.texts.size() < 4) {
+        logger.error("free-row mode drew only " + d.texts.size() + " text " +
+                     "elements, so the check above proves nothing about it");
         return false;
     }
     return true;
