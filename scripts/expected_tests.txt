@@ -28,6 +28,9 @@ test_core_gateIgnoresEverSeen
 # source/ViewLifecycleTest.mc
 test_life_freshViewHoldsNoTimer
 test_life_freshViewHoldsNoCoreSensor
+test_life_onLayoutStartsTheTickTimer
+test_life_onLayoutCreatesTheCoreSensor
+test_life_shutdownReleasesTheLiveResources
 
 # source/DspTimeBaseTest.mc
 test_dsp_timeBaseInvariantToBatchSize

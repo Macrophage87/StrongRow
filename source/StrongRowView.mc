@@ -191,6 +191,12 @@ class StrongRowView extends Ui.View {
         computeCoeffs();
         mSensorOk   = false;
         mGpsQual    = 0;
+        // Explicit, though Monkey C already defaults an unassigned member to
+        // null. shutdown()'s `if (mTimer != null)` and onLayout's idempotency
+        // guard both read this before anything writes it, and a precondition
+        // that load-bearing should be a statement in this file rather than a
+        // language default a reader has to know. Behaviour-identical.
+        mTimer      = null;
         mSession    = null;
         mFitRate    = null;
         mFitDps     = null;
@@ -312,11 +318,27 @@ class StrongRowView extends Ui.View {
         mAcLowConf   = 0;
     }
 
+    // Allocation seams for the two app-lifetime resources onLayout owns. Split
+    // out for exactly the reason CoreTempSensor.makeChannel is
+    // (CoreTempSensor.mc:171-174): the real constructors are unreachable from a
+    // (:test). A real Timer.Timer would keep firing onTick inside the test
+    // process for the rest of the run, and a real CoreTempSensor's ANT
+    // allocation always throws under the headless simulator and drives the
+    // retry ladder -- so without this seam nothing can reach the code that
+    // decides WHETHER to allocate, which is the whole of #11.
+    //
+    // `hidden` is protected in Monkey C, so a probe subclass substitutes
+    // counting stubs. The calls in onLayout below are UNQUALIFIED on purpose so
+    // they dispatch to the override -- the trap CoreProbe.scheduleReopen
+    // documents at CoreTempSensorTest.mc:79-81.
+    hidden function makeCoreSensor() { return new CoreTempSensor(); }
+    hidden function makeTimer()      { return new Timer.Timer(); }
+
     function onLayout(dc) {
         startSensor();
         startGps();
-        mCoreSensor = new CoreTempSensor();
-        mTimer = new Timer.Timer();
+        mCoreSensor = makeCoreSensor();
+        mTimer = makeTimer();
         mTimer.start(method(:onTick), 250, true);
     }
 
