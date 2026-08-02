@@ -42,6 +42,11 @@ test_life_shutdownClearsTimerEvenIfStopThrows
 test_life_shutdownSavesEvenIfSensorCloseThrows
 test_life_shutdownClearsTheHandles
 
+# source/HrArcTest.mc
+test_hr_c0_freshViewRateIsZero
+test_hr_c0_countdownFormatUnchanged
+test_hr_c0_spmBandDefaultsUnchanged
+
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork
 test_rate_whiteWhenNoData
