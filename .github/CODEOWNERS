@@ -1,0 +1,77 @@
+# CODEOWNERS — ADVISORY ONLY. THIS FILE GATES NOTHING.
+#
+# Read every line below as "route this diff to a human", never as "this path
+# is protected". `required_pull_request_reviews` is NOT configured on `main`,
+# so a CODEOWNERS entry only auto-REQUESTS a review from the listed owner. It
+# does not make that review mandatory and it does not stop a merge. A future
+# reader who assumes otherwise will believe these paths are gated when they
+# are not.
+#
+# Turning required reviews ON would not fix that — it would deadlock ordinary
+# work on this repository. `enforce_admins` is true and @Macrophage87 is the
+# sole maintainer, and GitHub does not let an author approve their own pull
+# request, so every PR the maintainer authors — 18 of the 21 opened to date —
+# would become unmergeable. (The handful from other accounts could still be
+# approved, which is exactly the inversion to avoid: the outside PRs would
+# merge and the maintainer's would not.)
+#
+# The only thing on `main` that actually BLOCKS a merge is the required
+# `ci-required` status check. Enforcement for the agent operating prompts
+# therefore lives in the `agent-prompt-guard` job in
+# .github/workflows/ci.yml, which FAILS the run when an untrusted author
+# modifies one of them and feeds into `ci-required`. This file is the
+# visibility half of that pair; ci.yml is the enforcement half. Keep the two
+# lists deliberately different — see the note on each section below.
+#
+# Syntax: patterns are anchored to the repository root by the leading `/`; a
+# trailing `/` covers the directory recursively. Last match wins, so the most
+# specific rule for a path should be the last one that matches it.
+
+# --- Agent operating prompts -------------------------------------------------
+# These files are executable policy wearing a documentation disguise: their
+# CONTENT is the prompt an automated actor runs on, so editing one changes
+# what that actor does. This is the ONLY section that is ALSO enforced
+# (blocking) by `agent-prompt-guard` in .github/workflows/ci.yml. If you add a
+# file here, decide deliberately whether it belongs in that job's PROTECTED
+# list too.
+#
+# Note the asymmetry, and do not assume this file covers it: these patterns are
+# exact and CASE-SENSITIVE, so a lowercase twin such as
+# docs/code_review_agent.md matches no rule here and draws no review request —
+# even though on a case-insensitive checkout it is the same file as the entry
+# below. That gap is closed on the blocking side only: the guard compares
+# LOWERCASED paths.
+/docs/AGENT_PROMPT.md         @Macrophage87
+/docs/CODE_REVIEW_AGENT.md    @Macrophage87
+
+# --- CI definition and its tooling -------------------------------------------
+# Genuinely executable: these files ARE what CI does. Both are listed here for
+# visibility only and deliberately NOT in the blocking guard — but for two
+# DIFFERENT reasons, and conflating them overstates the guard.
+#
+# .github/workflows/: a hard block buys nothing against a hostile PR, because a
+# `pull_request` run executes the workflow file from the PR head, so the guard
+# cannot protect itself against an edit in the same PR.
+#
+# scripts/: that argument does NOT apply. The guard step is pure bash + git and
+# executes nothing from scripts/, so a hostile scripts/ edit in a PR that left
+# ci.yml alone would in fact be catchable. It is excluded on the other reason
+# alone — blocking it would red every good-faith outside contribution to CI
+# plumbing. That is a consciously accepted residual, and a real one:
+# scripts/check_ciq_tests.py is the sole verdict of the required run-tests
+# check, so a hostile edit there could make a red suite report green.
+/.github/workflows/           @Macrophage87
+/scripts/                     @Macrophage87
+
+# --- The documented CI contract ----------------------------------------------
+# Descriptive, not executable — but it is the sole human-readable copy of the
+# SDK container digest and the SDK-bump checklist, and NOTHING cross-checks it
+# against the workflow. A wrong edit here misleads the next bump rather than
+# breaking a build, which is exactly the failure a second pair of eyes catches
+# and CI cannot.
+/docs/CI.md                   @Macrophage87
+
+# --- This file ---------------------------------------------------------------
+# Self-listed so that removing the entries above is itself a diff the owner is
+# asked to look at.
+/.github/CODEOWNERS           @Macrophage87
