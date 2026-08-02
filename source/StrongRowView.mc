@@ -769,6 +769,39 @@ class StrongRowView extends Ui.View {
         return sensor != null;
     }
 
+    // Pure: the colour of the big stroke-rate numeral, extracted verbatim from
+    // the inline expression in onUpdate so the decision is reachable from a
+    // (:test) without a Dc and without a fully-built view -- the same seam
+    // filterRr/packRr/rrIsFresh/rrGapExceeded/coreFieldsWanted above use.
+    //
+    // `isWork` is a BOOLEAN, not the step type, and that is forced rather than
+    // stylistic: STEP_WORK is a class `hidden const`, i.e. an instance member,
+    // so a static cannot resolve it. Compiling `return STEP_WORK;` inside a
+    // static on this class fails with
+    //   ERROR: StrongRowView.mc: Cannot find symbol ':STEP_WORK' on type 'self'
+    // (measured against SDK 9.2.0 for fr965), which is the same fact the module
+    // -scope R-R consts at the top of this file were introduced for.
+    //
+    // SCOPE, stated rather than implied: this pins the PREDICATE, not the call
+    // site. The `type == STEP_WORK` comparison in onUpdate is covered by review
+    // only -- a regression that swapped it for STEP_REST would leave every test
+    // here green. Same caveat as coreFieldsWanted (see CoreFieldGateTest.mc).
+    //
+    // The `rate > 0.0` term is the no-data guard and is load-bearing: drawRate
+    // renders "--.-" for rate <= 0.0, so a rate of 0.0 means "nothing measured
+    // yet", NOT "rowing very slowly". Colouring it as below-band would be the
+    // same defect class as the 0.0 skin temperature in #86.
+    //
+    // Parameters are UNTYPED on purpose, matching every static above: `rate`
+    // arrives as a Float from outputRate() and `lo`/`hi` as Numbers from the
+    // app settings, and Monkey C compares those directly.
+    static function rateColour(isWork, rate, lo, hi) {
+        if (isWork && rate > 0.0) {
+            return (rate >= lo && rate <= hi) ? Gfx.COLOR_GREEN : Gfx.COLOR_ORANGE;
+        }
+        return Gfx.COLOR_WHITE;
+    }
+
     // ----------------- R-R / HRV state model (epic #59) ---------------------
     // One row per piece of state, ONE MEANING per row. Any PR that changes
     // this model updates its own row(s) here in the same commit -- this table
@@ -1414,11 +1447,8 @@ class StrongRowView extends Ui.View {
                         Gfx.TEXT_JUSTIFY_CENTER | Gfx.TEXT_JUSTIFY_VCENTER);
         }
 
-        var col = Gfx.COLOR_WHITE;
         var dispRate = outputRate();
-        if (type == STEP_WORK && dispRate > 0.0) {
-            col = (dispRate >= mTgtLo && dispRate <= mTgtHi) ? Gfx.COLOR_GREEN : Gfx.COLOR_ORANGE;
-        }
+        var col = rateColour(type == STEP_WORK, dispRate, mTgtLo, mTgtHi);
         drawRate(dc, w, h, col);
         drawPace(dc, w, h, spd);
 

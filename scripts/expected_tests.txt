@@ -25,6 +25,13 @@ test_core_gateTrueWhenPodSeen
 test_core_gateTrueWhenPodNotYetSeen
 test_core_gateIgnoresEverSeen
 
+# source/RateColourTest.mc
+test_rate_whiteOutsideWork
+test_rate_whiteWhenNoData
+test_rate_greenInsideBand
+test_rate_greenAtBothEdges
+test_rate_outOfBandIsNotWhiteOrGreen
+
 # source/DspTimeBaseTest.mc
 test_dsp_timeBaseInvariantToBatchSize
 test_dsp_timeBaseIs25Hz
