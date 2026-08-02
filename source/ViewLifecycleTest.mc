@@ -1,4 +1,5 @@
 using Toybox.Test;
+using Toybox.Graphics as Gfx;
 
 // Lifecycle tests for issue #11: onLayout allocates the 250 ms tick Timer and
 // the CoreTempSensor (which owns an ANT channel) with no idempotency guard, so
@@ -77,6 +78,22 @@ class LifeCoreSensor {
 //
 // Every allocation is RECORDED, not just counted, because the defect is about
 // WHICH instance survives, not only how many were made.
+//
+// CALL-SITE CAST, and why every one of them carries it. onLayout inherits
+// `(dc as Graphics.Dc)` from Ui.View, and monkeyc enforces that parameter type
+// with no -l typecheck level -- the same trap DspTimeBaseTest.mc:31-37
+// documents for onSensorData, so `p.onLayout(null)` is rejected with
+// "Invalid 'Null' passed as parameter 1 of type '$.Toybox.Graphics.Dc'".
+// The cast is erased at runtime; only duck typing applies there, and onLayout
+// never touches dc.
+//
+// The enforcement is NOT uniform across call sites, which is why the rule here
+// is "cast every one" rather than "cast the ones that complain". Measured on
+// SDK 9.2.0 / fr965: an earlier revision of this file with three uncast call
+// sites compiled clean (and passed CI on all 12 devices); adding four more
+// tests made the compiler reject seven of the ten -- including two that had
+// just compiled unchanged. The selection rule is unknown and is not guessed at
+// here. Casting unconditionally makes the file independent of it.
 
 class LifeProbe extends StrongRowView {
     var madeTimers;    // every LifeTimer handed to the shipping code, in order
@@ -158,7 +175,7 @@ class LifeProbe extends StrongRowView {
 // the same class of defect as a duplicate timer and should be visible.
 (:test) function test_life_onLayoutStartsTheTickTimer(logger) {
     var p = new LifeProbe();
-    p.onLayout(null);
+    p.onLayout(null as Gfx.Dc);
 
     var ok = true;
     if (p.timerCount() != 1) {
@@ -188,7 +205,7 @@ class LifeProbe extends StrongRowView {
 
 (:test) function test_life_onLayoutCreatesTheCoreSensor(logger) {
     var p = new LifeProbe();
-    p.onLayout(null);
+    p.onLayout(null as Gfx.Dc);
 
     var ok = true;
     if (p.sensorCount() != 1) {
@@ -210,7 +227,7 @@ class LifeProbe extends StrongRowView {
 // orphan both permanently instead of only on a repeat onLayout.
 (:test) function test_life_shutdownReleasesTheLiveResources(logger) {
     var p = new LifeProbe();
-    p.onLayout(null);
+    p.onLayout(null as Gfx.Dc);
     var t = p.timerAt(0);
     var s = p.sensorAt(0);
     p.shutdown();
@@ -223,6 +240,138 @@ class LifeProbe extends StrongRowView {
     if (s.closes < 1) {
         logger.error("shutdown must close the CORE sensor (it owns an ANT " +
                      "channel), closes = " + s.closes);
+        ok = false;
+    }
+    return ok;
+}
+
+// -- #11 red differentials ----------------------------------------------------
+// The four below are the whole point. All fail against onLayout/shutdown as
+// they stand and pass once the guards land. Nothing else in the suite moves
+// between those two epochs.
+//
+// Each drives onLayout TWICE. That is a direct exercise of the callback's
+// idempotency contract and does not depend on whether Connect IQ can actually
+// re-invoke it -- a question this repository has NOT settled in either
+// direction (see the header, and the [Local] issue linked from #11). The
+// contract is correct under either answer.
+
+// THE defect, in its strongest form: a second onLayout must not construct a
+// second Timer AT ALL.
+//
+// The count is pinned at 1 rather than merely requiring that no orphan survives,
+// because that also fixes WHICH resolution is correct. #11 offers two -- guard,
+// or tear down and reallocate -- and this file chooses guard. Rebuilding
+// mid-row is the wrong one for the sensor (it would release a tracking ANT
+// channel and reset the CoreTempSensor.mc:341-348 retry ladder, trading a leak
+// for a data dropout), and the timer is guarded the same way for the same
+// reason: preserving the live instance is what "idempotent" has to mean for a
+// callback that may re-fire during a recording. A future change to
+// tear-down-and-rebuild is a design reversal, and it should have to red a test
+// and argue for itself rather than pass quietly.
+(:test) function test_life_repeatOnLayoutMakesOneTimer(logger) {
+    var p = new LifeProbe();
+    p.onLayout(null as Gfx.Dc);
+    p.onLayout(null as Gfx.Dc);
+
+    if (p.timerCount() != 1) {
+        logger.error("#11: a repeat onLayout constructed " + p.timerCount() +
+                     " timers; the first is orphaned (shutdown stops only the " +
+                     "newest), so onTick runs at 2x and mCorrAccum -- and with " +
+                     "it total_corrective_strokes -- doubles");
+        return false;
+    }
+    if (p.timerHandle() != p.timerAt(0)) {
+        logger.error("#11: the view must still hold the timer it made first");
+        return false;
+    }
+    return true;
+}
+
+// The sensor half. Each CoreTempSensor owns an ANT channel
+// (CoreTempSensor.mc:71 -> openChannel), and an orphaned one keeps searching
+// and receiving with its onMessage callback live, because close() is only ever
+// called on whatever mCoreSensor points at when shutdown() runs.
+(:test) function test_life_repeatOnLayoutMakesOneCoreSensor(logger) {
+    var p = new LifeProbe();
+    p.onLayout(null as Gfx.Dc);
+    p.onLayout(null as Gfx.Dc);
+
+    if (p.sensorCount() != 1) {
+        logger.error("#11: a repeat onLayout constructed " + p.sensorCount() +
+                     " CoreTempSensors; each holds an ANT channel and only the " +
+                     "newest is ever close()d, so the rest leak for the app run");
+        return false;
+    }
+    if (p.sensorHandle() != p.sensorAt(0)) {
+        logger.error("#11: the view must still hold the sensor it made first");
+        return false;
+    }
+    return true;
+}
+
+// The same defect stated as a PROPERTY rather than a count, deliberately
+// duplicating coverage. If someone later argues for tear-down-and-rebuild, the
+// count test above reds and this one stays green -- which tells a reader that a
+// design choice was reversed, not that #11 regressed. Phrased the way
+// test_dsp_timeBaseInvariantToBatchSize is, for the same reason.
+(:test) function test_life_repeatOnLayoutLeavesNoOrphanTimer(logger) {
+    var p = new LifeProbe();
+    p.onLayout(null as Gfx.Dc);
+    p.onLayout(null as Gfx.Dc);
+
+    var live = 0;
+    var heldIsLive = false;
+    for (var i = 0; i < p.timerCount(); i++) {
+        var t = p.timerAt(i);
+        if (t.starts > 0 && t.stops == 0) {
+            live++;
+            if (p.timerHandle() == t) { heldIsLive = true; }
+        }
+    }
+
+    var ok = true;
+    if (live != 1) {
+        logger.error("#11: " + live + " started-and-never-stopped timers after " +
+                     "two onLayout calls; every one past the first drives onTick " +
+                     "forever and no reference survives to stop it");
+        ok = false;
+    }
+    if (!heldIsLive) {
+        logger.error("#11: the timer the view holds is not the live one, so " +
+                     "shutdown cannot stop what is actually running");
+        ok = false;
+    }
+    return ok;
+}
+
+// The near neighbour, and the reason the guard alone is not the whole fix.
+// shutdown() releases both resources but leaves the dead handles in the fields.
+// Once onLayout is guarded on those fields, "non-null" has to mean "live" or
+// the guard reads a stopped timer as a running one and declines to allocate --
+// leaving ZERO live timers where the unfixed code left two. That is #11's
+// mirror image, reachable under exactly the same unverified condition, so both
+// halves ship together.
+//
+// This asserts only that the handles are CLEARED.
+// test_life_shutdownReleasesTheLiveResources above asserts that the resources
+// were RELEASED first, and it reads the recorded stubs rather than these
+// fields precisely so the two cannot be satisfied by nulling without releasing.
+(:test) function test_life_shutdownClearsTheHandles(logger) {
+    var p = new LifeProbe();
+    p.onLayout(null as Gfx.Dc);
+    p.shutdown();
+
+    var ok = true;
+    if (p.timerHandle() != null) {
+        logger.error("#11: shutdown left a stopped Timer in mTimer; the " +
+                     "onLayout guard would read it as live and never re-arm");
+        ok = false;
+    }
+    if (p.sensorHandle() != null) {
+        logger.error("#11: shutdown left a closed CoreTempSensor in " +
+                     "mCoreSensor; the onLayout guard would read it as live " +
+                     "and never re-open the ANT channel");
         ok = false;
     }
     return ok;
