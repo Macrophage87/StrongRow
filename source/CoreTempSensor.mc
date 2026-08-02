@@ -351,6 +351,7 @@ class CoreTempSensor {
     }
 
     hidden function openChannel() {
+        mDiagOpenAttempts++;
         try {
             if (mChannel == null) {
                 mChannel = makeChannel();
@@ -365,7 +366,17 @@ class CoreTempSensor {
                 :searchThreshold => 0
             }));
             mChannel.open();
+            // #102: reached only when nothing above threw. openAttempts minus
+            // openOk is not the throw count -- openThrow is counted explicitly
+            // below -- because that difference has to stay readable even if a
+            // future edit adds a return path between here and the catch.
+            mDiagOpenOk++;
         } catch (e) {
+            // #102: the counter this issue was filed on. This catch was
+            // completely silent, so a channel that could never be acquired and
+            // a channel that opened and heard nothing left identical files.
+            mDiagOpenThrow++;
+
             // Hand the channel back before dropping the reference. ANT channels
             // are a scarce hardware resource, and the `if (mChannel == null)`
             // guard above only protects the ALLOCATION -- setDeviceConfig() and
@@ -382,6 +393,12 @@ class CoreTempSensor {
             // re-enters openChannel(), which against the un-fixed catch would
             // have turned a one-shot leak into one orphaned channel per retry.
             mFails++;
+            // #102 high-water mark. mFails is reset to 0 by any tracked page-1
+            // frame, so at save time it carries the CURRENT ladder depth and
+            // says nothing about the depth reached. Two copies of this line
+            // exist (here and in onChannelClosed) because mFails is incremented
+            // in exactly those two places; keep them together.
+            if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
             scheduleReopen(ctBackoffMs(mFails));
         }
     }
@@ -425,6 +442,12 @@ class CoreTempSensor {
     // ---- message handling ---------------------------------------------------
 
     function onMessage(msg as Ant.Message) as Void {
+        // #102: every ANT message, before any dispatch. This is the counter
+        // that says the radio was alive at all -- a row with no pod still
+        // receives channel-response events as each search times out, so
+        // msgTotal > 0 with bcast == 0 reads as "no pod", where
+        // msgTotal == 0 with openOk == 0 reads as "the channel never opened".
+        mDiagMsgTotal++;
         var id = msg.messageId;
         if (id == Ant.MSG_ID_BROADCAST_DATA) {
             onBroadcast(msg.getPayload());
@@ -441,8 +464,32 @@ class CoreTempSensor {
     // Decode one broadcast payload. Split out of onMessage so a test can feed
     // synthetic bytes directly at the decoder.
     hidden function onBroadcast(p) {
-        if (p == null || p.size() < 8) { return; }
-        if ((p[0] & 0xFF) != 0x01) { return; }   // CBT data page 1 only
+        // #102. Counted here rather than in onMessage's broadcast branch so
+        // that bcast means "a broadcast payload reached the decoder", which is
+        // the same number either way and is reachable from a test that feeds
+        // bytes directly.
+        mDiagBcast++;
+        // The period a frame FIRST arrived on -- #84 asks whether the 4 Hz
+        // PERIOD_B fallback ever acquires, and mPeriod keeps alternating while
+        // nothing has been seen, so its value at save time is the last period
+        // TRIED. Set before the guards below: a payload arriving at all means
+        // the carrier was tracked, however unusable its contents.
+        if (mDiagAcqPeriod == 0) { mDiagAcqPeriod = mPeriod; }
+
+        if (p == null || p.size() < 8) { mDiagShortPay++; return; }
+
+        // Behaviour-identical to the single expression this replaces; the local
+        // exists so the page byte can be recorded as well as tested. A
+        // truncated frame and a wrong page are counted separately because they
+        // point at different defects.
+        var page = p[0] & 0xFF;
+        if (mDiagPageFirst == $.CT_DIAG_NONE) { mDiagPageFirst = page; }
+        if (page != 0x01) {                      // CBT data page 1 only
+            mDiagPageOther++;
+            mDiagPageOtherLast = page;
+            return;
+        }
+        mDiagPage1++;
 
         var now = System.getTimer();
 
@@ -465,18 +512,33 @@ class CoreTempSensor {
         // exist today and must not be introduced while fixing this.
         var c = decodeCoreC(p);
         if (c != null) {
+            mDiagCoreOk++;
             mCore     = c;
             mCoreMs   = now;
             mLastMs   = now;
             mEverSeen = true;
+        } else if (ctCoreSentinel(p)) {
+            // #102: decodeCoreC returns null for BOTH the invalid marker and a
+            // clamp rejection, so the cause has to be recovered here. The
+            // classifier calls coreRaw16 -- the same assembly the decoder uses
+            // -- so the two cannot disagree about what the marker is. Runs only
+            // on the rejection path, and changes nothing the decoder decided.
+            mDiagCoreSentinel++;
+        } else {
+            mDiagCoreClamp++;
         }
 
         var s = decodeSkinC(p);
         if (s != null) {
+            mDiagSkinOk++;
             mSkin     = s;
             mSkinMs   = now;
             mLastMs   = now;
             mEverSeen = true;
+        } else if (ctSkinSentinel(p)) {
+            mDiagSkinSentinel++;
+        } else {
+            mDiagSkinClamp++;
         }
     }
 
@@ -507,7 +569,13 @@ class CoreTempSensor {
     // lifecycle hook in StrongRowView, which is #11's coordination point.
     hidden function onChannelClosed() {
         if (mClosed) { return; }
+        // #102: counted after the mClosed guard, so this means "a search timed
+        // out or the pod dropped and we re-armed", not "a close event arrived
+        // after shutdown".
+        mDiagChanClosed++;
         mFails++;
+        // See the note on the identical pair in openChannel's catch.
+        if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
         if (!mEverSeen) {
             mPeriod = (mPeriod == PERIOD_A) ? PERIOD_B : PERIOD_A;
         }
@@ -610,6 +678,14 @@ class CoreTempSensor {
         // `mEverSeen || mTries < 3` predicate was an accidental brake on that;
         // removing it removes the brake, so the guard is explicit now.
         mClosed = true;
+        // #102: latch the terminal state HERE, after mClosed is set and before
+        // the channel is released. StrongRowView.shutdown calls close() before
+        // stopAndSave, so a readout that computed these live would report
+        // "no channel held, closed" on every row ever recorded and carry no
+        // information. The other stopAndSave caller (onBack) runs without a
+        // preceding close(), and there diagSnapshot's live fallback is the
+        // correct answer -- the channel really is still up.
+        mDiagFlags = diagFlagsNow();
         cancelReopen();
         discardChannel();
     }

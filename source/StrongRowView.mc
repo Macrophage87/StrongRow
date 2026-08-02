@@ -172,6 +172,7 @@ class StrongRowView extends Ui.View {
     hidden var mFitCore;
     hidden var mFitSkin;
     hidden var mFitMaxCore;
+    hidden var mFitCtDiag;
     hidden var mMaxCore;
     hidden var mStartMs;
 
@@ -204,6 +205,7 @@ class StrongRowView extends Ui.View {
         mFitCore    = null;
         mFitSkin    = null;
         mFitMaxCore = null;
+        mFitCtDiag  = null;
         mMaxCore    = 0.0;
         mRrOk       = false;
         mLastRrMs   = 0;
@@ -1126,6 +1128,38 @@ class StrongRowView extends Ui.View {
                         mFitSkin = null;
                         mFitMaxCore = null;
                     }
+                    // #102: the ANT diagnostic counters, in their OWN
+                    // try/catch. Per #74 a shared try lets one throw null
+                    // another group's already-created handles -- which is
+                    // exactly the argument the block above makes for itself,
+                    // and it applies with more force here: if the three CORE
+                    // creates throw, the diagnostics explaining why are the one
+                    // thing that must survive.
+                    //
+                    // ONE array field rather than ~20 scalars. Ids 0-9 are
+                    // taken and #77 is open on whether the SDK caps fields per
+                    // session, so this costs one more id and one more
+                    // field_description instead of twenty, while every slot
+                    // stays an ordinary readable integer -- see the CT_DIAG_*
+                    // block in CoreTempSensor.mc for the slot key.
+                    //
+                    // Inside the coreFieldsWanted gate on purpose: the field
+                    // has nothing to report without a sensor to read, and it
+                    // keeps `mFitCtDiag != null => mCoreSensor != null` true
+                    // for the write in stopAndSave.
+                    //
+                    // No :scale/:offset -- the slots are raw counts, and a
+                    // session-scope UINT16 array field was measured landing in
+                    // the file verbatim (SIMULATOR, fr965 / SDK 9.2.0; treat
+                    // hardware and other SDKs as expected-same but unmeasured).
+                    try {
+                        mFitCtDiag = mSession.createField(
+                            "ct_diag", 10, Fit.DATA_TYPE_UINT16,
+                            { :mesgType => Fit.MESG_TYPE_SESSION, :units => "n",
+                              :count => $.CT_DIAG_SLOTS });
+                    } catch (e) {
+                        mFitCtDiag = null;
+                    }
                 }
             } catch (e) {
                 mSession = null;
@@ -1220,6 +1254,18 @@ class StrongRowView extends Ui.View {
             if (mFitMaxCore != null && mMaxCore > 0.0) {
                 mFitMaxCore.setData(mMaxCore);
             }
+            // #102. Unguarded by value, unlike max_core_temperature above: an
+            // all-quiet row is exactly the case this field exists to explain,
+            // so there is no reading here that would be better left unwritten.
+            // Once per session, so the snapshot's array allocation is off every
+            // hot path -- see diagSnapshot.
+            //
+            // The mCoreSensor term holds the invariant local to one line rather
+            // than resting on a whole-file lifecycle argument, matching the
+            // reasoning recorded on coreFieldsWanted.
+            if (mFitCtDiag != null && mCoreSensor != null) {
+                mFitCtDiag.setData(mCoreSensor.diagSnapshot());
+            }
             mSession.save();
             mSession = null;
             mFitRate = null;
@@ -1232,6 +1278,7 @@ class StrongRowView extends Ui.View {
             mFitCore = null;
             mFitSkin = null;
             mFitMaxCore = null;
+            mFitCtDiag = null;
         }
         mStarted = false;
     }
