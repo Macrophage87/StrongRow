@@ -41,13 +41,17 @@ class LifeTimer {
     var stops;       // stop() call count
     var lastMs;      // interval of the most recent start()
     var lastRepeat;  // repeat flag of the most recent start()
-    var throwOnStop; // make stop() fail, to measure the unwind path
+    var throwOnStop;  // make stop() fail, to measure the teardown unwind path
+    var throwOnStart; // make start() fail, to measure the ALLOCATION unwind path
     function initialize() {
         starts = 0; stops = 0; lastMs = 0; lastRepeat = false;
-        throwOnStop = false;
+        throwOnStop = false; throwOnStart = false;
     }
+    // Records FIRST, then fails -- same rule as stop() below, and for the same
+    // reason: "never called" and "called and threw" must stay distinguishable.
     function start(cb, ms, repeat) {
         starts++; lastMs = ms; lastRepeat = repeat;
+        if (throwOnStart) { throw new Lang.Exception(); }
     }
     // Records FIRST, then fails: the call did happen, and a test asserting on
     // stops must not be unable to tell "never called" from "called and threw".
@@ -551,6 +555,99 @@ class LifeThrowingCloseProbe extends LifeProbe {
         s.throwOnClose = true;
         return s;
     }
+}
+
+// Only the FIRST timer fails to start. That is what lets the test show recovery
+// is COMPLETE (the second onLayout ends holding a live, started timer) rather
+// than merely attempted (a second timer was constructed and also died).
+class LifeThrowingStartProbe extends LifeProbe {
+    function initialize() { LifeProbe.initialize(); }
+    hidden function makeTimer() {
+        var t = LifeProbe.makeTimer();
+        if (timerCount() == 1) { t.throwOnStart = true; }
+        return t;
+    }
+}
+
+// THE ALLOCATION-SIDE INSTANCE of the same pattern, and the fourth overall.
+//
+// The three fixed before this one are all in shutdown(): a handle CLEARED TOO
+// LATE, so a throw skips the clear. This is its mirror -- a handle PUBLISHED
+// TOO EARLY. onLayout assigned mTimer and only then called start() on it, so a
+// throw from start() left a non-null, NEVER-STARTED Timer in the field, and the
+// guard this PR added reads that as live and never re-arms. Same defect, same
+// consequence, opposite side of the lifecycle.
+//
+// The aggravating factor is identical to round 3's, and is why this belongs to
+// this PR: on base main a failed start() was harmless, because onLayout
+// allocated unconditionally and the next call simply tried again. The guard is
+// what converts "retry next time" into "never again".
+//
+// The fix is build-then-publish, symmetric to teardown's clear-before-release:
+//     var t = makeTimer(); t.start(...); mTimer = t;
+//
+// The throw is INJECTED and deliberately still PROPAGATES out of onLayout: no
+// catch is added here. Teardown swallows because a throw there would lose the
+// row; allocation has no such asset to protect, and swallowing a failure to arm
+// the tick timer would hide an app that cannot function. Base main propagated
+// it too, so this is not a behaviour change.
+(:test) function test_life_onLayoutLeavesNoDeadTimerIfStartThrows(logger) {
+    var p = new LifeThrowingStartProbe();
+
+    var threw = false;
+    try {
+        p.onLayout(null as Gfx.Dc);
+    } catch (e) {
+        threw = true;
+    }
+    if (!threw) {
+        logger.error("the probe's first start() must throw, or this test is " +
+                     "measuring the ordinary path and proves nothing");
+        return false;
+    }
+
+    var ok = true;
+    if (p.timerAt(0).starts != 1) {
+        logger.error("start() must have been attempted once, got " +
+                     p.timerAt(0).starts);
+        ok = false;
+    }
+    if (p.timerHandle() != null) {
+        logger.error("a throw from start() left a NEVER-STARTED Timer in " +
+                     "mTimer: onLayout's guard reads it as live, so the tick " +
+                     "timer is never armed again for the life of the app. " +
+                     "Publish the handle only after start() succeeds");
+        ok = false;
+    }
+    // The sensor is constructed before the timer and must survive: it was
+    // allocated successfully, and re-allocating it would be #11's own defect.
+    if (p.sensorHandle() == null) {
+        logger.error("the sensor was allocated before the throw and must be kept");
+        ok = false;
+    }
+
+    // Recovery must be COMPLETE, not merely attempted.
+    p.onLayout(null as Gfx.Dc);
+    if (p.timerCount() != 2) {
+        logger.error("a later onLayout must re-arm, timers made = " +
+                     p.timerCount());
+        return false;
+    }
+    if (p.timerHandle() != p.timerAt(1)) {
+        logger.error("the view must hold the timer that actually started");
+        ok = false;
+    }
+    if (p.timerAt(1).starts != 1 || p.timerAt(1).lastMs != 250) {
+        logger.error("the replacement timer must be started at 250 ms, starts=" +
+                     p.timerAt(1).starts + " ms=" + p.timerAt(1).lastMs);
+        ok = false;
+    }
+    if (p.sensorCount() != 1) {
+        logger.error("the sensor guard must still hold across the retry: " +
+                     p.sensorCount() + " sensors made");
+        ok = false;
+    }
+    return ok;
 }
 
 // mTimer.stop() throwing. THE round-3 finding, and the third instance of one
