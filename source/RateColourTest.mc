@@ -106,3 +106,79 @@ const RC_HI = 18;
     }
     return true;
 }
+
+// -- #107 differentials --------------------------------------------------------
+// The five below are the whole point. Every one is RED against the pre-#107
+// predicate `(rate >= lo && rate <= hi) ? GREEN : ORANGE`, which returns
+// COLOR_ORANGE for all four of the inputs used here, and GREEN once the
+// selector distinguishes below from above. Nothing else in this file moves
+// between those two epochs.
+//
+// COLOR_BLUE is 0x00AAFF and COLOR_DK_BLUE is 0x0000FF -- Garmin's naming is
+// inverted relative to the obvious reading. These pin the LIGHT one, which at
+// 8.19:1 against black is brighter than the COLOR_ORANGE it replaces (6.55:1);
+// COLOR_DK_BLUE at 2.44:1 fails even the WCAG 3:1 large-text floor. The
+// constant identity matters, so it is pinned rather than left to "some blue".
+
+// Below the band: row harder. The half of the defect that costs a stroke cycle
+// when the athlete guesses the wrong direction.
+(:test) function test_rate_belowBandIsBlue(logger) {
+    var c = StrongRowView.rateColour(true, 14.0, $.RC_LO, $.RC_HI);
+    if (c != Gfx.COLOR_BLUE) {
+        logger.error("#107: 14.0 is below the 16-18 band and must render blue " +
+                     "(COLOR_BLUE = " + Gfx.COLOR_BLUE + "), not " + c +
+                     " -- the colour has to say WHICH WAY to correct");
+        return false;
+    }
+    return true;
+}
+
+// Above the band: ease off. The other half.
+(:test) function test_rate_aboveBandIsRed(logger) {
+    var c = StrongRowView.rateColour(true, 22.0, $.RC_LO, $.RC_HI);
+    if (c != Gfx.COLOR_RED) {
+        logger.error("#107: 22.0 is above the 16-18 band and must render red " +
+                     "(COLOR_RED = " + Gfx.COLOR_RED + "), not " + c);
+        return false;
+    }
+    return true;
+}
+
+// Phrased as a separation check rather than pinning two values (same style as
+// test_core_gateIgnoresEverSeen), so it keeps guarding this bug even if the
+// palette is legitimately re-tuned some day: whatever the two colours are, too
+// slow and too fast must not look the same.
+(:test) function test_rate_belowDiffersFromAbove(logger) {
+    var below = StrongRowView.rateColour(true, 14.0, $.RC_LO, $.RC_HI);
+    var above = StrongRowView.rateColour(true, 22.0, $.RC_LO, $.RC_HI);
+    if (below == above) {
+        logger.error("#107: rowing 14 and rowing 22 still render identically " +
+                     "(both " + below + ") -- the direction is unreadable");
+        return false;
+    }
+    return true;
+}
+
+// The band edges are pinned INSIDE by test_rate_greenAtBothEdges; these two pin
+// that the outside starts immediately beyond them, so no dead zone opens up
+// between "in band" and "correct me". 15.9 and 18.1 are one display tick
+// (drawRate formats "%.1f") outside a default 16-18 band.
+(:test) function test_rate_justBelowLoIsBlue(logger) {
+    var c = StrongRowView.rateColour(true, 15.9, $.RC_LO, $.RC_HI);
+    if (c != Gfx.COLOR_BLUE) {
+        logger.error("#107: 15.9 is one displayed tick below the band and must " +
+                     "already be blue; got " + c);
+        return false;
+    }
+    return true;
+}
+
+(:test) function test_rate_justAboveHiIsRed(logger) {
+    var c = StrongRowView.rateColour(true, 18.1, $.RC_LO, $.RC_HI);
+    if (c != Gfx.COLOR_RED) {
+        logger.error("#107: 18.1 is one displayed tick above the band and must " +
+                     "already be red; got " + c);
+        return false;
+    }
+    return true;
+}
