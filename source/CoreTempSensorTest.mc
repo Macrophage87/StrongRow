@@ -1,6 +1,7 @@
 using Toybox.Test;
 using Toybox.System;
 using Toybox.Lang;
+using Toybox.Ant;
 
 // Unit tests for source/CoreTempSensor.mc -- the CORE (greenTEG) ANT pod
 // decoder and its channel lifecycle. Covers issues #86 (skin decoded from the
@@ -125,6 +126,15 @@ class CoreProbe extends CoreTempSensor {
     function feed(p)     { onBroadcast(p); }
     function closeEvent(){ onChannelClosed(); }
 
+    // #102 seams. deliver() enters at onMessage rather than onBroadcast, which
+    // is the only way to reach the msgTotal counter and the channel-response
+    // branch; feed() above still enters one level down, so a test that uses it
+    // exercises bcast but not msgTotal. diagReset() re-baselines the counters
+    // without reconstructing the sensor -- initialize() opens a channel, so a
+    // fresh probe never starts from zero.
+    function deliver(m)  { onMessage(m); }
+    function diagReset() { resetDiag(); }
+
     // Stamp the freshness clock `ageMs` in the past and seed the readings.
     //
     // Clock-robust by construction: System.getTimer() is device uptime, which is
@@ -174,6 +184,52 @@ class FakeChannel {
     }
 
     function release() { released = true; return true; }
+}
+
+// A duck-typed stand-in for Ant.Message (#102). onMessage is annotated
+// `msg as Ant.Message`, but this codebase is compiled untyped (CI passes no
+// -l typecheck level -- see docs/CI.md), so runtime duck typing applies and an
+// object exposing just messageId and getPayload() is accepted. MEASURED in the
+// simulator on fr965 / SDK 9.2.0 before this was relied on; without it the
+// msgTotal counter and the channel-response branch would be review-only.
+//
+// Ant.Message itself cannot be constructed here: it carries native state and
+// arrives from the radio, which is the whole reason a stand-in is needed.
+class FakeAntMsg {
+    var messageId;
+    hidden var mPayload;
+    function initialize(id, payload) {
+        messageId = id;
+        mPayload  = payload;
+    }
+    function getPayload() { return mPayload; }
+}
+
+// The two message shapes the sensor reacts to, as helpers so each test says
+// what it is delivering rather than assembling constants inline.
+function ctBroadcastMsg(payload) {
+    return new FakeAntMsg(Ant.MSG_ID_BROADCAST_DATA, payload);
+}
+
+// A search timeout / dropout, which is what a row with no pod in range
+// actually produces: the radio reports the channel closed, onChannelClosed
+// re-arms the search, and no broadcast is ever delivered.
+function ctChannelClosedMsg() {
+    return new FakeAntMsg(Ant.MSG_ID_CHANNEL_RESPONSE_EVENT,
+                          [Ant.MSG_ID_RF_EVENT, Ant.MSG_CODE_EVENT_CHANNEL_CLOSED]);
+}
+
+// A probe with a channel whose open() succeeds, counters re-baselined. Every
+// #102 differential starts here: a bare `new CoreProbe()` has already run
+// initialize() -> openChannel(), which throws under the headless simulator, so
+// nothing starts from zero and the real allocation's retries would otherwise
+// be mixed into every count.
+function ctFreshProbe(openThrows) {
+    var p = new CoreProbe();
+    p.useFakeChannel(new FakeChannel(openThrows));
+    p.resetRecorders();
+    p.diagReset();
+    return p;
 }
 
 // -- c0 characterization pins ------------------------------------------------
@@ -731,6 +787,257 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
     }
     if (CoreTempSensor.ctSkinSentinel(ctPayload(660, 0x0C8, 3742)) != false) {
         logger.error("ctSkinSentinel must not fire on a valid reading");
+        ok = false;
+    }
+    return ok;
+}
+
+// -- #102 c2 red differentials ------------------------------------------------
+// Every test below FAILS on the code as of the previous commit -- the counters
+// exist but nothing increments them, so each reads 0 -- and passes once the
+// instrumentation is wired up. Assertions are written null-safely so a wrong
+// result reports as FAIL rather than ERROR.
+
+// Slot reader, so a failure message names the slot rather than an index.
+function ctSlot(p, i) {
+    var a = p.diagSnapshot();
+    if (a == null || i < 0 || i >= a.size()) { return -1; }
+    return a[i];
+}
+
+// A successful open must be counted, and counted as a SUCCESS. Three channel
+// closes drive three re-opens through the retry ladder; none of them throws,
+// so the throw counter must stay at zero -- that separation is the whole basis
+// of the "channel never opened" verdict.
+(:test) function test_ct_diagCountsOpenAttempts(logger) {
+    var p = ctFreshProbe(false);
+    for (var i = 0; i < 3; i++) { p.closeEvent(); }
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_OPEN_ATTEMPTS) != 3) { logger.error("openAttempts = " + ctSlot(p, $.CT_DIAG_I_OPEN_ATTEMPTS) + ", expected 3"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_OPEN_OK)       != 3) { logger.error("openOk = " + ctSlot(p, $.CT_DIAG_I_OPEN_OK) + ", expected 3"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_OPEN_THROW)    != 0) { logger.error("openThrow = " + ctSlot(p, $.CT_DIAG_I_OPEN_THROW) + ", expected 0"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_CHAN_CLOSED)   != 3) { logger.error("chanClosed = " + ctSlot(p, $.CT_DIAG_I_CHAN_CLOSED) + ", expected 3"); ok = false; }
+    return ok;
+}
+
+// The converse, and the reason #102 was filed against openChannel's catch at
+// all: a channel that cannot be acquired must leave a record. openOk must stay
+// zero, or "the channel never opened" is indistinguishable from "it opened and
+// heard nothing".
+(:test) function test_ct_diagCountsOpenThrows(logger) {
+    var p = ctFreshProbe(true);
+    p.closeEvent();
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_OPEN_THROW) < 1) { logger.error("openThrow = " + ctSlot(p, $.CT_DIAG_I_OPEN_THROW) + ", a failed open must be recorded"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_OPEN_OK)   != 0) { logger.error("openOk = " + ctSlot(p, $.CT_DIAG_I_OPEN_OK) + ", a throwing open must not count as a success"); ok = false; }
+    return ok;
+}
+
+// Messages, broadcasts and page numbers. The page byte is what settles "frames
+// arrived but were discarded": today source/CoreTempSensor.mc drops a non-0x01
+// page with a bare return and the byte is never examined, so a pod broadcasting
+// only the ANT+ common pages looks exactly like no pod at all.
+(:test) function test_ct_diagCountsBroadcastAndPages(logger) {
+    var p = ctFreshProbe(false);
+    p.deliver(ctBroadcastMsg(ctPayload(660, 0x0C8, 3742)));   // page 0x01
+    var other = ctPayload(660, 0x0C8, 3742);
+    other[0] = 0x50;                                          // an ANT+ common page
+    p.deliver(ctBroadcastMsg(other));
+    p.deliver(ctBroadcastMsg([0x01, 0x02, 0x03, 0x04]));      // too short to decode
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_MSG_TOTAL)  != 3)    { logger.error("msgTotal = " + ctSlot(p, $.CT_DIAG_I_MSG_TOTAL) + ", expected 3"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_BCAST)      != 3)    { logger.error("bcast = " + ctSlot(p, $.CT_DIAG_I_BCAST) + ", expected 3"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_PAGE1)      != 1)    { logger.error("page1 = " + ctSlot(p, $.CT_DIAG_I_PAGE1) + ", expected 1"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_PAGE_OTHER) != 1)    { logger.error("pageOther = " + ctSlot(p, $.CT_DIAG_I_PAGE_OTHER) + ", expected 1"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_SHORT_PAY)  != 1)    { logger.error("shortPay = " + ctSlot(p, $.CT_DIAG_I_SHORT_PAY) + ", expected 1"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_PAGE_FIRST) != 0x01) { logger.error("pageFirst = " + ctSlot(p, $.CT_DIAG_I_PAGE_FIRST) + ", expected 0x01"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_PAGE_OTHER_LAST) != 0x50) { logger.error("pageOtherLast = " + ctSlot(p, $.CT_DIAG_I_PAGE_OTHER_LAST) + ", expected 0x50"); ok = false; }
+    return ok;
+}
+
+// A short payload must be counted as short and NOT as a page rejection: they
+// point at different defects (a truncated frame versus a wrong page
+// assumption), and source/CoreTempSensor.mc's two guards are adjacent bare
+// returns today.
+(:test) function test_ct_diagShortPayloadNotAPageReject(logger) {
+    var p = ctFreshProbe(false);
+    p.deliver(ctBroadcastMsg([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]));  // 7 bytes
+    p.deliver(ctBroadcastMsg(null));
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_SHORT_PAY)  != 2) { logger.error("shortPay = " + ctSlot(p, $.CT_DIAG_I_SHORT_PAY) + ", expected 2"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_PAGE1)      != 0) { logger.error("a short payload must not count as page 1"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_PAGE_OTHER) != 0) { logger.error("a short payload must not count as a page rejection"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_PAGE_FIRST) != $.CT_DIAG_NONE) { logger.error("pageFirst = " + ctSlot(p, $.CT_DIAG_I_PAGE_FIRST) + "; an unreadable frame has no page byte"); ok = false; }
+    return ok;
+}
+
+// Core rejections, split by cause. decodeCoreC returns null for both, so
+// without this split "the pod sent an invalid marker" and "the decode produced
+// an implausible temperature" -- a documented-behaviour case and a possible
+// layout defect -- are the same observation.
+(:test) function test_ct_diagClassifiesCoreRejection(logger) {
+    var p = ctFreshProbe(false);
+    p.feed(ctPayload(660, 0x0C8, 0xFFFF));   // the invalid marker
+    p.feed(ctPayload(660, 0x0C8, 100));      // 1.00 C -- below the clamp
+    p.feed(ctPayload(660, 0x0C8, 3742));     // 37.42 C -- accepted
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_CORE_SENTINEL) != 1) { logger.error("coreSentinel = " + ctSlot(p, $.CT_DIAG_I_CORE_SENTINEL) + ", expected 1"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_CORE_CLAMP)    != 1) { logger.error("coreClamp = " + ctSlot(p, $.CT_DIAG_I_CORE_CLAMP) + ", expected 1"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_CORE_OK)       != 1) { logger.error("coreOk = " + ctSlot(p, $.CT_DIAG_I_CORE_OK) + ", expected 1"); ok = false; }
+    return ok;
+}
+
+// The skin analogue. 0xFFF is -0.05 C: a CLAMP rejection, not the marker --
+// the case that exists because the marker is tested before sign extension.
+(:test) function test_ct_diagClassifiesSkinRejection(logger) {
+    var p = ctFreshProbe(false);
+    p.feed(ctPayload(0x800, 0x0C8, 3742));   // the invalid marker
+    p.feed(ctPayload(0xFFF, 0x0C8, 3742));   // -0.05 C -- below the clamp
+    p.feed(ctPayload(660,   0x0C8, 3742));   // 33.00 C -- accepted
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_SKIN_SENTINEL) != 1) { logger.error("skinSentinel = " + ctSlot(p, $.CT_DIAG_I_SKIN_SENTINEL) + ", expected 1"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_SKIN_CLAMP)    != 1) { logger.error("skinClamp = " + ctSlot(p, $.CT_DIAG_I_SKIN_CLAMP) + ", expected 1"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_SKIN_OK)       != 1) { logger.error("skinOk = " + ctSlot(p, $.CT_DIAG_I_SKIN_OK) + ", expected 1"); ok = false; }
+    return ok;
+}
+
+// maxFails must survive the reset mFails does not. Any tracked page-1 frame
+// zeroes mFails (that is deliberate -- the counter means what its name says),
+// so at save time mFails carries the CURRENT ladder depth and says nothing
+// about the depth reached. This is the one counter that is not a tally.
+(:test) function test_ct_diagRecordsMaxFails(logger) {
+    var p = ctFreshProbe(false);
+    for (var i = 0; i < 5; i++) { p.closeEvent(); }
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_MAX_FAILS) != 5) {
+        logger.error("maxFails = " + ctSlot(p, $.CT_DIAG_I_MAX_FAILS) + " after 5 closes, expected 5");
+        ok = false;
+    }
+    p.feed(ctPayload(660, 0x0C8, 3742));   // a tracked frame resets mFails to 0
+    if (ctSlot(p, $.CT_DIAG_I_MAX_FAILS) != 5) {
+        logger.error("maxFails fell to " + ctSlot(p, $.CT_DIAG_I_MAX_FAILS) + " when mFails reset; it must record the HIGH-WATER mark");
+        ok = false;
+    }
+    return ok;
+}
+
+// The terminal channel state must be the state the SESSION ended in, not the
+// state after teardown. StrongRowView.shutdown calls mCoreSensor.close()
+// BEFORE stopAndSave, so reading the live channel at readout would report
+// "released, closed" on every row ever recorded and carry no information.
+(:test) function test_ct_diagFlagsLatchedAtClose(logger) {
+    var p = ctFreshProbe(false);
+    p.closeEvent();                          // re-opens, so a channel is held
+    p.feed(ctPayload(660, 0x0C8, 3742));     // everSeen latches
+    p.close();
+    var f = ctSlot(p, $.CT_DIAG_I_FLAGS);
+    var ok = true;
+    if (f < 0) { logger.error("flags slot unreadable"); return false; }
+    if ((f & $.CT_DIAG_F_CHANNEL_HELD) == 0) {
+        logger.error("flags = " + f + "; a channel WAS held when close() ran, so the latch must record it -- reading live state after teardown always says otherwise");
+        ok = false;
+    }
+    if ((f & $.CT_DIAG_F_CLOSED) == 0)    { logger.error("flags = " + f + "; the closed bit must be set after close()"); ok = false; }
+    if ((f & $.CT_DIAG_F_EVER_SEEN) == 0) { logger.error("flags = " + f + "; the everSeen bit must be set after an accepted reading"); ok = false; }
+    return ok;
+}
+
+// #84: does the 4 Hz PERIOD_B fallback ever acquire? Answerable only if the
+// period is recorded at the FIRST broadcast -- mPeriod keeps alternating while
+// nothing has been seen, so its value at save time is the last one TRIED, not
+// the one that worked.
+(:test) function test_ct_diagAcqPeriodIsTheFirstOne(logger) {
+    var p = ctFreshProbe(false);
+    var other = ctPayload(660, 0x0C8, 3742);
+    other[0] = 0x50;                     // tracked but not accepted: mEverSeen stays false
+    p.deliver(ctBroadcastMsg(other));
+    var first = ctSlot(p, $.CT_DIAG_I_ACQ_PERIOD);
+    var ok = true;
+    if (first != 16384) {
+        logger.error("acqPeriod = " + first + " at the first broadcast, expected PERIOD_A 16384");
+        ok = false;
+    }
+    p.closeEvent();                      // mEverSeen false, so the period alternates
+    p.deliver(ctBroadcastMsg(other));
+    if (ctSlot(p, $.CT_DIAG_I_ACQ_PERIOD) != first) {
+        logger.error("acqPeriod moved to " + ctSlot(p, $.CT_DIAG_I_ACQ_PERIOD) + "; it must record the FIRST period a frame arrived on, not the last tried");
+        ok = false;
+    }
+    return ok;
+}
+
+// The labelled negative control. A row with a pod that never broadcasts -- the
+// 2026-08-02 row, root-caused as a pod that was never woken -- delivers channel
+// closes and nothing else. Its signature must be positively identifiable, not
+// merely "everything is zero": the channel DID open and ANT WAS live.
+(:test) function test_ct_diagNoPodRowProfile(logger) {
+    var p = ctFreshProbe(false);
+    for (var i = 0; i < 4; i++) { p.deliver(ctChannelClosedMsg()); }
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_OPEN_OK)     < 1) { logger.error("openOk = " + ctSlot(p, $.CT_DIAG_I_OPEN_OK) + "; a podless row still opens the channel"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_OPEN_THROW) != 0) { logger.error("openThrow = " + ctSlot(p, $.CT_DIAG_I_OPEN_THROW) + ", expected 0"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_MSG_TOTAL)  != 4) { logger.error("msgTotal = " + ctSlot(p, $.CT_DIAG_I_MSG_TOTAL) + "; ANT was live, so this must be non-zero and is what separates a podless row from a dead channel"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_CHAN_CLOSED)!= 4) { logger.error("chanClosed = " + ctSlot(p, $.CT_DIAG_I_CHAN_CLOSED) + ", expected 4"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_BCAST)      != 0) { logger.error("bcast = " + ctSlot(p, $.CT_DIAG_I_BCAST) + "; nothing broadcast"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_PAGE1)      != 0) { logger.error("page1 = " + ctSlot(p, $.CT_DIAG_I_PAGE1) + ", expected 0"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_CORE_OK)    != 0) { logger.error("coreOk = " + ctSlot(p, $.CT_DIAG_I_CORE_OK) + ", expected 0"); ok = false; }
+    if (ctSlot(p, $.CT_DIAG_I_PAGE_FIRST) != $.CT_DIAG_NONE) { logger.error("pageFirst = " + ctSlot(p, $.CT_DIAG_I_PAGE_FIRST) + "; no page byte was ever observed"); ok = false; }
+    return ok;
+}
+
+// THE acceptance test for #102: the three hypotheses must be separable from ONE
+// row's counters. The discriminating triple is (openOk, msgTotal, bcast):
+//
+//   no pod              opened, ANT live, nothing broadcast  -> (>0, >0,  0)
+//   channel never open  nothing opened, nothing arrived      -> ( 0,  0,  0)
+//   frames discarded    opened and frames arrived            -> (>0, >0, >0)
+//
+// Asserted as pairwise distinctness AND against the documented signature, so
+// neither a collapsed encoding nor a re-labelled one can pass.
+(:test) function test_ct_diagThreeHypothesesDistinct(logger) {
+    // H1 -- no pod in range.
+    var h1 = ctFreshProbe(false);
+    for (var i = 0; i < 4; i++) { h1.deliver(ctChannelClosedMsg()); }
+
+    // H2 -- the channel never opened.
+    var h2 = ctFreshProbe(true);
+    for (var i = 0; i < 4; i++) { h2.closeEvent(); }
+
+    // H3 -- frames arrived and were discarded by the page filter.
+    var h3 = ctFreshProbe(false);
+    var other = ctPayload(660, 0x0C8, 3742);
+    other[0] = 0x50;
+    for (var i = 0; i < 4; i++) { h3.deliver(ctBroadcastMsg(other)); }
+
+    var ok = true;
+
+    if (!(ctSlot(h1, $.CT_DIAG_I_OPEN_OK) > 0 && ctSlot(h1, $.CT_DIAG_I_MSG_TOTAL) > 0 && ctSlot(h1, $.CT_DIAG_I_BCAST) == 0)) {
+        logger.error("no-pod triple (openOk, msgTotal, bcast) = (" + ctSlot(h1, $.CT_DIAG_I_OPEN_OK) + ", " +
+                     ctSlot(h1, $.CT_DIAG_I_MSG_TOTAL) + ", " + ctSlot(h1, $.CT_DIAG_I_BCAST) + "), expected (>0, >0, 0)");
+        ok = false;
+    }
+    if (!(ctSlot(h2, $.CT_DIAG_I_OPEN_OK) == 0 && ctSlot(h2, $.CT_DIAG_I_MSG_TOTAL) == 0 && ctSlot(h2, $.CT_DIAG_I_BCAST) == 0)) {
+        logger.error("dead-channel triple = (" + ctSlot(h2, $.CT_DIAG_I_OPEN_OK) + ", " +
+                     ctSlot(h2, $.CT_DIAG_I_MSG_TOTAL) + ", " + ctSlot(h2, $.CT_DIAG_I_BCAST) + "), expected (0, 0, 0)");
+        ok = false;
+    }
+    if (!(ctSlot(h3, $.CT_DIAG_I_OPEN_OK) > 0 && ctSlot(h3, $.CT_DIAG_I_BCAST) > 0)) {
+        logger.error("frames-discarded triple = (" + ctSlot(h3, $.CT_DIAG_I_OPEN_OK) + ", " +
+                     ctSlot(h3, $.CT_DIAG_I_MSG_TOTAL) + ", " + ctSlot(h3, $.CT_DIAG_I_BCAST) + "), expected (>0, >0, >0)");
+        ok = false;
+    }
+    // ...and H2 must be distinguishable by its OWN positive evidence, not only
+    // by absence: every attempt threw.
+    if (ctSlot(h2, $.CT_DIAG_I_OPEN_THROW) < 1) {
+        logger.error("a dead channel must record openThrow > 0, got " + ctSlot(h2, $.CT_DIAG_I_OPEN_THROW));
+        ok = false;
+    }
+    // ...and H3 must name WHICH gate discarded the frames.
+    if (ctSlot(h3, $.CT_DIAG_I_PAGE_OTHER) != 4 || ctSlot(h3, $.CT_DIAG_I_PAGE1) != 0 ||
+        ctSlot(h3, $.CT_DIAG_I_PAGE_OTHER_LAST) != 0x50) {
+        logger.error("frames-discarded must name the page filter: pageOther = " + ctSlot(h3, $.CT_DIAG_I_PAGE_OTHER) +
+                     ", page1 = " + ctSlot(h3, $.CT_DIAG_I_PAGE1) +
+                     ", pageOtherLast = " + ctSlot(h3, $.CT_DIAG_I_PAGE_OTHER_LAST));
         ok = false;
     }
     return ok;
