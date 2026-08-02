@@ -1108,13 +1108,30 @@ class StrongRowView extends Ui.View {
     //
     // Boundary inclusivity matches rateColour: `bpm == lo` is neither `< lo`
     // nor `> hi`, so it is in band, and likewise `bpm == hi`.
+    //
+    // PRESENCE IS THE FLAG, NEVER THE VALUE, and the difference is the whole
+    // reason this function takes hasHr at all. `bpm > 0` -- the guard
+    // rateColour uses two hundred lines above -- is SOUND there, because
+    // outputRate() genuinely returns 0.0 when nothing has been measured. It is
+    // unsound here: the last bpm SURVIVES in mHrBpm after the heart-rate source
+    // drops, so gating on it keeps painting a stale reading, and the moment
+    // that reading sits under the band it paints BELOW BAND -- telling the
+    // rower to work harder on the strength of a number that no longer exists.
+    // #86 shipped a 0.0 skin temperature that way and #107 shipped "--.-" that
+    // way; this is the third time the same premise has been checked, and the
+    // first time it does not hold.
+    //
+    // A caller passing hasHr = true with bpm <= 0 gets a zone rather than
+    // HRZ_NONE. That combination is unreachable -- sampleHr stamps mHrEver only
+    // for a reading it has already validated as > 0 -- and it is deliberately
+    // NOT given a second guard here, because a redundant `bpm > 0` term is
+    // exactly what would let a future reader conclude the value is what decides
+    // presence.
     static function hrZone(hasHr, bpm, lo, hi) {
-        if (bpm > 0) {
-            if (bpm < lo) { return $.HRZ_BELOW; }
-            if (bpm > hi) { return $.HRZ_ABOVE; }
-            return $.HRZ_IN;
-        }
-        return $.HRZ_NONE;
+        if (!hasHr) { return $.HRZ_NONE; }
+        if (bpm < lo) { return $.HRZ_BELOW; }
+        if (bpm > hi) { return $.HRZ_ABOVE; }
+        return $.HRZ_IN;
     }
 
     // Pure: the fill colour for a zone. Identical constants to rateColour, so
@@ -1155,8 +1172,21 @@ class StrongRowView extends Ui.View {
     }
 
     // Pure: should the fill arc be drawn at all?
+    //
+    // The test is on the SWEEP, not on the heart rate, because the hazard is
+    // geometric: drawArc draws a COMPLETE CIRCLE when its two angles are equal,
+    // so a fill of zero degrees is a ring across the whole display rather than
+    // a mark nobody notices. One degree is not zero but is not drawable either,
+    // so the floor is the same HR_ARC_MIN_D the band marker uses.
+    //
+    // The readings this suppresses are at the very bottom of the display range,
+    // where the head tick still marks the position -- so nothing is lost except
+    // an arc that could not have been seen.
+    //
+    // Note what this does NOT decide: whether there is a heart rate at all.
+    // That is hrHave's job, and drawHrArc conjoins the two.
     static function hrFillVisible(bpm) {
-        return bpm > 0;
+        return hrFillSweep(bpm) >= $.HR_ARC_MIN_D;
     }
 
     // Pure: the target band as a drawArc counter-clockwise pair,
@@ -1166,18 +1196,50 @@ class StrongRowView extends Ui.View {
     // Ordered defensively even though loadSettings already swaps inverted
     // input: this is a public static and its post-condition should not depend
     // on a caller elsewhere in the file.
+    //
+    // POST-CONDITION: degreeEnd - degreeStart >= HR_ARC_MIN_D, always. That is
+    // not a nicety. drawArc draws a COMPLETE CIRCLE when its two angles are
+    // equal, so a band whose ends land on the same truncated degree is a ring
+    // across the entire display, over every other element on the screen.
+    //
+    // The widening is applied to the TRUNCATED degrees, and it has to be:
+    // 120-121 bpm is a legitimate one-bpm band whose two angles truncate one
+    // degree apart, and one more bpm of narrowing collapses them. Checking the
+    // bpm instead would miss both.
+    //
+    // Widening is symmetric about the midpoint, then pushed back inside the
+    // sweep if it overran an end. With a 60-degree sweep and a 2-degree floor
+    // it cannot overrun both, so the second correction cannot undo the first.
     static function hrBandArc(lo, hi) {
         var a1 = hrAngle(hi);
         var a2 = hrAngle(lo);
         if (a2 < a1) { var t = a1; a1 = a2; a2 = t; }
+        if (a2 - a1 < $.HR_ARC_MIN_D) {
+            var mid = (a1 + a2) / 2;
+            a1 = mid - $.HR_ARC_MIN_D / 2;
+            a2 = a1 + $.HR_ARC_MIN_D;
+            if (a1 < $.HR_ARC_TOP) {
+                a1 = $.HR_ARC_TOP;
+                a2 = $.HR_ARC_TOP + $.HR_ARC_MIN_D;
+            }
+            if (a2 > $.HR_ARC_BOT) {
+                a2 = $.HR_ARC_BOT;
+                a1 = $.HR_ARC_BOT - $.HR_ARC_MIN_D;
+            }
+        }
         return [a1, a2];
     }
 
     // Pure: is this reading off the end of the display range, so that the arc
     // is showing an endpoint rather than a position? #110 requires the clamp to
-    // be visible -- 210 bpm and 200 bpm must not render identically.
+    // be visible -- 210 bpm and 200 bpm must not render identically, and
+    // neither must 50 and 60.
+    //
+    // BOTH ends, and the low one is the point: an above-range reading is the
+    // case everyone thinks of, and a below-range one is the case that quietly
+    // parks the marker at the bottom of the scale and calls it a heart rate.
     static function hrIsClamped(bpm) {
-        return bpm > $.HR_DISP_HI;
+        return bpm < $.HR_DISP_LO || bpm > $.HR_DISP_HI;
     }
 
     // Pure: how many segments the grey track is drawn in.
@@ -1186,8 +1248,16 @@ class StrongRowView extends Ui.View {
     // separate "no data" from any reading -- the others being the absent fill
     // and the absent head tick. One continuous arc means "there is a heart
     // rate"; more than one means there is not.
+    //
+    // Three segments rather than two: an even count puts a gap at the exact
+    // middle of the sweep, where the default band sits, and the gap would then
+    // read as a feature of the band rather than of the track.
+    //
+    // Why the track needs its own channel at all: "no fill" and "a fill too
+    // short to see" are the same picture, so withholding the fill cannot on its
+    // own say "there is no heart rate".
     static function hrTrackParts(hasHr) {
-        return 1;
+        return hasHr ? 1 : 3;
     }
 
     // Pure: the heart-rate band, swapped if inverted and clamped to the arc's
@@ -2038,7 +2108,18 @@ class StrongRowView extends Ui.View {
 
         var hasHr = hrHave(mHrEver, mLastHrMs, System.getTimer(), $.HR_FRESH_MS);
         var bpm   = mHrBpm;
-        var show  = hrFillVisible(bpm);
+        // TWO gates, not one, and they are deliberately different.
+        //
+        //   hasHr    is there a heart rate at all? Gates the HEAD TICK, which
+        //            is the mark that says "this is where you are".
+        //   showFill is the fill long enough to be an arc rather than a ring?
+        //            Gates only the fill.
+        //
+        // Conflating them would drop the head tick for a reading at the very
+        // bottom of the display range -- a real heart rate, rendered as no
+        // heart rate, which is the failure this whole file is about, reached
+        // from the other side.
+        var showFill = hasHr && hrFillVisible(bpm);
 
         // ---- the scale ----
         dc.setPenWidth(pw);
@@ -2060,7 +2141,7 @@ class StrongRowView extends Ui.View {
         }
 
         // ---- the fill: magnitude, coloured by zone ----
-        if (show) {
+        if (showFill) {
             dc.setColor(hrZoneColour(hrZone(hasHr, bpm, mHrLo, mHrHi)),
                         Gfx.COLOR_TRANSPARENT);
             dc.drawArc(cx, cy, r, Gfx.ARC_CLOCKWISE, $.HR_ARC_BOT, hrAngle(bpm));
@@ -2078,7 +2159,7 @@ class StrongRowView extends Ui.View {
         radialTick(dc, cx, cy, ba[1], rTkIn, rTkOut);
 
         // ---- the head: where the reading actually is ----
-        if (show) {
+        if (hasHr) {
             var ah = hrAngle(bpm);
             dc.setPenWidth(phd);
             dc.setColor(Gfx.COLOR_WHITE, Gfx.COLOR_TRANSPARENT);
