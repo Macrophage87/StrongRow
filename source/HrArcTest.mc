@@ -405,3 +405,156 @@ class HrProbe extends StrongRowView {
     }
     return true;
 }
+
+// -- c2: the differentials -----------------------------------------------------
+// Every case below is RED against the commit that introduces the seam and green
+// against the one that completes it. Nothing else in this file moves between
+// those two epochs.
+//
+// They fall into two defect families, both of which this repository has
+// concrete history with.
+//
+// FAMILY 1 -- absence derived from a value. rateColour's `rate > 0.0` guard
+// (StrongRowView.mc:948) is SOUND where it stands, because outputRate()
+// genuinely returns 0.0 when nothing has been measured. Copied onto a heart
+// rate it is unsound, because the last bpm survives in the field after the
+// source drops: the arc would then keep painting a stale reading, and once that
+// reading happened to be under the band it would paint it BELOW BAND -- telling
+// the rower to work harder on the strength of a number that no longer exists.
+// #86 shipped a 0.0 skin temperature this way and #107 shipped "--.-" this way.
+//
+// FAMILY 2 -- the full circle. SDK 9.2.0 documents drawArc as truncating its
+// parameters toward zero and drawing A COMPLETE CIRCLE when degreeStart and
+// degreeEnd are equal. So a degenerate band, a band narrower than one truncated
+// degree, or a fill of zero length is not a small mark that nobody notices --
+// it is a ring across the entire display, over every other element. The guard
+// has to sit on the TRUNCATED values, because that is where the hazard is:
+// 184.28 and 183.86 are different heart rates and, after truncation, one
+// degree apart -- and one more bpm closes even that.
+
+// The single most important case in this file. A heart-rate source that has
+// dropped must not be rendered as "below band", whatever the last reading was.
+(:test) function test_hr_absentSourceIsNeverBelowBand(logger) {
+    var z = StrongRowView.hrZone(false, 105, 116, 130);
+    if (z != $.HRZ_NONE) {
+        logger.error("#110: with no live heart rate the zone must be " +
+                     $.HRZ_NONE + " (no data); got " + z +
+                     ". A stale 105 bpm rendered as BELOW BAND tells the " +
+                     "rower to work harder on a number that no longer exists");
+        return false;
+    }
+    return true;
+}
+
+// The general form: no last-reading value whatsoever turns absence into a zone.
+// Includes 0, so a fix that merely special-cased zero would still red here.
+(:test) function test_hr_absentSourceIsNoDataWhateverTheLastReading(logger) {
+    var last = [0, 55, 105, 123, 129, 180, 240];
+    for (var i = 0; i < last.size(); i++) {
+        var z = StrongRowView.hrZone(false, last[i], 116, 130);
+        if (z != $.HRZ_NONE) {
+            logger.error("#110: hasHr=false with a last reading of " + last[i] +
+                         " must be " + $.HRZ_NONE + " (no data); got " + z +
+                         " -- presence is the FLAG, never the value");
+            return false;
+        }
+    }
+    return true;
+}
+
+// A band whose two ends coincide must still produce a drawable arc, because the
+// alternative is not a small mark -- it is a complete circle over the whole
+// screen.
+(:test) function test_hr_degenerateBandNeverDrawsAFullCircle(logger) {
+    var pairs = [[120, 120], [60, 60], [200, 200], [116, 116]];
+    for (var i = 0; i < pairs.size(); i++) {
+        var ba = StrongRowView.hrBandArc(pairs[i][0], pairs[i][1]);
+        if (ba[1] - ba[0] < $.HR_ARC_MIN_D) {
+            logger.error("#110: band " + pairs[i][0] + "-" + pairs[i][1] +
+                         " gives degreeStart " + ba[0] + " degreeEnd " + ba[1] +
+                         " (sweep " + (ba[1] - ba[0]) + "); drawArc draws a " +
+                         "COMPLETE CIRCLE when its two angles are equal, so " +
+                         "the sweep must be at least " + $.HR_ARC_MIN_D);
+            return false;
+        }
+    }
+    return true;
+}
+
+// The same hazard reached from UNEQUAL bpm. 120-121 is a legitimate one-bpm
+// band; after truncation its two angles are one degree apart, which is below
+// the minimum drawable sweep and one bpm away from being the same degree.
+// Truncation is why the guard cannot live on the bpm values.
+(:test) function test_hr_narrowBandSurvivesAngleTruncation(logger) {
+    var ba = StrongRowView.hrBandArc(120, 121);
+    if (ba[1] - ba[0] < $.HR_ARC_MIN_D) {
+        logger.error("#110: the one-bpm band 120-121 truncates to degrees " +
+                     ba[0] + " and " + ba[1] + " (sweep " + (ba[1] - ba[0]) +
+                     "), below the minimum drawable sweep of " +
+                     $.HR_ARC_MIN_D + " -- drawArc truncates toward zero, so " +
+                     "the guard belongs on the DEGREES, not on the bpm");
+        return false;
+    }
+    return true;
+}
+
+// The fill's half of the same family. A reading at or near the bottom of the
+// display range asks for a zero- or one-degree arc, and a zero-degree arc is
+// the complete circle again. Both the at-range and below-range cases are here,
+// because a fix that only handled "outside the range" would leave 61 bpm
+// drawing a full ring.
+(:test) function test_hr_fillIsSkippedWhenItWouldBeSubDegree(logger) {
+    var none = [0, 30, 59, 60, 61, 62];
+    for (var i = 0; i < none.size(); i++) {
+        if (StrongRowView.hrFillVisible(none[i])) {
+            logger.error("#110: " + none[i] + " bpm asks for a fill of " +
+                         StrongRowView.hrFillSweep(none[i]) + " degree(s), " +
+                         "below the minimum drawable sweep of " +
+                         $.HR_ARC_MIN_D + " -- drawing it is a COMPLETE " +
+                         "CIRCLE, not a short arc");
+            return false;
+        }
+    }
+    var some = [63, 100, 130, 200, 250];
+    for (var j = 0; j < some.size(); j++) {
+        if (!StrongRowView.hrFillVisible(some[j])) {
+            logger.error("#110: " + some[j] + " bpm asks for a fill of " +
+                         StrongRowView.hrFillSweep(some[j]) + " degrees and " +
+                         "must be drawn -- the fill is what carries magnitude");
+            return false;
+        }
+    }
+    return true;
+}
+
+// #110 requires the clamp to be VISIBLE at both ends: 210 bpm and 200 bpm must
+// not render identically, and neither must 50 and 60. The low end is the one
+// that gets forgotten.
+(:test) function test_hr_clampIsDetectedAtBothEnds(logger) {
+    var high = StrongRowView.hrIsClamped($.HR_DISP_HI + 10);
+    var low = StrongRowView.hrIsClamped($.HR_DISP_LO - 10);
+    var inRange = StrongRowView.hrIsClamped(130);
+    if (!high || !low || inRange) {
+        logger.error("#110: clamping must be detected at BOTH ends: " +
+                     ($.HR_DISP_HI + 10) + " -> " + high + " (want true), " +
+                     ($.HR_DISP_LO - 10) + " -> " + low + " (want true), " +
+                     "130 -> " + inRange + " (want false)");
+        return false;
+    }
+    return true;
+}
+
+// The no-data state's third channel. A continuous track means "there is a heart
+// rate"; the absence state has to say something different in GEOMETRY, not only
+// by withholding the fill -- because "no fill" and "a fill too short to see"
+// are the same picture.
+(:test) function test_hr_absentSourceBreaksTheTrack(logger) {
+    var n = StrongRowView.hrTrackParts(false);
+    if (n <= 1) {
+        logger.error("#110: with no heart rate the track must be drawn " +
+                     "broken, so the no-data state is readable as geometry " +
+                     "and not merely as an absence; got " + n + " segment(s)");
+        return false;
+    }
+    return true;
+}
