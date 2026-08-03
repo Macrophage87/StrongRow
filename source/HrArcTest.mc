@@ -180,6 +180,12 @@ class HrProbe extends StrongRowView {
     // early return exists.
     function setFreeRow() { mWorkoutEnabled = false; }
 
+    // The restoring half of setFreeRow. A sweep that reuses one probe across
+    // kinds would otherwise render every kind after free-row AS free-row --
+    // silently, and in the safe direction, so every later case would pass for
+    // the wrong reason.
+    function setWorkoutEnabled(v) { mWorkoutEnabled = v; }
+
     // -- seams the layout suite (HrLayoutTest.mc) drives -----------------------
 
     // Any step type, by its class constant, without going through onPrimary.
@@ -254,6 +260,14 @@ class HrProbe extends StrongRowView {
         mStrokeCount = 9999;
         mStartMs = System.getTimer() - 11999000;   // ~199:59 elapsed
         setDist(12345.6);
+    }
+
+    // The other end of the same dial, so a reused probe can be put back into
+    // the narrow shape instead of needing a fresh one.
+    function setNarrowSession() {
+        mStrokeCount = 6;
+        mStartMs = System.getTimer();
+        setDist(0.0);
     }
 
     // Like enterStep, but leaves the step clock LIVE so the countdown renders

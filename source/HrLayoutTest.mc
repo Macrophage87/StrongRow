@@ -214,11 +214,27 @@ function hlWorstGap(geo, mdc) {
 // full duration. Measuring only the narrow instance of each string would
 // measure the narrowest screen this app can draw rather than the widest, which
 // is the mistake this whole suite exists to stop making.
-function hlRender(kind, paused, bandLo, bandHi, hrBpm, hrLive, sensorOk, wide, mdc) {
+// THE PROBE IS PASSED IN, NOT CONSTRUCTED HERE, and that is a memory decision
+// rather than a style one. Constructing an HrProbe runs the full StrongRowView
+// initialize: a 128-slot autocorrelation buffer, a 90-slot R-R difference
+// buffer, and one dictionary per workout step -- ninety of them at the largest
+// workout settings.xml declares. One per render put a few hundred of those
+// through a watch-sized heap in a single (:test), and the CI simulator DIED
+// partway through the first case: monkeydo_rc=1, sim_alive=no, no summary line,
+// so the fail-closed checker reported a harness failure instead of a verdict.
+// It survived on a faster host with a larger budget, which is the difference
+// between "passes here" and "passes".
+//
+// Reusing one probe across a sweep makes the allocation constant in the number
+// of configurations. Every field the sweeps vary is set on each pass, so no
+// state carries between configurations except the detector history, which is
+// what driveStrokes deliberately establishes once.
+function hlRender(p, kind, paused, bandLo, bandHi, hrBpm, hrLive, sensorOk, wide, mdc) {
     var ds = System.getDeviceSettings();
-    var p = new HrProbe();
-    p.driveStrokes();
-    if (wide) { p.setWorkoutShape(30, 3600); }
+    // Restored on every render, not only when entering free row: a reused probe
+    // would otherwise render every kind after free-row AS free-row, which draws
+    // no arc and would pass every later case for the wrong reason.
+    p.setWorkoutEnabled(kind != -2);
     p.setBand(bandLo, bandHi);
     p.setSensorOk(sensorOk);
     if (hrLive) { p.setHrState(hrBpm, System.getTimer(), true); }
@@ -233,12 +249,23 @@ function hlRender(kind, paused, bandLo, bandHi, hrBpm, hrLive, sensorOk, wide, m
         p.setWideSession();
         p.setSpeed(6.0);
     } else {
+        p.setNarrowSession();
         p.setSpeed(0.0);
     }
 
     var geo = new HrGeoDc(ds.screenWidth, ds.screenHeight);
     p.runUpdate(geo);
     return hlWorstGap(geo, mdc);
+}
+
+// One probe, shaped for the string width being swept. The workout shape is set
+// here rather than per render because buildWorkout allocates a dictionary per
+// step and the largest declared workout has ninety of them.
+function hlProbeFor(wide) {
+    var p = new HrProbe();
+    p.driveStrokes();
+    if (wide) { p.setWorkoutShape(30, 3600); }
+    return p;
 }
 
 // The band extremes of the range settings.xml declares, plus the shipped
@@ -266,10 +293,13 @@ function hlSweepKind(kind, label, logger) {
     var worst = 9999.0;
     var where = "none";
 
-    for (var bi = 0; bi < bands.size(); bi++) {
-        for (var hi = 0; hi < hrs.size(); hi++) {
-            for (var wi = 0; wi < 2; wi++) {
-                var g = hlRender(kind, false, bands[bi][0], bands[bi][1],
+    // Outer loop over string width, so the workout shape -- the expensive part
+    // -- is built once per width rather than once per configuration.
+    for (var wi = 0; wi < 2; wi++) {
+        var p = hlProbeFor(wi == 1);
+        for (var bi = 0; bi < bands.size(); bi++) {
+            for (var hi = 0; hi < hrs.size(); hi++) {
+                var g = hlRender(p, kind, false, bands[bi][0], bands[bi][1],
                                  hrs[hi][0], hrs[hi][1], true, wi == 1, mdc);
                 if (g < worst) {
                     worst = g;
@@ -332,12 +362,13 @@ function hlSweepKind(kind, label, logger) {
     var worst = 9999.0;
     var where = "none";
 
+    var p = hlProbeFor(true);
     for (var ai = 0; ai < kinds.size(); ai++) {
         for (var bi = 0; bi < bands.size(); bi++) {
             for (var vi = 0; vi < 4; vi++) {
                 var paused  = (vi & 1) != 0;
                 var accelOk = (vi & 2) == 0;
-                var g = hlRender(kinds[ai], paused, bands[bi][0], bands[bi][1],
+                var g = hlRender(p, kinds[ai], paused, bands[bi][0], bands[bi][1],
                                  123, true, accelOk, true, mdc);
                 if (g < worst) {
                     worst = g;
@@ -378,10 +409,11 @@ function hlSweepKind(kind, label, logger) {
     var worst = 9999.0;
     var where = "none";
 
+    var p = hlProbeFor(true);
     for (var ki = 0; ki < kinds.size(); ki++) {
         for (var bi = 0; bi < bands.size(); bi++) {
             for (var hi = 0; hi < hrs.size(); hi++) {
-                var g = hlRender(kinds[ki], false, bands[bi][0], bands[bi][1],
+                var g = hlRender(p, kinds[ki], false, bands[bi][0], bands[bi][1],
                                  hrs[hi][0], hrs[hi][1], true, true, mdc);
                 if (g < worst) {
                     worst = g;
