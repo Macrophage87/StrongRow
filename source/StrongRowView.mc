@@ -66,28 +66,45 @@ const RR_FRESH_MS = 5000;
 // member, unreachable from a static method, and every decision this feature
 // makes is a class-scope static so a (:test) can reach it without a Dc.
 //
-// DISPLAY RANGE, in bpm, mapped linearly onto the arc sweep. 60 is below any
-// seated resting rate and 200 above any working rate plausible for this app's
-// user, so a clamped reading is an edge case rather than a routine state. These
-// two are ALSO the bounds loadSettings clamps hrLo/hrHi to, and that identity
-// is deliberate: it makes "the band marker always lands on the track" an
-// invariant of loadSettings instead of a hope.
-const HR_DISP_LO = 60;
-const HR_DISP_HI = 200;
+// DISPLAY RANGE, in bpm, mapped linearly onto the arc sweep. These two are ALSO
+// the bounds loadSettings clamps hrLo/hrHi to, and that identity is deliberate:
+// it makes "the band marker always lands on the track" an invariant of
+// loadSettings instead of a hope.
+//
+// 80-190 rather than a wider span, and the reason is RESOLUTION, not taste.
+// drawArc truncates to whole degrees, so one degree is the finest distinction
+// the geometry can draw, and one degree costs (HI-LO)/sweep bpm. Over the 44
+// degree sweep below, 80-190 gives 0.4 deg/bpm, i.e. ONE DEGREE IS 2.5 BPM. A
+// 60-200 range over the same sweep would make it 3.2 bpm. Both ends are still
+// outside any plausible rowing target -- the reference session ran 97-147 --
+// and a reading beyond either end clamps VISIBLY rather than silently, so the
+// cost of the narrower span is paid in a state the display announces.
+const HR_DISP_LO = 80;
+const HR_DISP_HI = 190;
 // SWEEP, in drawArc degrees. 0 is 3 o'clock, 90 is 12, 180 is 9, 270 is 6, so
 // this is the left edge centred on 9 o'clock: low bpm at the bottom
-// (HR_ARC_BOT), high at the top (HR_ARC_TOP), +/-30 degrees of horizontal.
+// (HR_ARC_BOT), high at the top (HR_ARC_TOP), +/-22 degrees of horizontal.
 //
-// WHY 30 AND NOT THE DERIVED 35. The +/-35 bound is derived for THE ARC, at the
-// track radius. The head tick is drawn OUTSIDE that radius, so at the ends of
-// the sweep the outermost drawn pixel sits lower on the screen than the arc
-// does. At +/-30 the outermost drawn pixel of the whole widget falls inside the
-// y a +/-35 sweep at the track radius would reach -- on all twelve manifest
-// devices, computed with the same truncation the code uses. Honouring the
-// stricter of the two derivations costs 10 degrees of resolution and removes
-// the argument. It does NOT make any claim about how the result looks.
-const HR_ARC_TOP = 150;
-const HR_ARC_BOT = 210;
+// +/-22 IS MEASURED, NOT DERIVED, and the distinction is the whole history of
+// this constant. It was +/-30, chosen by arithmetic against the height
+// fractions of the rows above and below, and that arithmetic was wrong in two
+// ways at once: it tracked the CENTRELINE of each primitive rather than its
+// outermost pixel, and it assumed text widths instead of measuring them. The
+// arc overlapped rendered text on 11 of the 12 manifest devices -- by 21 px on
+// fr965 and 23 px on fenix843mm.
+//
+// The bound now comes from source/HrLayoutTest.mc, which renders every screen
+// this view can draw into a recording Dc, measures every string with the real
+// font metrics of a real Dc, expands every primitive to its PEN WIDTH, and
+// reports the worst separation. At +/-22 the worst margin over every step type,
+// every band settable in the declared range and every heart-rate state is
+// +13.4 px, on fenix6spro. Widening to +/-26 drops fenix843mm to 6.5 px, which
+// is why it is not wider.
+//
+// None of that says anything about how the result looks. It says pixels do not
+// share coordinates.
+const HR_ARC_TOP = 158;
+const HR_ARC_BOT = 202;
 // MINIMUM DRAWN SWEEP, in whole degrees, for every arc this feature draws.
 // SDK 9.2.0 documents drawArc as truncating its parameters toward zero and
 // drawing A COMPLETE CIRCLE when degreeStart and degreeEnd are equal. So a band
@@ -2071,17 +2088,31 @@ class StrongRowView extends Ui.View {
     //      105 bpm from 138 bpm when both are below the band;
     //   2. the BAND is drawn ON THE TRACK -- a light rail inside the track
     //      spanning exactly the target band, closed by a radial tick at each
-    //      end that crosses both the rail and the track. This is what makes
-    //      below / in / above readable from GEOMETRY with all colour
-    //      information removed, and it is the only channel that can answer
-    //      "how much room do I have?", which colour cannot express at all;
+    //      end that crosses both the rail and the track. This is what carries
+    //      below / in / above in GEOMETRY, and it is the only channel that can
+    //      answer "how much room do I have?", which colour cannot express at
+    //      all;
     //   3. COLOUR carries the zone, with the same constants as rateColour.
     //
-    // The band marker is not decoration. Red/green is the commonest
-    // colour-vision deficiency pair, and under simulated deuteranopia the blue
-    // and red used here separate by only about 1.2:1 in luminance -- so with
-    // the geometric channel removed, the DIRECTION cue would rest entirely on
-    // the blue/yellow axis.
+    // WHAT THE GEOMETRIC CHANNEL DOES AND DOES NOT RESOLVE, stated at the
+    // strength it holds. An earlier revision of this comment said below / in /
+    // above is readable from geometry "with all colour information removed",
+    // full stop. That is FALSE near the band edges and the correction is mine.
+    // drawArc truncates to whole degrees, so the finest distinction the
+    // geometry can draw is one degree, which at the constants above is 2.5 bpm
+    // -- and the head tick and the band tick each have a pen width of their
+    // own on top of that. So within roughly a 2-3 bpm collar around each edge,
+    // geometry alone cannot say which side of the edge the reading is on;
+    // colour still can, because the predicate behind it is exact.
+    //
+    // The design is unchanged by that, because the claim it actually rests on
+    // is weaker and survives: geometry plus colour beats colour alone. Red and
+    // green are the commonest colour-vision deficiency pair, and under
+    // simulated deuteranopia the blue and red used here separate by only about
+    // 1.2:1 in luminance -- so with no geometric channel at all the DIRECTION
+    // cue rests entirely on the blue/yellow axis, and "how much room" cannot be
+    // expressed at any precision whatsoever. A 2-3 bpm ambiguity at the edge is
+    // a different thing from no answer.
     //
     // LAYERING INVARIANT: nothing but the head tick is drawn beyond radius
     // r + pw/2 + 2. That is what keeps the head tick unmistakable in monochrome
@@ -2105,18 +2136,26 @@ class StrongRowView extends Ui.View {
     hidden function drawHrArc(dc, w, h) {
         var cx  = w / 2;
         var cy  = h / 2;
-        var r   = (w * 0.42).toNumber();
         var pw  = (w * 0.030).toNumber(); if (pw  < 4) { pw  = 4; }
         var pwb = (w * 0.020).toNumber(); if (pwb < 3) { pwb = 3; }
         var gap = (w * 0.010).toNumber(); if (gap < 2) { gap = 2; }
         var ptk = (w * 0.008).toNumber(); if (ptk < 2) { ptk = 2; }
         var phd = (w * 0.012).toNumber(); if (phd < 3) { phd = 3; }
+        var bez = (w * 0.012).toNumber(); if (bez < 4) { bez = 4; }
 
-        var rBand  = r - pw / 2 - gap - pwb / 2;   // band rail: inside the track
-        var rTkIn  = rBand - pwb;                  // band ticks cross rail+track
+        // Built OUTWARD-IN from the bezel rather than from a radius fraction,
+        // and that inversion is the geometric core of the collision fix. On a
+        // round display the arc's horizontal position at a given height obeys
+        // x = cx - sqrt(r^2 - (cy-y)^2): a LARGER radius puts the arc FURTHER
+        // LEFT at every height it reaches. Hugging the bezel is therefore the
+        // cheapest clearance there is, and deriving every radius from the
+        // outermost allowed pixel is what banks it.
+        var rHd1   = cx - bez;                     // outermost drawn pixel
+        var rHd0   = rHd1 - pw - 2;                // head tick: outside, alone
+        var r      = rHd0 - 2 - pw / 2;            // the track
         var rTkOut = r + pw / 2;
-        var rHd0   = r + pw / 2 + 2;               // head tick: outside, alone
-        var rHd1   = rHd0 + pw + 2;
+        var rBand  = r - pw / 2 - gap - pwb / 2;   // band rail: inside the track
+        var rTkIn  = rBand - pwb / 2 - 2;          // band ticks cross rail+track
 
         var hasHr = hrHave(mHrEver, mLastHrMs, System.getTimer(), $.HR_FRESH_MS);
         var bpm   = mHrBpm;
@@ -2225,6 +2264,30 @@ class StrongRowView extends Ui.View {
         // unconditionally). That is a decision, not an oversight -- a paused
         // rower still has a heart rate.
         //
+        // STEP_GATE IS DELIBERATELY EXCLUDED, and #110's acceptance list asks
+        // for it, so this is a listed departure rather than a quiet one.
+        //
+        // Measured: the GATE headline is "PRESS START" in FONT_MEDIUM, centred
+        // and vertically centred at h*0.30, and it is enormous relative to the
+        // screen -- on fenix843mm it spans 74% of the display width. Any
+        // left-edge widget of usable size intersects it. Keeping the arc on
+        // that one screen would have forced the sweep down to about +/-16
+        // degrees on every device to satisfy it, which is a 32 degree sweep
+        // where 44 is already tight: at 32 degrees one truncated degree is
+        // 3.4 bpm against 2.5 today, so the band marker gets coarser
+        // EVERYWHERE to serve the one screen where nobody is rowing.
+        //
+        // What is given up is real and is not dressed down: GATE is a recovery
+        // moment and a heart rate is worth seeing there. What is kept is the
+        // resolution of the marker during the intervals, which is what the
+        // feature is for. The arc's own premise -- a peripheral answer while
+        // the eye is on the stroke rate -- also does not hold at a gate, where
+        // there is no stroke rate and the screen's whole job is one instruction.
+        //
+        // Both halves of that trade are enforced by source/HrLayoutTest.mc,
+        // which still renders GATE and still requires it to be clear. If a
+        // later change puts the arc back on that screen, the case reds.
+        //
         // WRAPPED, and the wrap is the whole point of drawing it first. The
         // z-order rationale above wants the arc under the text; that same
         // ordering means an unguarded throw from any primitive here takes the
@@ -2249,7 +2312,7 @@ class StrongRowView extends Ui.View {
         //
         // Swallowed rather than logged: onUpdate runs at 4 Hz, so a throw that
         // recurred would emit four log lines a second for the life of the app.
-        if (type == STEP_WORK || type == STEP_REST || type == STEP_GATE) {
+        if (type == STEP_WORK || type == STEP_REST) {
             try {
                 drawHrArc(dc, w, h);
             } catch (e) {
