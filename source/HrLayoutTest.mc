@@ -99,11 +99,19 @@ class HrGeoDc {
 // 8x8 because only the FONT metrics are wanted; they are a property of the
 // device, not of the surface, and a screen-sized buffer would be a large
 // allocation for nothing.
+// CACHED, and the cache is load-bearing rather than an optimisation: each
+// acquisition allocates a graphics resource, and the four cases below would
+// otherwise take four. Module scope so it survives across cases.
+var hlDc = null;
+
 function hlMetricDc() {
+    if (hlDc != null) { return hlDc; }
     if (Gfx has :createBufferedBitmap) {
-        return Gfx.createBufferedBitmap({ :width => 8, :height => 8 }).get().getDc();
+        hlDc = Gfx.createBufferedBitmap({ :width => 8, :height => 8 }).get().getDc();
+    } else {
+        hlDc = new Gfx.BufferedBitmap({ :width => 8, :height => 8 }).getDc();
     }
-    return new Gfx.BufferedBitmap({ :width => 8, :height => 8 }).getDc();
+    return hlDc;
 }
 
 // [left, top, right, bottom] for one recorded drawText, from real metrics.
@@ -229,21 +237,34 @@ function hlWorstGap(geo, mdc) {
 // of configurations. Every field the sweeps vary is set on each pass, so no
 // state carries between configurations except the detector history, which is
 // what driveStrokes deliberately establishes once.
-function hlRender(p, kind, paused, bandLo, bandHi, hrBpm, hrLive, sensorOk, wide, mdc) {
+// The configuration arrives as ONE ARRAY rather than as separate parameters,
+// and that is forced rather than stylistic: at ten parameters monkeyc rejects
+// the declaration with "Too many arguments passed to method" -- but only in the
+// SHIPPING build, so the --unit-test compile passes on all twelve devices and
+// release-build is the job that fails. Layout of cfg:
+//   [0] kind        step-type constant, or -1 pre-START, or -2 free row
+//   [1] paused
+//   [2] bandLo      [3] bandHi
+//   [4] hrBpm       [5] hrLive
+//   [6] sensorOk
+//   [7] wide        drive every data-dependent string to its maximum
+function hlRender(p, cfg, mdc) {
+    var kind = cfg[0];
+    var wide = cfg[7];
     var ds = System.getDeviceSettings();
     // Restored on every render, not only when entering free row: a reused probe
     // would otherwise render every kind after free-row AS free-row, which draws
     // no arc and would pass every later case for the wrong reason.
     p.setWorkoutEnabled(kind != -2);
-    p.setBand(bandLo, bandHi);
-    p.setSensorOk(sensorOk);
-    if (hrLive) { p.setHrState(hrBpm, System.getTimer(), true); }
-    else        { p.setHrState(hrBpm, 0, false); }
+    p.setBand(cfg[2], cfg[3]);
+    p.setSensorOk(cfg[6]);
+    if (cfg[5]) { p.setHrState(cfg[4], System.getTimer(), true); }
+    else        { p.setHrState(cfg[4], 0, false); }
 
     if (kind == -2)      { p.setFreeRow(); }
     else if (kind == -1) { p.enterPreStart(); }
-    else if (wide)       { p.enterStepLive(kind, paused); }
-    else                 { p.enterStep(kind, paused); }
+    else if (wide)       { p.enterStepLive(kind, cfg[1]); }
+    else                 { p.enterStep(kind, cfg[1]); }
 
     if (wide) {
         p.setWideSession();
@@ -299,8 +320,8 @@ function hlSweepKind(kind, label, logger) {
         var p = hlProbeFor(wi == 1);
         for (var bi = 0; bi < bands.size(); bi++) {
             for (var hi = 0; hi < hrs.size(); hi++) {
-                var g = hlRender(p, kind, false, bands[bi][0], bands[bi][1],
-                                 hrs[hi][0], hrs[hi][1], true, wi == 1, mdc);
+                var g = hlRender(p, [kind, false, bands[bi][0], bands[bi][1],
+                                     hrs[hi][0], hrs[hi][1], true, wi == 1], mdc);
                 if (g < worst) {
                     worst = g;
                     where = "band " + bands[bi][0] + "-" + bands[bi][1] +
@@ -324,6 +345,39 @@ function hlSweepKind(kind, label, logger) {
                      "not the centreline.");
         return false;
     }
+    return true;
+}
+
+// -- Isolation case ------------------------------------------------------------
+// This does ONE thing: acquire the metric Dc and measure one string with it.
+//
+// It exists because the CI container's simulator has died three times running
+// this suite -- `Segmentation fault (core dumped)` from the simulator binary
+// itself, with no summary line, so the fail-closed checker reported a harness
+// failure rather than a verdict. Two hypotheses were fixed on the way (per-case
+// cost, then per-render allocation) and neither was the cause, because each fix
+// was a guess. A segfault is a native crash and cannot be caught, so the only
+// way to attribute it is to isolate the one platform call this suite makes that
+// nothing else in the repository makes, and put it in a case of its own.
+//
+// If the run dies HERE, the metric Dc is the cause and the suite needs a
+// different source of font metrics. If it dies later, this call is exonerated.
+// Either way the next step stops being a guess.
+(:test) function test_hr_layoutMetricDcIsUsable(logger) {
+    var mdc = hlMetricDc();
+    if (mdc == null) {
+        logger.error("no metric Dc could be obtained, so no string in this " +
+                     "suite can be measured");
+        return false;
+    }
+    var w = mdc.getTextWidthInPixels("188", Gfx.FONT_XTINY);
+    var h = mdc.getFontHeight(Gfx.FONT_XTINY);
+    if (w <= 0 || h <= 0) {
+        logger.error("metric Dc returned a degenerate measurement: w=" + w +
+                     " h=" + h);
+        return false;
+    }
+    logger.debug("HL metric Dc ok: '188' in FONT_XTINY is " + w + "x" + h);
     return true;
 }
 
@@ -368,8 +422,8 @@ function hlSweepKind(kind, label, logger) {
             for (var vi = 0; vi < 4; vi++) {
                 var paused  = (vi & 1) != 0;
                 var accelOk = (vi & 2) == 0;
-                var g = hlRender(p, kinds[ai], paused, bands[bi][0], bands[bi][1],
-                                 123, true, accelOk, true, mdc);
+                var g = hlRender(p, [kinds[ai], paused, bands[bi][0], bands[bi][1],
+                                     123, true, accelOk, true], mdc);
                 if (g < worst) {
                     worst = g;
                     where = names[ai] + (paused ? "/PAUSED" : "") +
@@ -413,8 +467,8 @@ function hlSweepKind(kind, label, logger) {
     for (var ki = 0; ki < kinds.size(); ki++) {
         for (var bi = 0; bi < bands.size(); bi++) {
             for (var hi = 0; hi < hrs.size(); hi++) {
-                var g = hlRender(p, kinds[ki], false, bands[bi][0], bands[bi][1],
-                                 hrs[hi][0], hrs[hi][1], true, true, mdc);
+                var g = hlRender(p, [kinds[ki], false, bands[bi][0], bands[bi][1],
+                                     hrs[hi][0], hrs[hi][1], true, true], mdc);
                 if (g < worst) {
                     worst = g;
                     where = names[ki] + " band " + bands[bi][0] + "-" +
