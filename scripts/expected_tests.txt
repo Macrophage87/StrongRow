@@ -75,11 +75,8 @@ test_hr_absentSourceBreaksTheTrack
 test_hr_arcThrowLeavesTheRestOfTheScreenIntact
 
 # source/HrLayoutTest.mc
-test_hr_layoutMetricDcIsUsable
-test_hr_layoutWorkStepClearsAllText
-test_hr_layoutRestStepClearsAllText
-test_hr_layoutPausedAndNoAccelClearAllText
-test_hr_layoutArclessScreensClearAllText
+test_hr_arclessScreensDrawNoArcGeometry
+test_hr_arcStaysWithinItsXEnvelope
 
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork
