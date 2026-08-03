@@ -74,6 +74,9 @@ test_hr_clampIsDetectedAtBothEnds
 test_hr_absentSourceBreaksTheTrack
 test_hr_arcThrowLeavesTheRestOfTheScreenIntact
 
+# source/HrLayoutTest.mc
+test_hr_arcNeverOverlapsAnyText
+
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork
 test_rate_whiteWhenNoData

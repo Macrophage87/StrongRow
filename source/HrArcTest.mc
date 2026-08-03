@@ -120,9 +120,8 @@ class HrProbe extends StrongRowView {
     // test here and is not under this test's control. Everything else in
     // onUpdate is the shipping code, so the draw cases below drive the ACTUAL
     // call site rather than a transcription of it -- the rule
-    // DspTimeBaseTest.mc:19-21 states for onSensorData.
-    hidden function currentSpeed() { return 0.0; }
-    hidden function elapsedDist()  { return 0.0; }
+    // DspTimeBaseTest.mc:19-21 states for onSensorData. Both overrides live
+    // further down, beside the settable fields that back them.
 
     // Priority 1's value path, read straight from the shipping method.
     function rateValue() { return outputRate(); }
@@ -180,6 +179,96 @@ class HrProbe extends StrongRowView {
     // never reached. Driven through the real flag rather than by asserting the
     // early return exists.
     function setFreeRow() { mWorkoutEnabled = false; }
+
+    // -- seams the layout suite (HrLayoutTest.mc) drives -----------------------
+
+    // Any step type, by its class constant, without going through onPrimary.
+    function enterStep(kind, paused) {
+        mStarted = true;
+        mPaused  = paused;
+        mStartMs = System.getTimer();
+        mStepStartMs = System.getTimer() - 3600000;
+        for (var i = 0; i < mSteps.size(); i++) {
+            if (mSteps[i][:type] == kind) { mStepIdx = i; return true; }
+        }
+        return false;
+    }
+
+    // The pre-START screen: built, never started.
+    function enterPreStart() { mStarted = false; mPaused = false; }
+
+    // The step-type constants are class `hidden const`s, i.e. instance members,
+    // so a (:test) free function cannot name them. Exposed here rather than
+    // transcribed into the layout suite, where a copy could drift.
+    function kindWork() { return STEP_WORK; }
+    function kindRest() { return STEP_REST; }
+    function kindGate() { return STEP_GATE; }
+    function kindWarm() { return STEP_WARM; }
+    function kindCool() { return STEP_COOL; }
+    function kindDone() { return STEP_DONE; }
+
+    // The bpm band, bypassing loadSettings so a case can sweep the whole
+    // settable range. Pushed through hrClampBand so a case can never assert
+    // against a band the shipping clamp would have refused.
+    function setBand(lo, hi) {
+        var b = StrongRowView.hrClampBand(lo, hi);
+        mHrLo = b[0];
+        mHrHi = b[1];
+    }
+
+    // drawFoot's hard-failure branch: NO ACCEL is the longest footer string and
+    // must stay visible during work (#108), so it is a layout case.
+    function setSensorOk(ok) { mSensorOk = ok; }
+
+    // A settable speed and distance, so the layout suite can drive the WIDEST
+    // strings drawPace and drawFoot can produce. A GPS speed spike shortens the
+    // pace term but ADDS the metres-per-stroke term, so the widest pace string
+    // is not the idle one.
+    hidden var mFakeSpeed;
+    hidden var mFakeDist;
+    function setSpeed(v) { mFakeSpeed = v; }
+    function setDist(v)  { mFakeDist = v; }
+    hidden function currentSpeed() {
+        return (mFakeSpeed == null) ? 0.0 : mFakeSpeed;
+    }
+    hidden function elapsedDist() {
+        return (mFakeDist == null) ? 0.0 : mFakeDist;
+    }
+
+    // Every string this view can draw is DATA-DEPENDENT, and a layout case that
+    // renders only one instance of each measures the narrowest screen the app
+    // can produce rather than the widest. These push each one to its practical
+    // maximum:
+    //   * 30 x 60' is the largest workout settings.xml declares, so the title
+    //     is "30x60'", the interval label "WORK 30/30", and the rest and gate
+    //     sub-rows "next: WORK 30" / "to start WORK 30";
+    //   * a long session with a large distance and stroke count gives
+    //     drawFoot's widest form, "REC 199:59 12.35km 9999str".
+    function setWorkoutShape(n, workSec) {
+        mNumWork = n;
+        mWorkSec = workSec;
+        buildWorkout();
+    }
+
+    function setWideSession() {
+        mStrokeCount = 9999;
+        mStartMs = System.getTimer() - 11999000;   // ~199:59 elapsed
+        setDist(12345.6);
+    }
+
+    // Like enterStep, but leaves the step clock LIVE so the countdown renders
+    // its full duration rather than the clamped "0:00". Only the layout suite
+    // uses it: it takes one measurement per render and never compares two, so a
+    // ticking clock costs it nothing.
+    function enterStepLive(kind, paused) {
+        mStarted = true;
+        mPaused  = paused;
+        mStepStartMs = System.getTimer();
+        for (var i = 0; i < mSteps.size(); i++) {
+            if (mSteps[i][:type] == kind) { mStepIdx = i; return true; }
+        }
+        return false;
+    }
 
     // Drive real strokes through the shipping detector so outputRate() is
     // NON-ZERO. Without this, "the rate is unchanged by HR state" compares 0.0
@@ -742,26 +831,36 @@ class HrProbe extends StrongRowView {
 // the complete circle again. Both the at-range and below-range cases are here,
 // because a fix that only handled "outside the range" would leave 61 bpm
 // drawing a full ring.
+// Phrased over the WHOLE bpm domain as a property, not as a list of boundary
+// values. An earlier revision of this case hardcoded the bpm either side of the
+// boundary, which silently encoded the sweep width of the day: narrowing the
+// sweep moved the boundary and reddened the case against code that was correct.
+// The property below is invariant to the sweep, and still RED against a
+// `bpm > 0` gate, which is what it is for.
 (:test) function test_hr_fillIsSkippedWhenItWouldBeSubDegree(logger) {
-    var none = [0, 30, 59, 60, 61, 62];
-    for (var i = 0; i < none.size(); i++) {
-        if (StrongRowView.hrFillVisible(none[i])) {
-            logger.error("#110: " + none[i] + " bpm asks for a fill of " +
-                         StrongRowView.hrFillSweep(none[i]) + " degree(s), " +
-                         "below the minimum drawable sweep of " +
-                         $.HR_ARC_MIN_D + " -- drawing it is a COMPLETE " +
-                         "CIRCLE, not a short arc");
+    for (var bpm = 0; bpm <= 260; bpm++) {
+        if (StrongRowView.hrFillVisible(bpm) &&
+            StrongRowView.hrFillSweep(bpm) < $.HR_ARC_MIN_D) {
+            logger.error("#110: " + bpm + " bpm asks for a fill of " +
+                         StrongRowView.hrFillSweep(bpm) + " degree(s), below " +
+                         "the minimum drawable sweep of " + $.HR_ARC_MIN_D +
+                         ", yet hrFillVisible says draw it -- drawArc with two " +
+                         "equal angles is a COMPLETE CIRCLE, not a short arc");
             return false;
         }
     }
-    var some = [63, 100, 130, 200, 250];
-    for (var j = 0; j < some.size(); j++) {
-        if (!StrongRowView.hrFillVisible(some[j])) {
-            logger.error("#110: " + some[j] + " bpm asks for a fill of " +
-                         StrongRowView.hrFillSweep(some[j]) + " degrees and " +
-                         "must be drawn -- the fill is what carries magnitude");
-            return false;
-        }
+    // Non-vacuity, both ways: the bottom of the range must NOT draw a fill (its
+    // sweep is zero) and the top MUST, or the property above is satisfied by a
+    // function that never draws anything.
+    if (StrongRowView.hrFillVisible($.HR_DISP_LO)) {
+        logger.error("#110: the bottom of the display range has a zero-length " +
+                     "fill and must not be drawn");
+        return false;
+    }
+    if (!StrongRowView.hrFillVisible($.HR_DISP_HI)) {
+        logger.error("#110: the top of the display range must draw a fill -- " +
+                     "the fill is what carries magnitude");
+        return false;
     }
     return true;
 }
