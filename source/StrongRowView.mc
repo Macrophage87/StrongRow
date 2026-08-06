@@ -61,6 +61,15 @@ const RR_INVALID = 0xFFFF;
 // the last RANGE-accepted beat, mLastBeatMs) so a dropout stops polluting avg_rmssd.
 const RR_FRESH_MS = 5000;
 
+// Footer states (#74). Module scope rather than class `hidden const` for the
+// same reason STEP_WORK is passed to rateColour as a boolean: a static cannot
+// resolve an instance member, and footState must be reachable from a (:test).
+const FOOT_NO_ACCEL = 0;   // the accelerometer never came up -- nothing works
+const FOOT_NO_REC   = 1;   // START was pressed and recording did NOT begin
+const FOOT_PAUSED   = 2;
+const FOOT_REC      = 3;
+const FOOT_IDLE     = 4;   // not started yet
+
 class StrongRowView extends Ui.View {
 
     // step types
@@ -951,6 +960,35 @@ class StrongRowView extends Ui.View {
             return Gfx.COLOR_GREEN;                     // in band: hold
         }
         return Gfx.COLOR_WHITE;
+    }
+
+    // Pure: which of the five footer states is showing (#74).
+    //
+    // WHY THIS EXISTS. The footer used to be gated on mStarted alone and never
+    // consulted whether a recording session actually exists. A startSession()
+    // that threw left mSession null while both callers set mStarted = true
+    // regardless, so the watch rendered an ordinary red "REC 12:34 2.10km
+    // 240str" row -- live timer, live distance, live stroke count -- for a row
+    // that would produce no FIT file at all. The athlete finished the piece
+    // believing it recorded. That is the whole of #74, and it is worse than a
+    // crash: a crash is visible.
+    //
+    // Extracted as a pure static because startSession() itself is NOT reachable
+    // from a (:test) (CoreFieldGateTest.mc:10-12) while this decision is -- the
+    // same seam rateColour and coreFieldsWanted use.
+    //
+    // ORDER IS LOAD-BEARING. recFailed is tested before paused because in the
+    // failure state mPaused is whatever the previous session left behind, and a
+    // stale "PAUSED" would hide the failure behind a plausible-looking state.
+    // sensorOk stays first: with no accelerometer nothing downstream is true.
+    //
+    // Colour and layout only -- never a tone, vibration or flash (#114).
+    static function footState(sensorOk, paused, started, recFailed) {
+        if (!sensorOk)  { return $.FOOT_NO_ACCEL; }
+        if (recFailed)  { return $.FOOT_NO_REC; }
+        if (paused)     { return $.FOOT_PAUSED; }
+        if (started)    { return $.FOOT_REC; }
+        return $.FOOT_IDLE;
     }
 
     // ----------------- R-R / HRV state model (epic #59) ---------------------
