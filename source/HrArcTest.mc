@@ -1166,3 +1166,28 @@ class HrProbe extends StrongRowView {
     }
     return true;
 }
+
+// -- #108: the sweep's shape -----------------------------------------------------
+
+// The sweep is SYMMETRIC about 9 o'clock, which is 180 degrees in drawArc's
+// convention. Green in every epoch: 158/202 and #108's 152/208 both centre on
+// 180.
+//
+// It is pinned because every clearance measurement behind the constants assumes
+// it. The arc's extreme pixels sit at the two sweep ENDS, and the model that
+// placed them -- x = cx - rTkIn*cos(S), |dy| = rHd1*sin(S) -- has a single S
+// only while the two ends are equidistant from horizontal. An asymmetric sweep
+// would leave every recorded margin describing a shape the code no longer
+// draws, silently and in whichever direction the edit happened to go.
+(:test) function test_hr_sweepIsSymmetricAboutNineOclock(logger) {
+    var sum = $.HR_ARC_TOP + $.HR_ARC_BOT;
+    if (sum != 360) {
+        logger.error("#108: the sweep must stay symmetric about 9 o'clock, so " +
+                     "HR_ARC_TOP + HR_ARC_BOT must be 360; got " +
+                     $.HR_ARC_TOP + " + " + $.HR_ARC_BOT + " = " + sum +
+                     ". Every clearance measured for this arc assumes one " +
+                     "half-sweep, not two");
+        return false;
+    }
+    return true;
+}

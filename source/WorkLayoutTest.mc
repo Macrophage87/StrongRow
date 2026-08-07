@@ -198,3 +198,151 @@ function wlRender(p) {
     }
     return true;
 }
+
+// -- c1: green pins on the new seam --------------------------------------------
+// Green from the commit that introduces the statics onward. They are the anchor
+// for the red differentials that follow: without them a "fix" that made
+// workLeftSec return zero, or that dropped the caption entirely, would satisfy
+// every red case while being strictly worse than the defect.
+
+// The arithmetic, on a shape that has all four ingredients: a current step with
+// time on it, future steps that carry :dur, and future steps that do not.
+(:test) function test_lay_workLeftAddsFutureDurations(logger) {
+    var steps = [ { :dur => 240 }, { :dur => 120 }, { :dur => 240 }, {} ];
+    var got = StrongRowView.workLeftSec(steps, 0, 100.0);
+    if (got != 460.0) {
+        logger.error("#108: work-left must be the current step's remainder " +
+                     "plus every future :dur -- 100 + 120 + 240 = 460; got " + got);
+        return false;
+    }
+    return true;
+}
+
+// buildWorkout attaches :dur to STEP_WORK and STEP_REST only; warm-up, gates,
+// cool-down and done carry none. A step without the key contributes ZERO, which
+// is the whole reason this figure is a lower bound rather than a session total.
+(:test) function test_lay_workLeftSkipsStepsWithNoDuration(logger) {
+    var steps = [ { :dur => 240 }, {}, { :dur => 120 }, {}, {} ];
+    var got = StrongRowView.workLeftSec(steps, 0, 0.0);
+    if (got != 120.0) {
+        logger.error("#108: steps with no :dur key contribute zero -- gates, " +
+                     "warm-up and cool-down end on a user press, so they are " +
+                     "not clocks. Expected 120; got " + got);
+        return false;
+    }
+    return true;
+}
+
+// #108's acceptance list asks for this reading to be VERIFIED as intended
+// rather than discovered as a bug: standing on a gate, the current-step term is
+// zero (stepRemaining() returns 0.0 for a step with no :dur), so the figure is
+// exactly the future sum. Those steps have no clock to count down, so there is
+// nothing of them to include.
+(:test) function test_lay_workLeftOnAGateIsTheFutureSumOnly(logger) {
+    var steps = [ { :dur => 240 }, {}, { :dur => 180 }, { :dur => 60 } ];
+    var got = StrongRowView.workLeftSec(steps, 1, 0.0);
+    if (got != 240.0) {
+        logger.error("#108: on a step with no :dur the current-step term is " +
+                     "zero and the figure is the future sum, 180 + 60 = 240; " +
+                     "got " + got);
+        return false;
+    }
+    return true;
+}
+
+// The last step has nothing after it, so the sum is the current remainder
+// alone. Guards the loop bound: `i = idx` instead of `i = idx + 1` would
+// double-count the current step, and every other case here would stay green.
+(:test) function test_lay_workLeftNeverDoubleCountsTheCurrentStep(logger) {
+    var steps = [ { :dur => 240 }, { :dur => 120 } ];
+    var last = StrongRowView.workLeftSec(steps, 1, 55.0);
+    if (last != 55.0) {
+        logger.error("#108: on the final step the figure is the current " +
+                     "remainder alone; got " + last + " (want 55.0)");
+        return false;
+    }
+    var first = StrongRowView.workLeftSec(steps, 0, 240.0);
+    if (first != 360.0) {
+        logger.error("#108: the current step's own :dur must not be added on " +
+                     "top of its remainder -- 240 + 120 = 360, not 600; got " +
+                     first);
+        return false;
+    }
+    return true;
+}
+
+// #108's honesty criterion, as a test rather than a promise. Gates carry no
+// :dur, so the figure is a lower bound; "session", "total" and "remaining"
+// would each make it read as a true session total, which is the one thing it
+// provably is not.
+(:test) function test_lay_workLeftCaptionIsAnHonestLowerBound(logger) {
+    var s = StrongRowView.workLeftCaption("18:20");
+    if (s.find("work left") == null) {
+        logger.error("#108: the caption must contain 'work left' -- it is the " +
+                     "honesty qualifier, and a bare figure fails the " +
+                     "criterion. Got '" + s + "'");
+        return false;
+    }
+    if (s.find("18:20") == null) {
+        logger.error("#108: the caption must carry the figure it captions; " +
+                     "got '" + s + "'");
+        return false;
+    }
+    var banned = [ "session", "total", "remaining" ];
+    for (var i = 0; i < banned.size(); i++) {
+        if (s.find(banned[i]) != null) {
+            logger.error("#108: the caption must not contain '" + banned[i] +
+                         "' -- gates carry no :dur, so this figure is a LOWER " +
+                         "BOUND and that word would present it as a session " +
+                         "total. Got '" + s + "'");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The strip removes the REC footer from the work view and that cost is
+// accepted. A HARD FAILURE is not part of the bargain.
+//
+// NO_ACCEL is #108's own acceptance criterion. NO_REC is a listed departure
+// from its element table, argued at the static: it is reachable during work
+// through an unconfirmed resume, and it is exactly #74 -- a row that looks like
+// it is recording and produces no FIT file.
+(:test) function test_lay_workFooterSurvivesForHardFailuresOnly(logger) {
+    var keep = [ $.FOOT_NO_ACCEL, $.FOOT_NO_REC ];
+    for (var i = 0; i < keep.size(); i++) {
+        if (!StrongRowView.workFootVisible(true, keep[i])) {
+            logger.error("#108: footer state " + keep[i] + " is a HARD FAILURE " +
+                         "and must stay visible during work -- with no " +
+                         "accelerometer the stroke rate is meaningless, and a " +
+                         "failed recording is #74");
+            return false;
+        }
+    }
+    var drop = [ $.FOOT_PAUSED, $.FOOT_REC, $.FOOT_IDLE ];
+    for (var j = 0; j < drop.size(); j++) {
+        if (StrongRowView.workFootVisible(true, drop[j])) {
+            logger.error("#108: footer state " + drop[j] + " must NOT be drawn " +
+                         "during work -- REC is the element the strip removes, " +
+                         "PAUSED is already the title, and IDLE cannot occur " +
+                         "inside a step");
+            return false;
+        }
+    }
+    return true;
+}
+
+// Off the work view nothing changes: every state still draws.
+(:test) function test_lay_footerIsUntouchedOffTheWorkView(logger) {
+    var all = [ $.FOOT_NO_ACCEL, $.FOOT_NO_REC, $.FOOT_PAUSED, $.FOOT_REC,
+                $.FOOT_IDLE ];
+    for (var i = 0; i < all.size(); i++) {
+        if (!StrongRowView.workFootVisible(false, all[i])) {
+            logger.error("#108: REST, GATE, WARM, COOL, DONE, the pre-START " +
+                         "screen and free row keep the footer in every state; " +
+                         "state " + all[i] + " was suppressed");
+            return false;
+        }
+    }
+    return true;
+}

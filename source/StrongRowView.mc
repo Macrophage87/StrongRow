@@ -1292,6 +1292,106 @@ class StrongRowView extends Ui.View {
         return $.FOOT_IDLE;
     }
 
+    // ============ #108: the work view's own decisions ========================
+    // The layout split itself needs no new state -- onUpdate already branches
+    // on the step type -- so what is extracted here is the two things the split
+    // ADDS: the work-remaining arithmetic and the rule that decides which
+    // footer states survive the strip. Both are class-scope statics for the
+    // same reason footState, rateColour and the setAvg* family are: the call
+    // site needs a Dc and a fully-built view, and no (:test) can supply either.
+
+    // Pure: seconds of WORK and REST still to come, including whatever is left
+    // of the current step.
+    //
+    // A LOWER BOUND. buildWorkout attaches :dur to exactly two step types --
+    // STEP_WORK (mWorkSec) and STEP_REST (mRestSec). STEP_WARM, STEP_GATE,
+    // STEP_COOL and STEP_DONE end on a USER PRESS: onPrimary advances them, and
+    // onTick's auto-advance fires only for WORK and REST. A gate can therefore
+    // sit unfinished for an unbounded time, so TOTAL SESSION TIME IS NOT
+    // COMPUTABLE and this figure must never be presented as one. That is what
+    // workLeftCaption below exists to enforce.
+    //
+    // Three further undercounts, all deliberate and all covered by the caption:
+    //   1. PAUSE. togglePause shifts mStepStartMs forward by the paused span,
+    //      so stepRemaining() is pause-corrected -- but the pause still adds
+    //      wall-clock time to the finish that this cannot know about.
+    //   2. GATES, as above.
+    //   3. OVERRUN. stepRemaining() clamps at 0.0, and the auto-advance runs
+    //      only while mStarted && !mPaused.
+    //
+    // `curRemain` is a PARAMETER rather than a call to stepRemaining(), and
+    // that is forced rather than stylistic: stepRemaining() reads
+    // System.getTimer(), which would make every case here time-dependent --
+    // the failure mode HrProbe.nowMs was introduced for.
+    //
+    // Steps with no :dur key contribute zero. During WARM, GATE and COOL the
+    // current-step term is itself zero (stepRemaining() returns 0.0 for a step
+    // with no :dur), so the figure there is the future sum with no current-step
+    // term. That is the intended reading, not a bug: those steps have no clock
+    // to count down, so there is nothing of them to include.
+    //
+    // ABOVE 60 MINUTES, decided rather than discovered. mmss formats an
+    // unbounded minute count with no hour rollover, and loadSettings enforces
+    // only the LOWER bounds settings.xml declares (that is #21). At the
+    // declared maxima -- 30 intervals of 60 minutes with 29 rests of 60 --
+    // this returns 212400 s and the caption reads "3540:00 work left". That is
+    // 17 characters at FONT_XTINY, which MEASURES at 238 px on the four 454 px
+    // devices against a 375 px chord at this row, so it fits; the row it
+    // occupies is the one the pace numerals vacate, and the widest string that
+    // row carries today is wider still. No rollover is introduced.
+    static function workLeftSec(steps, idx, curRemain) {
+        var t = curRemain;
+        if (steps == null) { return t; }
+        for (var i = idx + 1; i < steps.size(); i++) {
+            var s = steps[i];
+            if (s != null && s.hasKey(:dur)) { t += s[:dur]; }
+        }
+        return t;
+    }
+
+    // Pure: the caption that goes with that figure.
+    //
+    // "work left", and NOT "session", "total" or "remaining" standing alone --
+    // #108's acceptance criterion, and an honesty requirement rather than a
+    // style one. Gates carry no :dur, so the number is a lower bound; any of
+    // those three words would make it read as a true session total, which is
+    // the one thing it provably is not.
+    //
+    // Its own function so the wording is pinnable. A bare figure with no
+    // caption fails the criterion, and so does a caption edited later.
+    static function workLeftCaption(mmssStr) {
+        return mmssStr + " work left";
+    }
+
+    // Pure: does this screen draw the footer at all?
+    //
+    // #108 removes the REC footer from the work view, and the cost is accepted
+    // there rather than glossed: mid-interval there is no recording assurance
+    // on the screen at all. What must NOT go with it is a HARD FAILURE.
+    //
+    // FOOT_NO_ACCEL is #108's own acceptance criterion. With no accelerometer
+    // the stroke rate is meaningless, so the one numeral the stripped work view
+    // exists to show is a lie, and that has to stay visible.
+    //
+    // FOOT_NO_REC IS KEPT TOO, and this is a listed departure from #108's
+    // element table rather than a quiet one. #108 enumerates "the REC footer"
+    // and does not mention NOT RECORDING. But NO_REC is reachable during work
+    // -- togglePause sets mRecFailed from a resume that isRecording() could not
+    // confirm -- and it is precisely #74's defect: a row that looks like it is
+    // recording and produces no FIT file. Suppressing it on the screen the
+    // athlete spends most of the session on would re-create #74 in a new place,
+    // which is a worse outcome than the one element of scope creep.
+    //
+    // The other three states need no exception. PAUSED is already surfaced
+    // independently as the title, REC is the part #108 accepts losing, and IDLE
+    // cannot occur inside a step (mStarted is what puts the view in one).
+    //
+    // Colour and layout only -- never a tone, vibration or flash (#114).
+    static function workFootVisible(isWork, fs) {
+        if (!isWork) { return true; }
+        return fs == $.FOOT_NO_ACCEL || fs == $.FOOT_NO_REC;
+    }
+
     // ============ #110: the heart-rate arc, as pure decisions ================
     // Every judgement the left-edge arc makes lives here, as a class-scope
     // static taking plain numbers and booleans -- the same seam filterRr /
