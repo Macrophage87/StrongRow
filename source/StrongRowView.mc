@@ -1691,7 +1691,22 @@ class StrongRowView extends Ui.View {
                 mPIdx = (mPIdx + 1) % NPER;
                 if (mPCount < NPER) { mPCount++; }
                 mLastPeriod = p;
-                mStrokeCount++;
+                // #109: the counter stops while paused, so that all FOUR raw
+                // totals treat a pause the same way. Seconds exclude it (via
+                // the pause-corrected mStepStartMs), distance excludes it (via
+                // mSetPausedDist) and the HR fold is gated on !mPaused -- and an
+                // earlier revision left this one running, which did not remove
+                // the error, it INVERTED it. The accelerometer listener runs
+                // independently of recording, so drinking, wiping down or
+                // gesturing during a pause registers as strokes: 63 real
+                // strokes plus ten such movements latched 73 over a 240 s
+                // denominator, 18.25 spm against a true 15.75. A 16%
+                // OVER-report, across the default 16-18 target band.
+                //
+                // mRate and the DSP ring above are deliberately left running:
+                // they are the live estimator, and freezing them would make the
+                // rate numeral lie about the present rather than the interval.
+                if (!mPaused) { mStrokeCount++; }
                 recomputeRate();
             }
         }
@@ -2998,7 +3013,16 @@ class StrongRowView extends Ui.View {
             // used to carry it stands down while the grid is up.
             title = mLastSetValid ? ("REST - SET " + mLastSetNum.toString()) : "REST";
         }
-        else if (type == STEP_GATE) { title = "READY"; }
+        else if (type == STEP_GATE) {
+            // #109: the sub row that said "to start WORK n" stands down while
+            // the grid is up, so the number rides here instead.
+            // ABBREVIATED, and measured: "READY - WORK 30" -- reachable, since
+            // numIntervals maxes at 30 -- overruns the round display's chord at
+            // the title row by 7 px on fenix6spro and 29 px on the 416/454
+            // devices. "READY - W30" clears it by 16.2 px at worst.
+            title = mLastSetValid ? ("READY - W" + st[:nextn].toString())
+                                  : "READY";
+        }
         else if (type == STEP_COOL) { title = "COOL DOWN"; }
         else                        { title = "DONE"; }
         dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
@@ -3024,20 +3048,30 @@ class StrongRowView extends Ui.View {
 
         var dispRate = outputRate();
         var col = rateColour(type == STEP_WORK, dispRate, mTgtLo, mTgtHi);
-        // #109: once a work interval has been completed, the grid IS the
-        // screen on every step that is not itself work. There is no stroke to
-        // correct outside a work step, so the live numeral earns nothing there,
-        // while the interval just finished is the thing worth reading.
-        // Counting continues unchanged -- only the display changes.
+        // #109: on the RECOVERY screens the grid IS the screen -- there is no
+        // stroke to correct, so the live numeral earns nothing, while the
+        // interval just finished is the thing worth reading.
         //
-        // NOT gated on STEP_REST alone, which an earlier revision did and which
-        // is wrong twice over. `restMinutes = 0` is a legal, supported setting
-        // (loadSettings clamps it to >= 0 and buildWorkout emits a REST step
-        // only when it is > 0), so a rest-free workout is WORK/GATE/WORK/GATE
-        // and the grid would NEVER have rendered. And the last work interval is
-        // followed by COOL or DONE rather than REST, so the hardest interval of
-        // the session was the one whose summary the athlete could not see.
-        if (type != STEP_WORK && mLastSetValid) {
+        // REST **AND GATE**, which is what #109's acceptance criteria asked for
+        // and what an earlier revision narrowed to REST alone. `restMinutes = 0`
+        // is legal (loadSettings clamps it to >= 0, buildWorkout emits a REST
+        // step only when it is > 0), so a rest-free workout is WORK/GATE/WORK
+        // and a REST-only gate would never have rendered the grid at all.
+        //
+        // NOT every non-WORK step, which the revision after that over-corrected
+        // to. COOL DOWN is ACTIVE ROWING -- it gets its own lap and step clock,
+        // its instruction is "START when docked", and warmupCooldown defaults
+        // to true -- so replacing its live rate, pace and m/str with a frozen
+        // summary of an interval that already ended is a downgrade on the
+        // default path. WARM is active for the same reason and precedes any
+        // latch anyway.
+        //
+        // DONE is left showing the live values too: its band is laid out for
+        // the sub row that tells the athlete to press BACK, and losing that is
+        // worse than gaining a summary. Showing the final interval there is
+        // worth doing and needs its own row positions -- filed rather than
+        // smuggled in here.
+        if ((type == STEP_REST || type == STEP_GATE) && mLastSetValid) {
             drawSetGrid(dc, w, h);
         } else {
             drawRate(dc, w, h, col);
@@ -3054,9 +3088,15 @@ class StrongRowView extends Ui.View {
         else                        { sub = "target " + mTgtLo.toString() + "-" + mTgtHi.toString() + " spm"; }
         dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
         // #109: the grid needs the whole band between the countdown and the
-        // footer, so the sub row stands down whenever the grid is up. Its
-        // content is not lost -- the set number moves into the title.
-        if (!(type != STEP_WORK && mLastSetValid)) {
+        // footer, so the sub row stands down on exactly the two screens the
+        // grid occupies -- and NOWHERE else. An earlier revision suppressed it
+        // on every non-WORK step, which silently deleted "START when docked"
+        // from COOL and "BACK to save" from DONE. The second is the only text
+        // on the app telling the athlete how to write the FIT.
+        //
+        // What the two suppressed rows carried is preserved in their titles
+        // rather than lost: REST's set number and GATE's next-interval number.
+        if (!((type == STEP_REST || type == STEP_GATE) && mLastSetValid)) {
             dc.drawText(w / 2, h * 0.78, Gfx.FONT_XTINY, sub, Gfx.TEXT_JUSTIFY_CENTER);
         }
 
