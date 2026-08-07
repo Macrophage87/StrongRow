@@ -971,3 +971,108 @@ class HrProbe extends StrongRowView {
     }
     return true;
 }
+
+// -- The staleness gate ---------------------------------------------------------
+// THE COVERAGE HOLE THIS CLOSES. Every other "HR absent" configuration in this
+// file and in HrLayoutTest.mc sets bpm = 0, so all of them fail the presence
+// VALUE as well as the presence FLAG. That left the freshness half of
+// hrHave(mHrEver, mLastHrMs, now, HR_FRESH_MS) unpinned at the draw site:
+// deleting the timestamp term entirely kept the whole suite green.
+//
+// The state below is the one that actually happens in the boat -- the strap was
+// working, so mHrEver is true and mHrBpm holds a real number, and then the
+// signal dropped. If that renders as a live reading, the athlete is pacing off
+// a heart rate from minutes ago. It must render as no data, which is the
+// #86/#107 failure class stated for this arc.
+(:test) function test_hr_staleReadingRendersAsNoData(logger) {
+    var p = new HrProbe();
+    p.enterWorkStep(false);
+    // Non-zero bpm, ever-seen true, timestamp far outside the freshness window.
+    // Deliberately a BELOW-BAND value: if the gate ever fails open, the arc
+    // renders blue, and blue means "below target" across the whole app.
+    p.setHrState(105, System.getTimer() - (10 * $.HR_FRESH_MS), true);
+    var d = new HrDc(240, 240);
+    p.runUpdate(d);
+    if (d.arcs != 4 || d.lines != 2) {
+        logger.error("a STALE heart rate must render exactly as an absent one " +
+                     "(4 arcs: 3 track segments + the band rail; 2 lines: the " +
+                     "band ticks and no head tick). Got " + d.arcs + " arcs, " +
+                     d.lines + " lines -- a non-zero bpm with an expired " +
+                     "timestamp is being drawn as though it were live");
+        return false;
+    }
+    return true;
+}
+
+// The companion: the SAME bpm, freshly stamped, must render as present. Without
+// this the case above would pass for the wrong reason -- an arc that never drew
+// a fill for 105 bpm under any circumstances would satisfy it too.
+(:test) function test_hr_freshReadingOfTheSameBpmRendersAsPresent(logger) {
+    var p = new HrProbe();
+    p.enterWorkStep(false);
+    p.setHrState(105, System.getTimer(), true);
+    var d = new HrDc(240, 240);
+    p.runUpdate(d);
+    if (d.arcs != 3 || d.lines != 3) {
+        logger.error("a FRESH 105 bpm must render as present (3 arcs: whole " +
+                     "track + band rail + fill; 3 lines: 2 band ticks + the " +
+                     "head tick); got " + d.arcs + " arcs, " + d.lines +
+                     " lines. If this and the stale case agree, the staleness " +
+                     "test above proves nothing");
+        return false;
+    }
+    return true;
+}
+
+// -- The broken track spans its own sweep ---------------------------------------
+// hrTrackSeg used integer division: (202 - 158) / (2*3 - 1) is 44/5, which
+// truncates to 8 rather than 8.8. The three segments then ran [158,166]
+// [174,182] [190,198] and the arc stopped FOUR DEGREES short of its own end,
+// with a gap landing on the shipped default band so the band rail and both its
+// ticks were drawn over empty track -- the exact outcome the three-segment
+// choice exists to avoid.
+//
+// Pinned on the invariant rather than on 8.8, so the case still means something
+// if the sweep or the part count changes: segments and gaps together are
+// 2*parts - 1 equal slices, so they must span the sweep exactly.
+(:test) function test_hr_brokenTrackSpansTheWholeSweep(logger) {
+    var parts = StrongRowView.hrTrackParts(false);
+    var seg   = StrongRowView.hrTrackSeg(parts);
+    var span  = ($.HR_ARC_BOT - $.HR_ARC_TOP) * 1.0;
+    var total = seg * (2 * parts - 1);
+    if (total < span - 0.001 || total > span + 0.001) {
+        logger.error("the " + parts + " segments and " + (parts - 1) +
+                     " gaps must span the sweep exactly: " + (2 * parts - 1) +
+                     " x " + seg + " = " + total + ", expected " + span);
+        return false;
+    }
+    return true;
+}
+
+// The last segment must END on HR_ARC_BOT. This is what the integer version got
+// wrong, and it is a different claim from the one above: a seg that spanned the
+// sweep could still be laid out from the wrong origin.
+(:test) function test_hr_brokenTrackLastSegmentEndsAtTheSweepEnd(logger) {
+    var parts = StrongRowView.hrTrackParts(false);
+    var seg   = StrongRowView.hrTrackSeg(parts);
+    var end   = $.HR_ARC_TOP + (parts - 1) * 2.0 * seg + seg;
+    if (end < $.HR_ARC_BOT - 0.001 || end > $.HR_ARC_BOT + 0.001) {
+        logger.error("the last of " + parts + " segments must end on " +
+                     "HR_ARC_BOT (" + $.HR_ARC_BOT + "); it ends at " + end);
+        return false;
+    }
+    return true;
+}
+
+// A present heart rate draws ONE unbroken segment, so hrTrackSeg must hand back
+// the whole sweep rather than a slice of it.
+(:test) function test_hr_wholeTrackIsTheWholeSweep(logger) {
+    var seg = StrongRowView.hrTrackSeg(StrongRowView.hrTrackParts(true));
+    var span = ($.HR_ARC_BOT - $.HR_ARC_TOP) * 1.0;
+    if (seg < span - 0.001 || seg > span + 0.001) {
+        logger.error("a 1-part track must be the whole sweep " + span +
+                     "; got " + seg);
+        return false;
+    }
+    return true;
+}

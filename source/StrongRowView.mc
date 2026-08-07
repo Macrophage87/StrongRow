@@ -520,8 +520,13 @@ class StrongRowView extends Ui.View {
         }
     }
 
-    // #110: sample the heart rate. UNCONDITIONAL and first, so the arc is live
-    // during STEP_GATE and while paused, not only while recording.
+    // #110: sample the heart rate. UNCONDITIONAL, so the reading is CURRENT the
+    // moment a WORK or REST step resumes rather than a tick stale -- sampling
+    // continues while paused and during every step type, including the ones the
+    // arc is not drawn on.
+    //
+    // (The arc itself is drawn only on STEP_WORK and STEP_REST; see the gate in
+    // onUpdate. Sampling and drawing are deliberately not the same set.)
     //
     // Wrapped in try/catch because this is the only platform call the arc makes
     // and a throw here must not cost the tick everything below it. The
@@ -529,21 +534,32 @@ class StrongRowView extends Ui.View {
     // onLayout deliberately propagates because an app with no tick timer should
     // not run silently, whereas a heart rate is an ornament on two priorities
     // that must keep working without it.
+    //
+    // THE GUARD SPANS THE WHOLE BODY, not just the platform read. sampleHr() is
+    // the FIRST statement of onTick, so a throw anywhere in here skips every
+    // FitContributor setData for that tick -- and record-scope fields LATCH, so
+    // a skipped write silently re-emits the previous value rather than leaving
+    // a gap. A narrower guard would have made the comment above false for the
+    // comparison and the toNumber() conversion, which are exactly the two
+    // operations an unexpected type would throw on.
     hidden function sampleHr() {
-        var bpm = null;
         try {
+            var bpm = null;
             var ai = Activity.getActivityInfo();
             if (ai != null) { bpm = ai.currentHeartRate; }
+            // `bpm > 0` HERE is a validity filter on a READING -- zero bpm is
+            // not a living heart -- and it is emphatically NOT the absence
+            // test. Absence is carried by mHrEver and mLastHrMs, which is the
+            // distinction #110 requires and the one #86 and #107 each got wrong.
+            if (bpm != null && bpm > 0) {
+                // Ordered so the three fields cannot be torn: mHrEver is set
+                // LAST, so hrHave can never see "ever seen" against a stamp
+                // that was not written.
+                mHrBpm    = bpm.toNumber();
+                mLastHrMs = System.getTimer();
+                mHrEver   = true;
+            }
         } catch (e) {}
-        // `bpm > 0` HERE is a validity filter on a READING -- zero bpm is not a
-        // living heart -- and it is emphatically NOT the absence test. Absence
-        // is carried by mHrEver and mLastHrMs, which is the distinction #110
-        // requires and the one #86 and #107 each got wrong.
-        if (bpm != null && bpm > 0) {
-            mHrBpm    = bpm.toNumber();
-            mLastHrMs = System.getTimer();
-            mHrEver   = true;
-        }
     }
 
     function onTick() as Void {
@@ -1123,6 +1139,19 @@ class StrongRowView extends Ui.View {
     // shared hazard, which is worse than a consistent one that is tracked. If
     // #70 is taken, a `(nowMs - lastMs) >= 0` term closes it in both.
     //
+    // SECOND WRAP DIRECTION, and #70's stated scope does NOT close it. The
+    // `lastMs > 0` term reads a LIVE heart rate as absent across the whole
+    // negative half of the counter's cycle: on the same premise used above,
+    // mLastHrMs = System.getTimer() is itself negative there, so the term is
+    // false however fresh the reading is, and hrHave returns false on every
+    // subsequent frame. A `>= 0` difference term does not help -- the guard
+    // that fails is the timestamp's own sign.
+    //
+    // Left as-is on purpose. It fails to NO-DATA, which is the correct
+    // direction to fail and is visually distinct; the opposite error would
+    // render a stale reading as live. Recorded here so #70 sees both
+    // directions rather than only the one it was filed for.
+    //
     // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
     // freshness is about R-R batch arrival and this is about a bpm read. Two
     // signals that happen to share a shape today and must be free to diverge.
@@ -1208,9 +1237,20 @@ class StrongRowView extends Ui.View {
     // a mark nobody notices. One degree is not zero but is not drawable either,
     // so the floor is the same HR_ARC_MIN_D the band marker uses.
     //
-    // The readings this suppresses are at the very bottom of the display range,
-    // where the head tick still marks the position -- so nothing is lost except
-    // an arc that could not have been seen.
+    // WHAT THIS COSTS, stated rather than waved past. An earlier revision said
+    // "nothing is lost except an arc that could not have been seen". That is
+    // false: the fill is the SOLE carrier of the blue / green / red zone
+    // colour, so suppressing it suppresses the colour too. At the shipping
+    // constants the first heart rate with a visible fill is 83 bpm --
+    // MEASURED, by walking hrAngle over 0..200 -- so every reading from 0
+    // through 82 renders with no zone colour at all.
+    //
+    // Accepted, for two reasons. The head tick still marks the position, so
+    // the reading is not invisible, only uncoloured. And the suppressed band
+    // is "far below target" for any plausible target, where the colour would
+    // be telling the athlete something the numeral and the tick position
+    // already say. It is worth knowing because the case where blue would
+    // matter most is exactly the case that does not render it.
     //
     // Note what this does NOT decide: whether there is a heart rate at all.
     // That is hrHave's job, and drawHrArc conjoins the two.
@@ -1237,7 +1277,7 @@ class StrongRowView extends Ui.View {
     // bpm instead would miss both.
     //
     // Widening is symmetric about the midpoint, then pushed back inside the
-    // sweep if it overran an end. With a 60-degree sweep and a 2-degree floor
+    // sweep if it overran an end. With a 44-degree sweep and a 2-degree floor
     // it cannot overrun both, so the second correction cannot undo the first.
     static function hrBandArc(lo, hi) {
         var a1 = hrAngle(hi);
@@ -1287,6 +1327,27 @@ class StrongRowView extends Ui.View {
     // own say "there is no heart rate".
     static function hrTrackParts(hasHr) {
         return hasHr ? 1 : 3;
+    }
+
+    // Pure: the width in degrees of one drawn segment of the broken track.
+    //
+    // FLOAT division, deliberately. `parts` segments separated by `parts - 1`
+    // gaps of the same width is `2 * parts - 1` equal slices of the sweep, and
+    // at the shipping constants that is 44 / 5. Computed in INTEGER arithmetic
+    // that truncates to 8, which drew [158,166] [174,182] [190,198] and left a
+    // FOUR-DEGREE TAIL WITH NO TRACK AT ALL -- the arc simply stopped short of
+    // its own end. 44 / 5.0 = 8.8 spans the sweep exactly, ending the last
+    // segment on HR_ARC_BOT.
+    //
+    // The MIN_D floor is kept for the degenerate case where a future `parts`
+    // would slice the sweep below the minimum drawable arc; when it fires the
+    // segments no longer span the sweep, which is correct -- a floor that
+    // stretched them would be a lie about how many parts were drawn.
+    static function hrTrackSeg(parts) {
+        if (parts <= 1) { return ($.HR_ARC_BOT - $.HR_ARC_TOP) * 1.0; }
+        var seg = ($.HR_ARC_BOT - $.HR_ARC_TOP) / (2.0 * parts - 1.0);
+        if (seg < $.HR_ARC_MIN_D) { seg = $.HR_ARC_MIN_D * 1.0; }
+        return seg;
     }
 
     // Pure: the heart-rate band, swapped if inverted and clamped to the arc's
@@ -2082,10 +2143,25 @@ class StrongRowView extends Ui.View {
     // rate in target?" -- answered in peripheral vision while the eye is on the
     // stroke rate.
     //
-    // THREE CHANNELS, and only one of them is colour:
+    // THREE CHANNELS, and only one of them is HUE:
     //
     //   1. the FILL length carries MAGNITUDE. Colour alone cannot distinguish
-    //      105 bpm from 138 bpm when both are below the band;
+    //      105 bpm from 138 bpm when both are below the band.
+    //
+    //      STATED CORRECTLY, because an earlier revision of this comment
+    //      overclaimed it as "colour-independent": the fill is drawn at the
+    //      SAME radius and the SAME pen width as the track, with no
+    //      setPenWidth between them, so it is exactly coincident with the
+    //      track and has no geometric edge of its own. Its extent is read as a
+    //      CHROMATIC boundary against the track, not as a shape.
+    //
+    //      That is still sound, and the reason is luminance rather than hue:
+    //      green 15.30:1, blue 8.19:1 and red 5.25:1 all sit against a track
+    //      of 2.82:1, so the boundary survives deuteranopia and greyscale. But
+    //      it is a LUMINANCE channel, not a geometric one, and anything
+    //      copying this construction -- #123's distance-per-stroke arc will --
+    //      inherits that constraint: whatever marks a position on this rail
+    //      must contrast with the FILLED track as well as the empty one;
     //   2. the BAND is drawn ON THE TRACK -- a light rail inside the track
     //      spanning exactly the target band, closed by a radial tick at each
     //      end that crosses both the rail and the track. This is what carries
@@ -2182,12 +2258,19 @@ class StrongRowView extends Ui.View {
             // A BROKEN track is the no-data state's own channel: `parts`
             // segments separated by gaps of the same width. Nothing else in
             // this widget draws a discontinuous arc.
-            var seg = ($.HR_ARC_BOT - $.HR_ARC_TOP) / (2 * parts - 1);
-            if (seg < $.HR_ARC_MIN_D) { seg = $.HR_ARC_MIN_D; }
+            var seg = hrTrackSeg(parts);
             for (var i = 0; i < parts; i++) {
-                var a0 = $.HR_ARC_TOP + i * 2 * seg;
-                if (a0 + seg > $.HR_ARC_BOT) { break; }
-                dc.drawArc(cx, cy, r, Gfx.ARC_COUNTER_CLOCKWISE, a0, a0 + seg);
+                var a0 = $.HR_ARC_TOP + i * 2.0 * seg;
+                if (a0 >= $.HR_ARC_BOT) { break; }
+                var a1 = a0 + seg;
+                // CLAMP rather than break. The last segment ends on HR_ARC_BOT
+                // by construction, and float rounding can put it a hair past;
+                // the `if (a0 + seg > BOT) break` this replaces would then have
+                // dropped that segment entirely, silently drawing two parts
+                // where three were asked for.
+                if (a1 > $.HR_ARC_BOT) { a1 = $.HR_ARC_BOT * 1.0; }
+                dc.drawArc(cx, cy, r, Gfx.ARC_COUNTER_CLOCKWISE,
+                           a0.toNumber(), a1.toNumber());
             }
         }
 
@@ -2252,7 +2335,7 @@ class StrongRowView extends Ui.View {
         var st = mStarted ? mSteps[mStepIdx] : null;
         var type = (st != null) ? st[:type] : -1;
 
-        // #110: the heart-rate arc, live during WORK, REST and GATE and nowhere
+        // #110: the heart-rate arc, drawn during WORK and REST and nowhere
         // else. Drawn BEFORE every text element on purpose -- it sits in a
         // left-edge annulus no text occupies, but if that assumption is ever
         // wrong the text wins rather than the geometry.
