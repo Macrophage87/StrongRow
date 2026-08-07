@@ -61,6 +61,17 @@ function wlProbeAt(kind) {
     return p;
 }
 
+// How many of them do. Needed where presence cannot separate two elements that
+// legitimately share a word -- the title and the footer both say PAUSED.
+function wlCount(d, needle) {
+    var n = 0;
+    for (var i = 0; i < d.texts.size(); i++) {
+        var s = d.texts[i];
+        if (s.find(needle) != null) { n += 1; }
+    }
+    return n;
+}
+
 function wlRender(p) {
     var ds = System.getDeviceSettings();
     var d = new HrDc(ds.screenWidth, ds.screenHeight);
@@ -343,6 +354,166 @@ function wlRender(p) {
                          "state " + all[i] + " was suppressed");
             return false;
         }
+    }
+    return true;
+}
+
+// -- c2: the differentials, and two guards that ride with them -----------------
+// Seven cases. FIVE are RED against the commit that adds them and green against
+// the one that splits the layout; the section is labelled honestly rather than
+// generously, because the other TWO are green in BOTH epochs:
+//
+//   test_lay_workViewStillShowsNoAccel
+//   test_lay_workViewStillShowsAFailedRecording
+//
+// Those two are not differentials. Today the footer is drawn unconditionally,
+// so they pass before the change; they exist to red if the strip goes TOO FAR
+// and takes the hard failures with it, which is the failure the differentials
+// above them make possible. They sit here rather than in the c1 section because
+// they are only meaningful next to the case that removes the footer, and
+// nothing is gained by scattering the pair.
+//
+// Together they are the whole of #108's acceptance list that a font-free case
+// can see: WHICH elements the work view draws. What they cannot see -- whether
+// the result is more legible at a glance, and whether anything overlaps -- is a
+// wrist judgement and a font measurement respectively, and neither is claimed
+// anywhere in this file.
+
+// The maintainer's constraint, in their words: "the work interval #, speed and
+// distance are nice, but I have a fraction of a second to glance between
+// strokes and want the cleanest info. The other ones are useful at rest breaks."
+//
+// Three groups come off the work view and each gets its own case, so a partial
+// strip names which half it did.
+(:test) function test_lay_workViewDropsTheStatusPips(logger) {
+    var d = wlRender(wlProbeAt(new HrProbe().kindWork()));
+    var pips = [ "GPS", "RR", "CT" ];
+    for (var i = 0; i < pips.size(); i++) {
+        if (wlDrew(d, pips[i])) {
+            logger.error("#108: the work view must not draw the " + pips[i] +
+                         " status pip. It competes with the two elements the " +
+                         "rower is actually reading, and #98 is open on the CT " +
+                         "pip reporting pod freshness rather than whether CORE " +
+                         "data is reaching the file. Drew:\n" + d.textLog());
+            return false;
+        }
+    }
+    return true;
+}
+
+(:test) function test_lay_workViewDropsThePaceRow(logger) {
+    var d = wlRender(wlProbeAt(new HrProbe().kindWork()));
+    if (wlDrew(d, "/500m")) {
+        logger.error("#108: the work view must not draw the pace and " +
+                     "metres-per-stroke row -- those are rest-break numbers. " +
+                     "Removing it is also what buys the room the widened arc " +
+                     "sweep needs. Drew:\n" + d.textLog());
+        return false;
+    }
+    return true;
+}
+
+// The REC footer goes, and the cost is real: mid-interval there is no recording
+// assurance on the screen. Accepted as a decision on #108, not an oversight,
+// and the two cases after this one are what keeps the acceptance narrow.
+(:test) function test_lay_workViewDropsTheRecFooter(logger) {
+    var d = wlRender(wlProbeAt(new HrProbe().kindWork()));
+    if (wlDrew(d, "REC ")) {
+        logger.error("#108: the work view must not draw the REC footer. Drew:\n" +
+                     d.textLog());
+        return false;
+    }
+    return true;
+}
+
+// #108 section B. The figure is the sum of remaining :dur over the current and
+// all future steps, and it MUST carry its caption -- a bare number would read
+// as a session total, which it provably is not.
+(:test) function test_lay_workViewShowsTheLabelledWorkLeftFigure(logger) {
+    var d = wlRender(wlProbeAt(new HrProbe().kindWork()));
+    if (!wlDrew(d, "work left")) {
+        logger.error("#108: the work view must draw the work-left figure WITH " +
+                     "its caption. Warm-up, gates and cool-down carry no :dur, " +
+                     "so the number is a lower bound and the words 'work left' " +
+                     "are what say so. Drew:\n" + d.textLog());
+        return false;
+    }
+    var banned = [ "session", " total", "remaining" ];
+    for (var i = 0; i < banned.size(); i++) {
+        if (wlDrew(d, banned[i])) {
+            logger.error("#108: the work view must not present that figure as " +
+                         "'" + banned[i] + "' -- total session time is not " +
+                         "computable, because a gate can sit unfinished for an " +
+                         "unbounded time. Drew:\n" + d.textLog());
+            return false;
+        }
+    }
+    return true;
+}
+
+// #108's explicit exception, and the reason it is explicit: with no
+// accelerometer the stroke rate is meaningless, so the one numeral the stripped
+// work view exists to show is a lie. A hard failure is not part of the bargain
+// the REC footer's removal struck.
+(:test) function test_lay_workViewStillShowsNoAccel(logger) {
+    var p = wlProbeAt(new HrProbe().kindWork());
+    p.setSensorOk(false);
+    var d = wlRender(p);
+    if (!wlDrew(d, "NO ACCEL")) {
+        logger.error("#108: NO ACCEL must stay visible during work. It is a " +
+                     "hard failure -- with no accelerometer the stroke rate " +
+                     "this screen is built around means nothing. Drew:\n" +
+                     d.textLog());
+        return false;
+    }
+    return true;
+}
+
+// The second hard failure, and a listed departure from #108's element table
+// argued at StrongRowView.workFootVisible. It is reachable during work through
+// a resume that isRecording() could not confirm, and it is exactly #74: a row
+// that looks like it is recording and produces no FIT file. Suppressing it on
+// the screen the athlete spends most of the session on would re-create that
+// issue in a new place.
+(:test) function test_lay_workViewStillShowsAFailedRecording(logger) {
+    var p = wlProbeAt(new HrProbe().kindWork());
+    p.setRecFailed(true);
+    var d = wlRender(p);
+    if (!wlDrew(d, "NOT RECORDING")) {
+        logger.error("#108/#74: a failed recording must stay visible during " +
+                     "work. mRecFailed is raised by a resume isRecording() " +
+                     "could not confirm, and a row that looks like it is " +
+                     "recording and writes no FIT file is worse than a crash, " +
+                     "because a crash is visible. Drew:\n" + d.textLog());
+        return false;
+    }
+    return true;
+}
+
+// PAUSED needs no footer of its own during work: the title already carries it,
+// which is why #108 lists only NO ACCEL as the state that must survive. This is
+// the case that keeps the two hard-failure cases above from being satisfied by
+// simply restoring the whole footer.
+(:test) function test_lay_pausedWorkViewDrawsNoFooterButKeepsTheTitle(logger) {
+    var p = new HrProbe();
+    p.driveStrokes();
+    p.setSensorOk(true);
+    p.enterStep(p.kindWork(), true);
+    p.setNarrowSession();
+    var d = wlRender(p);
+    // COUNTED, not merely detected. drawFoot's paused branch renders
+    // "PAUSED  <n>str" and the title renders "PAUSED", so both contain the
+    // word and a presence test cannot tell one from two. Exactly one is the
+    // whole assertion: the title survives, the footer does not.
+    var n = wlCount(d, "PAUSED");
+    if (n != 1) {
+        logger.error("#108: a paused work step must draw the word PAUSED " +
+                     "exactly once -- as the TITLE. The footer's own paused " +
+                     "line must not come back: PAUSED is already surfaced by " +
+                     "the title, so restoring the footer for it would undo the " +
+                     "strip for a state the rower is not rowing in. Counted " +
+                     n + ". Drew:\n" + d.textLog());
+        return false;
     }
     return true;
 }

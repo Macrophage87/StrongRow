@@ -245,6 +245,13 @@ class HrProbe extends StrongRowView {
     // must stay visible during work (#108), so it is a layout case.
     function setSensorOk(ok) { mSensorOk = ok; }
 
+    // #108's OTHER hard failure. FOOT_NO_REC is reachable during a work step --
+    // togglePause raises mRecFailed when a resume cannot be confirmed by
+    // isRecording() -- and no other seam in this file can put the view there,
+    // because footState reaches that state through mRecFailed alone. Carries no
+    // assertion; it exists so the differential below can render the state.
+    function setRecFailed(v) { mRecFailed = v; }
+
     // A settable speed and distance, so the layout suite can drive the WIDEST
     // strings drawPace and drawFoot can produce. A GPS speed spike shortens the
     // pace term but ADDS the metres-per-stroke term, so the widest pace string
@@ -1187,6 +1194,51 @@ class HrProbe extends StrongRowView {
                      $.HR_ARC_TOP + " + " + $.HR_ARC_BOT + " = " + sum +
                      ". Every clearance measured for this arc assumes one " +
                      "half-sweep, not two");
+        return false;
+    }
+    return true;
+}
+
+// Every case below is RED against the commit that adds it and green against the
+// one that widens the sweep.
+
+// THE POINT OF WIDENING THE SWEEP, stated as the property it buys rather than
+// as the constants that produce it.
+//
+// drawArc truncates its parameters toward zero, so ONE WHOLE DEGREE is the
+// finest distinction the geometry can draw, and the bpm cost of a degree is
+// (HR_DISP_HI - HR_DISP_LO) / sweep. This walks hrAngle over the whole display
+// range and reports the longest run of heart rates that land on the SAME drawn
+// degree -- the coarsest distinction the band marker can actually make.
+//
+// At the shipping +/-22 that run is 3 bpm (44 degrees over 110 bpm, 2.50 bpm
+// per degree). #108 strips the pace row off the work view, which is what buys
+// the room, and at +/-28 it is 2 bpm (1.96 per degree). Measured through the
+// shipping hrAngle, not computed from the constants, so a change that widened
+// the sweep while breaking the map would not satisfy it.
+(:test) function test_hr_oneDrawnDegreeIsAtMostTwoBpm(logger) {
+    var worst = 0;
+    var runStart = $.HR_DISP_LO;
+    var prev = StrongRowView.hrAngle($.HR_DISP_LO);
+    var worstAt = $.HR_DISP_LO;
+    for (var bpm = $.HR_DISP_LO + 1; bpm <= $.HR_DISP_HI + 1; bpm++) {
+        var a = StrongRowView.hrAngle(bpm);
+        if (a != prev || bpm > $.HR_DISP_HI) {
+            var run = bpm - runStart;
+            if (run > worst) { worst = run; worstAt = runStart; }
+            runStart = bpm;
+            prev = a;
+        }
+    }
+    if (worst > 2) {
+        logger.error("#108: the band marker cannot distinguish " + worst +
+                     " bpm -- " + worstAt + " through " + (worstAt + worst - 1) +
+                     " all land on drawn degree " +
+                     StrongRowView.hrAngle(worstAt) + ". drawArc truncates to " +
+                     "whole degrees, so one degree is the finest mark the " +
+                     "geometry can make, and stripping the work view is what " +
+                     "buys the sweep to make it finer. Sweep is " +
+                     ($.HR_ARC_BOT - $.HR_ARC_TOP) + " degrees");
         return false;
     }
     return true;
