@@ -216,3 +216,47 @@ using Toybox.Graphics as Gfx;
     }
     return true;
 }
+
+// -- The broken track spans its own sweep -------------------------------------
+// The mirror of test_hr_brokenTrackSpansTheWholeSweep, and it exists because
+// the mirrored draw path originally got none of the mirrored harness. Two
+// defects lived in that gap: the third segment passed a NEGATIVE degreeStart to
+// drawArc (bypassing dpsWrap, the one helper written to prevent it), and the
+// last segment fell a degree short of the sweep's end to Float truncation.
+(:test) function test_dps_brokenTrackSegmentsAreDrawable(logger) {
+    var parts = StrongRowView.hrTrackParts(false);
+    var lo    = ($.DPS_ARC_BOT - 360) * 1.0;
+    var span  = ($.DPS_ARC_TOP - lo) * 1.0;
+    var seg   = span / (2 * parts - 1);
+    var lastEnd = -9999;
+    for (var i = 0; i < parts; i++) {
+        var b0 = lo + i * 2.0 * seg;
+        if (b0 >= $.DPS_ARC_TOP) { break; }
+        var b1 = b0 + seg;
+        if (b1 > $.DPS_ARC_TOP - 0.001) { b1 = $.DPS_ARC_TOP * 1.0; }
+        var s0 = StrongRowView.dpsWrap(b0.toNumber());
+        var s1 = StrongRowView.dpsWrap(b1.toNumber());
+        // EVERY angle handed to drawArc must be in [0,360). A negative
+        // degreeStart is not a mark in the wrong place -- it is outside the
+        // documented contract, and what the real Dc does with it is unmeasured.
+        if (s0 < 0 || s0 >= 360 || s1 < 0 || s1 >= 360) {
+            logger.error("segment " + i + " would call drawArc with an angle " +
+                         "outside [0,360): start " + s1 + ", end " + s0);
+            return false;
+        }
+        if (s0 == s1) {
+            logger.error("segment " + i + " has equal angles -- drawArc renders " +
+                         "a COMPLETE CIRCLE, not a short arc");
+            return false;
+        }
+        lastEnd = b1;
+    }
+    // The last segment must reach the top of the sweep, the way the heart-rate
+    // mirror reaches HR_ARC_BOT.
+    if (lastEnd < $.DPS_ARC_TOP - 0.01) {
+        logger.error("the broken track stops at " + lastEnd + ", short of " +
+                     "DPS_ARC_TOP (" + $.DPS_ARC_TOP + ")");
+        return false;
+    }
+    return true;
+}

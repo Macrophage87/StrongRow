@@ -450,12 +450,20 @@ function hlRender(p, cfg) {
                                                bands[bi][0], bands[bi][1],
                                                hrs[hi][0], hrs[hi][1],
                                                accelOk, wi == 1]);
-                        if (geo.arcs.size() == 0 && geo.lines.size() == 0) {
-                            logger.error(names[ki] + " drew no arc geometry at " +
-                                         "all; the bound below would be vacuous");
+                        // NON-VACUITY, ON THE LANE UNDER TEST. An earlier
+                        // version asked only whether the SCREEN drew anything,
+                        // which stopped proving anything the moment #123 added
+                        // a second arc: a render with the heart-rate arc
+                        // entirely missing still satisfies it, and
+                        // hlMaxDrawnX's empty-lane sentinel (-9999) then
+                        // passes the limit. The case about the left arc would
+                        // have gone green with the left arc absent.
+                        var mx = hlMaxDrawnX(geo);
+                        if (mx < -9000.0) {
+                            logger.error(names[ki] + " drew nothing in the LEFT " +
+                                         "lane; the bound below would be vacuous");
                             return false;
                         }
-                        var mx = hlMaxDrawnX(geo);
                         if (mx > worst) {
                             worst = mx;
                             where = names[ki] + (paused ? "/PAUSED" : "") +
@@ -508,6 +516,64 @@ function hlRender(p, cfg) {
 // reading is clamped off either end of the display range -- so the band and
 // heart-rate sweeps are what matter, and pause / accelerometer state cannot
 // move it (neither is read by drawHrArc).
+// #123: THE MIRROR OF THE X ENVELOPE. hlMinDrawnX existed with no caller
+// until this case, which made the "two-lane" claim false as shipped: the left
+// lane was bounded and the right one was bounded by nothing.
+//
+// The two guards together are the real invariant -- the middle band, where
+// every numeral lives, stays clear. Either one alone permits an arc to grow
+// straight through it.
+(:test) function test_dps_arcStaysWithinItsXEnvelope(logger) {
+    var ds = System.getDeviceSettings();
+    var k      = hlProbeFor(false);
+    var kinds  = [ k.kindWork(), k.kindRest() ];
+    var names  = [ "WORK", "REST" ];
+    var limit  = ds.screenWidth * (1.0 - $.HL_X_MAX_FRAC);
+    var worst  = 99999.0;
+    var where  = "";
+
+    for (var wi = 0; wi < 2; wi++) {
+        var p = hlProbeFor(wi == 1);
+        for (var ki = 0; ki < kinds.size(); ki++) {
+            for (var vi = 0; vi < 4; vi++) {
+                var paused  = (vi & 1) != 0;
+                var accelOk = (vi & 2) == 0;
+                var geo = hlRender(p, [kinds[ki], paused, 116, 130,
+                                       130, true, accelOk, wi == 1]);
+                var mn = hlMinDrawnX(geo);
+                if (mn > 9000.0) {
+                    logger.error(names[ki] + " drew nothing in the RIGHT lane; " +
+                                 "the bound below would be vacuous");
+                    return false;
+                }
+                if (mn < worst) {
+                    worst = mn;
+                    where = names[ki] + (paused ? "/PAUSED" : "") +
+                            (accelOk ? "" : "/NO-ACCEL") +
+                            (wi == 1 ? " wide" : " narrow");
+                }
+            }
+        }
+    }
+
+    logger.debug("HL right-lane " + ds.screenWidth + "x" + ds.screenHeight +
+                 ": innermost drawn x " + worst.format("%.1f") +
+                 " (" + (worst / ds.screenWidth).format("%.4f") + "w), limit " +
+                 limit.format("%.1f") + " @ " + where);
+
+    if (worst < limit) {
+        logger.error("#123: the distance-per-stroke arc has drifted out of its " +
+                     "lane. Innermost drawn pixel x=" + worst.format("%.1f") +
+                     " on a " + ds.screenWidth + "-wide display, limit " +
+                     limit.format("%.1f") + ", at " + where + ". Measured at " +
+                     "the PEN WIDTH, not the centreline. Every pixel left of " +
+                     "that lane is a pixel closer to the centred numerals both " +
+                     "arcs were placed to avoid.");
+        return false;
+    }
+    return true;
+}
+
 (:test) function test_hr_arcStaysWithinItsYEnvelope(logger) {
     var k = new HrProbe();
     var kinds = [ k.kindWork(), k.kindRest() ];

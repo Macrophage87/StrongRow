@@ -94,10 +94,12 @@ test_dps_angleIsMonotonic
 test_dps_sweepMirrorsTheHeartRateArc
 test_dps_wrapProducesDrawableAngles
 test_dps_subDegreeFillIsSuppressedAtTheBottomOnly
+test_dps_brokenTrackSegmentsAreDrawable
 
 # source/HrLayoutTest.mc
 test_hr_arclessScreensDrawNoArcGeometry
 test_hr_arcStaysWithinItsXEnvelope
+test_dps_arcStaysWithinItsXEnvelope
 test_hr_arcStaysWithinItsYEnvelope
 
 # source/WorkLayoutTest.mc

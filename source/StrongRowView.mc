@@ -191,9 +191,14 @@ const DPS_ARC_BOT = 332;   // lower end, mirror of HR_ARC_BOT
 // is trying to hold, and an absolute scale would need re-tuning per boat.
 //
 // 60..140 rather than 0..200 because the useful resolution is near the
-// benchmark. At 80 points across 56 degrees one truncated degree is 1.43% of
-// benchmark; over 0..200 it would be 3.6%, which is coarser than the difference
-// between a good and a bad piece.
+// benchmark. 80 points across 56 degrees is 1.43% of benchmark per degree ON
+// AVERAGE -- but drawArc TRUNCATES, so the bin containing a given angle is what
+// the athlete actually sees, and the bin containing angle 0 spans 2.857%,
+// double the average, because truncation toward zero makes it twice as wide as
+// its neighbours. That bin is centred on 100%, the one transition this arc
+// exists to show, so the figure to quote is 2.86% and not 1.43%. Over 0..200
+// the same bin would span 7.1%, which is coarser than the difference between a
+// good and a bad piece.
 const DPS_DISP_LO = 60;
 const DPS_DISP_HI = 140;
 
@@ -1619,11 +1624,30 @@ class StrongRowView extends Ui.View {
     // survive deuteranopia -- where FFAA00 and 00FF00 both read as yellowish
     // and 1.43x is not enough to part them.
     //
-    // The fill's edge against the track is weak for two of the four (red
-    // 1.86:1, purple 1.47:1, both under the 3:1 floor this file applies
-    // elsewhere) and that is ACCEPTED, not overlooked: per the correction on
-    // #119, position is carried by the head tick in its OWN radial lane at
-    // 21:1 against black, not by the fill's chromatic edge. Copy the lane.
+    // The fill's edge against the track is weak for THREE of the four --
+    // purple 1.47:1, red 1.86:1, orange 2.33:1; only green at 5.43:1 clears the
+    // 3:1 floor this file applies elsewhere. The swap argued above is what put
+    // orange there: FFAA00 was 3.91:1 and cleared it. A second, accepted cost
+    // of the swap, paid for the same reason -- stated because an earlier
+    // revision counted two and named the wrong pair.
+    //
+    // ACCEPTED, not overlooked: per the correction on #119, position is carried
+    // by the head tick in its OWN radial lane at 21:1 against black, not by the
+    // fill's chromatic edge. Copy the lane.
+    //
+    // RED NOW MEANS OPPOSITE THINGS ON THE TWO EDGES, and the premise that
+    // spent blue applies here too. On the left arc red is HRZ_ABOVE -- too
+    // high, ease off. On this arc red is DPSZ_FAR -- too low, put more in. Both
+    // are drawn at the same instant, mirrored, at identical radii, and by that
+    // same premise the colour is read before the edge is located.
+    //
+    // Kept anyway, as a LISTED DECISION rather than an oversight: red-for-bad
+    // is the strongest convention this palette has, both readings mean
+    // "something needs correcting", and which correction is obvious from the
+    // stroke rate the athlete is already looking at. If it proves confusable on
+    // the water it is the DPS side that should move, because the heart-rate
+    // arc's red is shared with the REC footer and the GPS pip and is therefore
+    // the more expensive one to change.
     static function dpsZoneColour(zone) {
         if (zone == $.DPSZ_FAR)   { return Gfx.COLOR_RED; }
         if (zone == $.DPSZ_UNDER) { return Gfx.COLOR_ORANGE; }
@@ -3194,10 +3218,11 @@ class StrongRowView extends Ui.View {
     //
     //   1. the FILL length, which is a LUMINANCE boundary against the track and
     //      not a geometric one -- it is drawn at the same radius and pen width
-    //      as the track, so it has no edge of its own. Two of the four states
-    //      contrast weakly there (red 1.86:1, purple 1.47:1). That is accepted,
-    //      because the fill is a redundant cue;
-    //   2. the BENCHMARK TICK on the rail, marking 100% -- the fixed reference
+    //      as the track, so it has no edge of its own. THREE of the four states
+    //      contrast weakly there: purple 1.47:1, red 1.86:1, orange 2.33:1;
+    //      only green at 5.43:1 clears the 3:1 floor. That is accepted, because
+    //      the fill is a redundant cue -- see the head tick below;
+    //   2. the BENCHMARK TICK, marking 100% -- the fixed reference
     //      the fill is read against. Fill beyond it means the benchmark is
     //      cleared, which is the geometric statement colour cannot make;
     //   3. the HEAD TICK, in its OWN RADIAL LANE outside the track, white on
@@ -3243,13 +3268,32 @@ class StrongRowView extends Ui.View {
             var span = ($.DPS_ARC_TOP - ($.DPS_ARC_BOT - 360)) * 1.0;
             var seg  = span / (2 * parts - 1);
             if (seg < $.HR_ARC_MIN_D) { seg = $.HR_ARC_MIN_D * 1.0; }
+            // BOTH ENDS WRAPPED. An earlier revision wrapped only a0, and the
+            // third segment's a1 is 28 - 4*11.2 = -16.8 -> -16: a NEGATIVE
+            // degreeStart handed to drawArc, from the one function written to
+            // prevent exactly that, at the one place it was needed.
+            //
+            // The segment ends are also computed from the BOTTOM upward rather
+            // than the top downward, so the last one lands exactly on
+            // DPS_ARC_BOT the way the mirror's lands on HR_ARC_BOT. Computing
+            // downward from the top left it at 333, one degree short, because
+            // the accumulated float error fell on the wrong side of toNumber's
+            // truncation.
+            var lo = ($.DPS_ARC_BOT - 360) * 1.0;
             for (var i = 0; i < parts; i++) {
-                var a1 = $.DPS_ARC_TOP - i * 2.0 * seg;
-                if (a1 <= $.DPS_ARC_BOT - 360) { break; }
-                var a0 = a1 - seg;
-                if (a0 < $.DPS_ARC_BOT - 360) { a0 = ($.DPS_ARC_BOT - 360) * 1.0; }
+                var b0 = lo + i * 2.0 * seg;
+                if (b0 >= $.DPS_ARC_TOP) { break; }
+                var b1 = b0 + seg;
+                // TOLERANCE, not equality. -28 + 4*11.2 + 11.2 is
+                // 27.999999999999996 in Float, and toNumber truncates toward
+                // zero, so a bare `> TOP` test leaves the last segment one
+                // degree short of the sweep's end. The heart-rate mirror lands
+                // exactly on HR_ARC_BOT only because its accumulated error
+                // happens to fall the other way -- which is luck, not a
+                // property, and is not something to rely on twice.
+                if (b1 > $.DPS_ARC_TOP - 0.001) { b1 = $.DPS_ARC_TOP * 1.0; }
                 dc.drawArc(cx, cy, r, Gfx.ARC_CLOCKWISE,
-                           a1.toNumber(), dpsWrap(a0.toNumber()));
+                           dpsWrap(b1.toNumber()), dpsWrap(b0.toNumber()));
             }
         }
 
@@ -3260,7 +3304,12 @@ class StrongRowView extends Ui.View {
                        bot, dpsWrap(dpsAngle(pct)));
         }
 
-        // ---- the benchmark tick, on the rail at 100% ----
+        // ---- the benchmark tick at 100% ----
+        //
+        // NO RAIL on this edge, deliberately, and the earlier comment saying
+        // "on the rail" was describing the heart-rate arc. The left arc's rail
+        // spans a BAND with two ends; a benchmark is a single value, so a tick
+        // crossing the track is the whole of it.
         //
         // Drawn WHATEVER the reading, including when there is none: it is the
         // scale, not a reading, and a scale that disappears with the data
