@@ -150,6 +150,16 @@ class HrProbe extends StrongRowView {
     function bpmBandLo() { return mHrLo; }
     function bpmBandHi() { return mHrHi; }
 
+    // The freshness clock, overridden so render-level staleness cases do not
+    // depend on how long the device has been up. Defaults to the real one, so a
+    // case that does not set it behaves exactly as the shipping code does.
+    var fakeNowMs;
+    hidden function nowMs() {
+        if (fakeNowMs != null) { return fakeNowMs; }
+        return System.getTimer();
+    }
+    function setNowMs(t) { fakeNowMs = t; }
+
     // Drive the three heart-rate fields directly, so a case can put the view in
     // "HR present" and "HR absent" without a sensor. Written, never read back
     // through a second path -- the point is what the REST of the view does with
@@ -999,17 +1009,15 @@ class HrProbe extends StrongRowView {
     // Non-zero bpm, ever-seen true, timestamp far outside the freshness window.
     // Deliberately a BELOW-BAND value: if the gate ever fails open, the arc
     // renders blue, and blue means "below target" across the whole app.
-    // Guarded, not assumed. System.getTimer() counts from DEVICE start, so on a
-    // simulator up for less than 50 s this stamp would be NEGATIVE and hrHave
-    // would reject it on its `lastMs > 0` sign term without ever reaching the
-    // freshness comparison this case exists to pin.
-    var stamp = System.getTimer() - (10 * $.HR_FRESH_MS);
-    if (stamp <= 0) {
-        logger.error("device uptime is under " + (10 * $.HR_FRESH_MS) +
-                     " ms, so this case would pass on hrHave's sign term " +
-                     "rather than on freshness. Re-run on a warmer device");
-        return false;
-    }
+    // BOTH clocks are driven, so this is deterministic on any device. The
+    // previous version synthesised a stale-but-positive stamp from
+    // System.getTimer(), which counts from DEVICE start -- that needs
+    // 10 * HR_FRESH_MS of uptime, so it passed on a long-lived desktop
+    // simulator and would have gone RED in CI, where the simulator is seconds
+    // old. Green where written, red where judged, which is the worst way for a
+    // case to be wrong.
+    var stamp = 1000;
+    p.setNowMs(stamp + 10 * $.HR_FRESH_MS);
     p.setHrState(105, stamp, true);
     var d = new HrDc(240, 240);
     p.runUpdate(d);
@@ -1030,7 +1038,12 @@ class HrProbe extends StrongRowView {
 (:test) function test_hr_freshReadingOfTheSameBpmRendersAsPresent(logger) {
     var p = new HrProbe();
     p.enterWorkStep(false);
-    p.setHrState(105, System.getTimer(), true);
+    // Same bpm, same injected clock, stamp inside the freshness window. If this
+    // and the stale case did not share a clock source, the pair would not be
+    // comparing freshness at all.
+    var stamp = 1000;
+    p.setNowMs(stamp + 1);
+    p.setHrState(105, stamp, true);
     var d = new HrDc(240, 240);
     p.runUpdate(d);
     if (d.arcs != 3 || d.lines != 3) {
@@ -1087,9 +1100,14 @@ class HrProbe extends StrongRowView {
 
     var parts = StrongRowView.hrTrackParts(false);
     // Track segments are the first `parts` arcs; the band rail follows them.
-    if (d.arcs < parts + 1) {
-        logger.error("expected at least " + (parts + 1) + " arcs (track " +
-                     "segments + band rail); got " + d.arcs);
+    // EXACT, not a lower bound. The loop below reads the first `parts` arcs on
+    // the premise that the track is issued before the band rail and the fill;
+    // a lower bound would let a reordering shift the indices it reads while
+    // still passing.
+    if (d.arcs != parts + 1) {
+        logger.error("expected exactly " + (parts + 1) + " arcs (" + parts +
+                     " track segments + the band rail, no fill in the no-data " +
+                     "state); got " + d.arcs);
         return false;
     }
     // Every index below is a LOOP variable. The type checker rejects a literal

@@ -1155,6 +1155,21 @@ class StrongRowView extends Ui.View {
     // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
     // freshness is about R-R batch arrival and this is about a bpm read. Two
     // signals that happen to share a shape today and must be free to diverge.
+    // The freshness clock, as one overridable call.
+    //
+    // Exists because System.getTimer() counts from DEVICE start, so any
+    // render-level staleness case had to synthesise a stamp far enough in the
+    // past to be stale AND still positive -- which needs 10 * HR_FRESH_MS of
+    // device uptime. A CI simulator is seconds old when the suite runs, so
+    // such a case is not merely flaky, it is reliably RED there and green on a
+    // long-lived desktop simulator. That asymmetry is the worst kind: it
+    // passes where it is written and fails where it is judged.
+    //
+    // A probe overrides this and the case becomes deterministic on any device.
+    hidden function nowMs() {
+        return System.getTimer();
+    }
+
     static function hrHave(ever, lastMs, nowMs, threshMs) {
         return ever && lastMs > 0 && (nowMs - lastMs) < threshMs;
     }
@@ -2164,15 +2179,23 @@ class StrongRowView extends Ui.View {
     //      3:1 floor this file applies at :1092 to reject a colour outright.
     //
     //      So the fill is a REDUNDANT cue, not a load-bearing one, and the
-    //      design does not rest on it: the head tick is COLOR_WHITE at 7.46:1
-    //      against the track, and that is what actually carries the position.
+    //      design does not rest on it: the head tick carries the position.
     //      Read the fill as "roughly how far, and which zone" -- at red in
     //      particular its endpoint is nearly unreadable against the track.
     //
-    //      Anything copying this construction -- #123's distance-per-stroke
-    //      arc will -- inherits the constraint: whatever marks a position on
-    //      this rail must contrast with the FILLED track as well as the empty
-    //      one, and must not lean on the fill's own edge to do it;
+    //      AND STATE THE HEAD TICK'S OWN PAIR CORRECTLY, since getting this
+    //      wrong twice in one comment would be its own lesson. The head tick
+    //      is NOT white-on-track at 7.46:1 -- it never touches the track. It
+    //      is drawn in its own annulus at rHd0..rHd1, two pixels OUTSIDE
+    //      rTkOut, per the layering invariant below. Its background is the
+    //      black onUpdate clears to, so the pair that actually occurs is
+    //      white-on-black at 21:1 -- the strongest contrast the display has.
+    //
+    //      That is also the real lesson for #123's distance-per-stroke arc,
+    //      and it is stronger than "contrast against the filled track": this
+    //      arc solves the problem by putting its position mark in a SEPARATE
+    //      RADIAL LANE, where the fill's colour cannot reach it at all. Copy
+    //      the lane, not a contrast requirement;
     //   2. the BAND is drawn ON THE TRACK -- a light rail inside the track
     //      spanning exactly the target band, closed by a radial tick at each
     //      end that crosses both the rail and the track. This is what carries
@@ -2244,7 +2267,7 @@ class StrongRowView extends Ui.View {
         var rBand  = r - pw / 2 - gap - pwb / 2;   // band rail: inside the track
         var rTkIn  = rBand - pwb / 2 - 2;          // band ticks cross rail+track
 
-        var hasHr = hrHave(mHrEver, mLastHrMs, System.getTimer(), $.HR_FRESH_MS);
+        var hasHr = hrHave(mHrEver, mLastHrMs, nowMs(), $.HR_FRESH_MS);
         var bpm   = mHrBpm;
         // TWO gates, not one, and they are deliberately different.
         //
