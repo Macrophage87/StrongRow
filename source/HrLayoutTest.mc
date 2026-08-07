@@ -592,8 +592,18 @@ function hlRender(p, cfg) {
                 var geo = hlRender(p, [kinds[ki], false,
                                        bands[bi][0], bands[bi][1],
                                        hrs[hi][0], hrs[hi][1], true, true]);
-                if (geo.arcs.size() == 0 && geo.lines.size() == 0) {
-                    logger.error(names[ki] + " drew no arc geometry at all; " +
+                // NEAR NEIGHBOUR of the x-envelope fix, and it had to be made
+                // twice. Asking whether the SCREEN drew anything stopped
+                // proving anything once #123 added a mirrored arc: the two
+                // arcs have IDENTICAL |dy| by construction, and hlMaxDrawnDy
+                // has no lane filter, so with drawHrArc stubbed to nothing this
+                // case would measure the DPS arc, go green, and report it under
+                // a message about the heart-rate arc.
+                //
+                // Scoped through the x helper because that one IS lane-aware:
+                // an empty left lane returns its sentinel.
+                if (hlMaxDrawnX(geo) < -9000.0) {
+                    logger.error(names[ki] + " drew nothing in the LEFT lane; " +
                                  "the bound below would be vacuous");
                     return false;
                 }

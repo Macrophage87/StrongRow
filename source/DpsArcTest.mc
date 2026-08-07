@@ -1,5 +1,6 @@
 using Toybox.Test;
 using Toybox.Graphics as Gfx;
+using Toybox.Math;
 
 // Unit tests for issue #123: the right-edge distance-per-stroke arc.
 //
@@ -256,6 +257,63 @@ using Toybox.Graphics as Gfx;
     if (lastEnd < $.DPS_ARC_TOP - 0.01) {
         logger.error("the broken track stops at " + lastEnd + ", short of " +
                      "DPS_ARC_TOP (" + $.DPS_ARC_TOP + ")");
+        return false;
+    }
+    return true;
+}
+
+// -- The DRAWN layout, not the formula ----------------------------------------
+// test_dps_brokenTrackSegmentsAreDrawable above re-implements drawDpsArc's loop
+// rather than calling it, so it pins the ARITHMETIC and not the call site.
+// Reverting the negative-degreeStart defect verbatim leaves it green.
+//
+// That is the same hole the heart-rate side already fell into and documented at
+// test_hr_brokenTrackDrawsSeparatedSegments: "a previous algebraically-redundant
+// case could never red while the other stayed green. It was credited with
+// coverage it did not have." Written one file over, read while writing this
+// mirror, and repeated anyway.
+//
+// This is the counterpart that asserts on what drawDpsArc ACTUALLY ISSUES.
+// HrDc records every drawArc's angles in call order, and the right-edge arcs
+// are the ones whose degStart has cos > 0 -- both arcs are centred on cx, so x
+// cannot separate them but the angle can.
+(:test) function test_dps_drawnTrackAnglesAreInContract(logger) {
+    var p = new HrProbe();
+    p.enterWorkStep(false);
+    p.setHrState(0, 0, false);          // no HR: both arcs render their no-data track
+    var d = new HrDc(240, 240);
+    p.runUpdate(d);
+
+    var seen = 0;
+    var prevEnd = -999;
+    for (var i = 0; i < d.arcLo.size(); i++) {
+        var a0 = d.arcLo[i];
+        var a1 = d.arcHi[i];
+        // Right-edge only. Every left-edge angle has cos < 0.
+        if (Math.cos(a0 * Math.PI / 180.0) <= 0) { continue; }
+        // EVERY angle handed to drawArc must be in [0,360). A negative
+        // degreeStart is outside the documented contract, and what the real Dc
+        // does with one is unmeasured. This is the assertion the formula copy
+        // could not make.
+        if (a0 < 0 || a0 >= 360 || a1 < 0 || a1 >= 360) {
+            logger.error("drawDpsArc issued an angle outside [0,360): start " +
+                         a0 + ", end " + a1 + " -- dpsWrap exists to prevent " +
+                         "exactly this and was bypassed");
+            return false;
+        }
+        if (a0 == a1) {
+            logger.error("drawDpsArc issued equal angles (" + a0 + ") -- " +
+                         "drawArc renders a COMPLETE CIRCLE, not a short arc");
+            return false;
+        }
+        seen++;
+    }
+    // Non-vacuity: the right edge must actually have drawn its broken track.
+    var parts = StrongRowView.hrTrackParts(false);
+    if (seen < parts) {
+        logger.error("expected at least " + parts + " right-edge arcs (the " +
+                     "broken track); saw " + seen + ". The assertions above " +
+                     "would be vacuous");
         return false;
     }
     return true;

@@ -95,6 +95,7 @@ test_dps_sweepMirrorsTheHeartRateArc
 test_dps_wrapProducesDrawableAngles
 test_dps_subDegreeFillIsSuppressedAtTheBottomOnly
 test_dps_brokenTrackSegmentsAreDrawable
+test_dps_drawnTrackAnglesAreInContract
 
 # source/HrLayoutTest.mc
 test_hr_arclessScreensDrawNoArcGeometry
