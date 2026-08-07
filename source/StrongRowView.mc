@@ -175,6 +175,42 @@ const HR_FRESH_MS = 5000;
 // becomes a palette decision one edit away from collapsing into "below band" --
 // which is the #86 / #107 defect class this repository has already shipped
 // twice.
+// ============ #123: the right-edge distance-per-stroke arc ================
+// MIRRORED from the heart-rate arc, and the mirror is exact: the same radii,
+// the same pen widths, the same bezel inset, the same minimum drawn sweep. Two
+// arcs of visibly different size on the two edges would read as a defect.
+//
+// The sweep is HR_ARC_TOP/BOT reflected about the vertical axis: an angle a on
+// the left maps to 180 - a on the right. 152 -> 28 and 208 -> -28, and -28 is
+// written 332 because drawArc takes degrees in [0, 360).
+const DPS_ARC_TOP = 28;    // upper end, mirror of HR_ARC_TOP
+const DPS_ARC_BOT = 332;   // lower end, mirror of HR_ARC_BOT
+
+// DISPLAY RANGE, as a PERCENTAGE of the configured benchmark. Not absolute
+// metres: the whole point of the arc is position relative to what this athlete
+// is trying to hold, and an absolute scale would need re-tuning per boat.
+//
+// 60..140 rather than 0..200 because the useful resolution is near the
+// benchmark. At 80 points across 56 degrees one truncated degree is 1.43% of
+// benchmark; over 0..200 it would be 3.6%, which is coarser than the difference
+// between a good and a bad piece.
+const DPS_DISP_LO = 60;
+const DPS_DISP_HI = 140;
+
+// THE FOUR STATES. Four, not a continuum, and that is a glance decision rather
+// than a palette one: at a fraction of a second the eye resolves a colour
+// CATEGORY, not a position on a ramp. More gradation buys resolution nobody can
+// read at that exposure while adding collision risk.
+const DPSZ_NONE  = -1;
+const DPSZ_FAR   = 0;   // <= 85% of benchmark
+const DPSZ_UNDER = 1;   // 85-100%
+const DPSZ_AT    = 2;   // 100-125%  -- "at or above", the arc stops talking
+const DPSZ_OVER  = 3;   // > 125%    -- a reward tier, not a warning
+
+// The two boundaries inside the display range, in percent.
+const DPS_FAR_PCT  = 85;
+const DPS_OVER_PCT = 125;
+
 const HRZ_NONE  = -1;
 const HRZ_BELOW = 0;
 const HRZ_IN    = 1;
@@ -202,6 +238,11 @@ class StrongRowView extends Ui.View {
     // #110: the HEART-RATE target band, in bpm. Named apart from mTgtLo/mTgtHi
     // (which are stroke rate, in spm) because confusing the two is the exact
     // failure #110 calls out.
+    // #123: the distance-per-stroke benchmark, in metres. CLAMPED IN CODE and
+    // not only in settings.xml -- #21 is precisely the defect of a range
+    // declared there and enforced nowhere, and Connect IQ Properties survive an
+    // app update while a .set file is not re-clamped on load.
+    hidden var mDpsBench;
     hidden var mHrLo;
     hidden var mHrHi;
 
@@ -451,6 +492,9 @@ class StrongRowView extends Ui.View {
         // app update and a .set file is not re-clamped on load, so declaring
         // the range in settings.xml is not enough on its own -- that is exactly
         // #21's finding, and this does not add to it.
+        mDpsBench = getProp("dpsBenchmark", 6.0).toFloat();
+        if (mDpsBench < 1.0)  { mDpsBench = 1.0; }
+        if (mDpsBench > 20.0) { mDpsBench = 20.0; }
         var hb = hrClampBand(getProp("hrLo", 116).toNumber(),
                              getProp("hrHi", 130).toNumber());
         mHrLo = hb[0];
@@ -1478,6 +1522,168 @@ class StrongRowView extends Ui.View {
     // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
     // freshness is about R-R batch arrival and this is about a bpm read. Two
     // signals that happen to share a shape today and must be free to diverge.
+    // #123: the metres-per-stroke the arc should show, or null.
+    //
+    // TWO SOURCES, and which applies is the whole of the maintainer's rest
+    // instruction: during WORK the live figure, during REST the average of the
+    // interval just completed.
+    //
+    // The live source is deliberately NOT distPerStroke()'s return used
+    // directly. That function answers 0.0 for its no-data case -- safe where
+    // drawPace gates on `> 0.0`, and NOT safe here, because 0.0 maps to the
+    // bottom of the range and renders RED, "far below benchmark". Absence
+    // rendered as a value is the #86/#107 failure class and this arc's
+    // acceptance list forbids it by name. The 0.0 becomes null once, here.
+    //
+    // The rest source is the LATCHED interval average from #109 -- interval
+    // distance over interval strokes -- not an average of the live estimator.
+    hidden function dpsForArc(type, spd) {
+        if (type == STEP_REST) {
+            if (!mLastSetValid) { return null; }
+            return setAvgDps(mLastSetDist, mLastSetStrokes);
+        }
+        var live = distPerStroke(spd);
+        if (live <= 0.0) { return null; }
+        return live;
+    }
+
+    // ============ #123: the distance-per-stroke arc, as pure decisions =====
+
+    // Pure: metres per stroke as a PERCENTAGE of the benchmark, or null.
+    //
+    // Null, never 0.0, and this one has a specific trap behind it. The live
+    // distPerStroke() returns 0.0 for its no-data case -- harmless where
+    // drawPace gates on `> 0.0`, and NOT harmless here: 0.0 would map to the
+    // bottom of the range and render RED, "far below benchmark", which is the
+    // #86/#107 failure class this arc's own acceptance list forbids. So the
+    // caller must hand this a value it has already established is real, and
+    // this function refuses anything that is not.
+    static function dpsPct(mPerStroke, benchmark) {
+        if (mPerStroke == null || mPerStroke <= 0.0) { return null; }
+        if (benchmark  == null || benchmark  <= 0.0) { return null; }
+        return mPerStroke * 100.0 / benchmark;
+    }
+
+    // Pure: which of the four states a percentage is in.
+    //
+    // Boundaries are INCLUSIVE UPWARD -- exactly 100% is AT, not UNDER, because
+    // the benchmark is a floor being cleared rather than a line being crossed.
+    // Exactly 85% is UNDER rather than FAR for the same reason.
+    static function dpsZone(pct) {
+        if (pct == null)             { return $.DPSZ_NONE; }
+        if (pct <  $.DPS_FAR_PCT)    { return $.DPSZ_FAR; }
+        if (pct <  100)              { return $.DPSZ_UNDER; }
+        if (pct <= $.DPS_OVER_PCT)   { return $.DPSZ_AT; }
+        return $.DPSZ_OVER;
+    }
+
+    // Pure: the colour for a state. A CODE goes in, a colour comes out -- the
+    // same shape hrZoneColour uses, so "no data" stays a different KIND of
+    // answer rather than a colour that happens to differ.
+    //
+    // THE PALETTE, and why it is not the spectral ramp originally proposed.
+    // Blue means "below target" on the heart-rate arc and on the stroke-rate
+    // numeral, both shipped. A spectral ramp reaches blue at ~120% of
+    // benchmark, i.e. GOOD -- and at a fraction of a second the eye reads the
+    // colour before it locates which edge the arc is on, so position cannot
+    // disambiguate. Blue is spent.
+    //
+    //   FAR    COLOR_RED    FF0000   losing the catch
+    //   UNDER  COLOR_ORANGE FF5500   approaching
+    //   AT     COLOR_GREEN  00FF00   at or above -- nothing to say
+    //   OVER   COLOR_PURPLE AA00FF   exceptional
+    //
+    // All four are exact {00,55,AA,FF} cube entries, so they render identically
+    // on the 64-colour fenix models and the AMOLEDs with no dither or hue
+    // shift. Green spans everything from the benchmark upward, so on clearing
+    // it the arc STOPS CHANGING -- the strongest available statement that
+    // nothing is wrong. Purple is a reward tier rather than a gradient
+    // position, and AA00FF is about as far from COLOR_BLUE's 00AAFF as the cube
+    // allows.
+    //
+    // ORANGE FF5500 AND NOT YELLOW FFAA00, which is what the design comment
+    // originally specified. MEASURED relative luminance separation:
+    //
+    //             vs GREEN   vs RED
+    //   FFAA00      1.43x     2.35x
+    //   FF5500      2.58x     1.31x
+    //
+    // The two boundaries are not worth the same. 85% separates "losing the
+    // catch" from "approaching" -- both are below the benchmark and both mean
+    // the same corrective action, so confusing them costs nothing. 100% IS THE
+    // BENCHMARK: it is the one transition this arc exists to show, and it is
+    // the expensive error. So separation from green is bought at red's
+    // expense, deliberately.
+    //
+    // Note this is a LUMINANCE argument, not a hue one, which is what makes it
+    // survive deuteranopia -- where FFAA00 and 00FF00 both read as yellowish
+    // and 1.43x is not enough to part them.
+    //
+    // The fill's edge against the track is weak for two of the four (red
+    // 1.86:1, purple 1.47:1, both under the 3:1 floor this file applies
+    // elsewhere) and that is ACCEPTED, not overlooked: per the correction on
+    // #119, position is carried by the head tick in its OWN radial lane at
+    // 21:1 against black, not by the fill's chromatic edge. Copy the lane.
+    static function dpsZoneColour(zone) {
+        if (zone == $.DPSZ_FAR)   { return Gfx.COLOR_RED; }
+        if (zone == $.DPSZ_UNDER) { return Gfx.COLOR_ORANGE; }
+        if (zone == $.DPSZ_AT)    { return Gfx.COLOR_GREEN; }
+        if (zone == $.DPSZ_OVER)  { return Gfx.COLOR_PURPLE; }
+        return Gfx.COLOR_DK_GRAY;
+    }
+
+    // Pure: where a percentage sits on the sweep, in whole degrees.
+    //
+    // Mirrored from hrAngle, and the mirror is why the arithmetic looks
+    // inverted: on the RIGHT edge a bigger value is a bigger angle measured up
+    // from DPS_ARC_BOT, whereas on the left a bigger value was a SMALLER angle.
+    // Clamped to [0,1] before mapping, so the return is always inside the
+    // sweep and a wild reading cannot draw outside it.
+    //
+    // Returns a value in [DPS_ARC_BOT-360, DPS_ARC_TOP] = [-28, 28] rather than
+    // wrapping through 332, because the caller needs a MONOTONIC number to
+    // compare and to sweep between. Only the draw call needs the wrap.
+    static function dpsAngle(pct) {
+        var f = (pct - $.DPS_DISP_LO) * 1.0 / ($.DPS_DISP_HI - $.DPS_DISP_LO);
+        if (f < 0.0) { f = 0.0; }
+        if (f > 1.0) { f = 1.0; }
+        var lo = $.DPS_ARC_BOT - 360;      // -28
+        return (lo + f * ($.DPS_ARC_TOP - lo)).toNumber();
+    }
+
+    // Pure: the same angle as drawArc wants it -- [0,360).
+    static function dpsWrap(deg) {
+        if (deg < 0) { return deg + 360; }
+        return deg;
+    }
+
+    // Pure: how many whole degrees of fill a percentage asks for, from the
+    // bottom of the sweep.
+    static function dpsFillSweep(pct) {
+        return dpsAngle(pct) - ($.DPS_ARC_BOT - 360);
+    }
+
+    // Pure: is the fill worth drawing at all?
+    //
+    // Same hazard as the HR arc's: drawArc draws a COMPLETE CIRCLE when its two
+    // angles are equal, so a zero-degree fill is a ring across the whole
+    // display rather than a mark nobody notices.
+    //
+    // WHAT THIS COSTS, stated because the HR arc's equivalent comment had to be
+    // corrected for glossing it: the fill is the sole carrier of the zone
+    // colour, so suppressing it suppresses the colour too. At the shipping
+    // constants the first percentage with a visible fill is 62% of benchmark,
+    // so 0-61% renders uncoloured. That band is "far below" for any benchmark,
+    // where the head tick still marks the position.
+    static function dpsFillVisible(pct) {
+        return dpsFillSweep(pct) >= $.HR_ARC_MIN_D;
+    }
+
+    // Pure: is the reading pinned at an end of the display range?
+    static function dpsIsClamped(pct) {
+        return pct < $.DPS_DISP_LO || pct > $.DPS_DISP_HI;
+    }
+
     static function hrHave(ever, lastMs, nowMs, threshMs) {
         return ever && lastMs > 0 && (nowMs - lastMs) < threshMs;
     }
@@ -2975,6 +3181,110 @@ class StrongRowView extends Ui.View {
     // 4 px bezel inset were computed with that same truncation for all twelve
     // manifest devices. None of that arithmetic says anything about how this
     // looks on a wrist, and nothing here claims it does.
+
+    // #123: the right-edge distance-per-stroke arc.
+    //
+    // GEOMETRY IS THE HEART-RATE ARC'S, MIRRORED, and nothing is re-derived:
+    // every radius, pen width, bezel inset and minimum sweep is computed by the
+    // identical expression. Two arcs of visibly different size on the two edges
+    // would read as a defect, and re-deriving them is how they would drift.
+    //
+    // THREE CHANNELS, and the lesson from #119 is applied rather than
+    // rediscovered:
+    //
+    //   1. the FILL length, which is a LUMINANCE boundary against the track and
+    //      not a geometric one -- it is drawn at the same radius and pen width
+    //      as the track, so it has no edge of its own. Two of the four states
+    //      contrast weakly there (red 1.86:1, purple 1.47:1). That is accepted,
+    //      because the fill is a redundant cue;
+    //   2. the BENCHMARK TICK on the rail, marking 100% -- the fixed reference
+    //      the fill is read against. Fill beyond it means the benchmark is
+    //      cleared, which is the geometric statement colour cannot make;
+    //   3. the HEAD TICK, in its OWN RADIAL LANE outside the track, white on
+    //      black at 21:1. THIS is what carries position. It does not touch the
+    //      track, so the fill's weak edge cannot degrade it -- copy the lane,
+    //      not a contrast requirement.
+    //
+    // Wrapped by its caller for the same reason drawHrArc is: this is an
+    // ornament on two priorities that must keep working without it.
+    hidden function drawDpsArc(dc, w, h, pct) {
+        var cx  = w / 2;
+        var cy  = h / 2;
+        var pw  = (w * 0.030).toNumber(); if (pw  < 4) { pw  = 4; }
+        var pwb = (w * 0.020).toNumber(); if (pwb < 3) { pwb = 3; }
+        var gap = (w * 0.010).toNumber(); if (gap < 2) { gap = 2; }
+        var ptk = (w * 0.008).toNumber(); if (ptk < 2) { ptk = 2; }
+        var phd = (w * 0.012).toNumber(); if (phd < 3) { phd = 3; }
+        var bez = (w * 0.012).toNumber(); if (bez < 4) { bez = 4; }
+
+        var rHd1   = cx - bez;
+        var rHd0   = rHd1 - pw - 2;
+        var r      = rHd0 - 2 - pw / 2;
+        var rTkOut = r + pw / 2;
+        var rBand  = r - pw / 2 - gap - pwb / 2;
+        var rTkIn  = rBand - pwb / 2 - 2;
+
+        var have     = (pct != null);
+        var showFill = have && dpsFillVisible(pct);
+
+        var bot = dpsWrap($.DPS_ARC_BOT - 360);   // 332
+        var top = $.DPS_ARC_TOP;                  // 28
+
+        // ---- the track ----
+        dc.setPenWidth(pw);
+        dc.setColor(Gfx.COLOR_DK_GRAY, Gfx.COLOR_TRANSPARENT);
+        var parts = hrTrackParts(have);
+        if (parts <= 1) {
+            dc.drawArc(cx, cy, r, Gfx.ARC_CLOCKWISE, top, bot);
+        } else {
+            // A BROKEN track is the no-data state's own channel, exactly as on
+            // the left edge. Same segment arithmetic, so the two edges break
+            // identically and a reader learns one rule rather than two.
+            var span = ($.DPS_ARC_TOP - ($.DPS_ARC_BOT - 360)) * 1.0;
+            var seg  = span / (2 * parts - 1);
+            if (seg < $.HR_ARC_MIN_D) { seg = $.HR_ARC_MIN_D * 1.0; }
+            for (var i = 0; i < parts; i++) {
+                var a1 = $.DPS_ARC_TOP - i * 2.0 * seg;
+                if (a1 <= $.DPS_ARC_BOT - 360) { break; }
+                var a0 = a1 - seg;
+                if (a0 < $.DPS_ARC_BOT - 360) { a0 = ($.DPS_ARC_BOT - 360) * 1.0; }
+                dc.drawArc(cx, cy, r, Gfx.ARC_CLOCKWISE,
+                           a1.toNumber(), dpsWrap(a0.toNumber()));
+            }
+        }
+
+        // ---- the fill: magnitude, coloured by state ----
+        if (showFill) {
+            dc.setColor(dpsZoneColour(dpsZone(pct)), Gfx.COLOR_TRANSPARENT);
+            dc.drawArc(cx, cy, r, Gfx.ARC_COUNTER_CLOCKWISE,
+                       bot, dpsWrap(dpsAngle(pct)));
+        }
+
+        // ---- the benchmark tick, on the rail at 100% ----
+        //
+        // Drawn WHATEVER the reading, including when there is none: it is the
+        // scale, not a reading, and a scale that disappears with the data
+        // cannot be read against.
+        var aB = dpsAngle(100);
+        dc.setPenWidth(ptk);
+        dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
+        radialTick(dc, cx, cy, dpsWrap(aB), rTkIn, rTkOut);
+
+        // ---- the head tick: position, in its own lane ----
+        if (have) {
+            var ah = dpsAngle(pct);
+            dc.setPenWidth(phd);
+            dc.setColor(Gfx.COLOR_WHITE, Gfx.COLOR_TRANSPARENT);
+            radialTick(dc, cx, cy, dpsWrap(ah), rHd0, rHd1);
+            if (dpsIsClamped(pct)) {
+                // A second tick just inside the first says "the reading is past
+                // the end of the scale", and it turns INWARD so it cannot leave
+                // the sweep. Same construction as the heart-rate arc's.
+                var d = (pct > $.DPS_DISP_HI) ? -3 : 3;
+                radialTick(dc, cx, cy, dpsWrap(ah + d), rHd0, rHd1);
+            }
+        }
+    }
     hidden function drawHrArc(dc, w, h) {
         var cx  = w / 2;
         var cy  = h / 2;
@@ -3204,6 +3514,13 @@ class StrongRowView extends Ui.View {
         if (type == STEP_WORK || type == STEP_REST) {
             try {
                 drawHrArc(dc, w, h);
+            } catch (e) {
+            }
+            // #123: the right edge, on the same two step types. ITS OWN try:
+            // a throw in one arc must not cost the other, and neither may cost
+            // the stroke rate or the countdown above them.
+            try {
+                drawDpsArc(dc, w, h, dpsPct(dpsForArc(type, spd), mDpsBench));
             } catch (e) {
             }
         }

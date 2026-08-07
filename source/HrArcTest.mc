@@ -1,4 +1,5 @@
 using Toybox.Test;
+using Toybox.Math;
 using Toybox.Graphics as Gfx;
 using Toybox.Lang;
 using Toybox.System;
@@ -70,7 +71,9 @@ using Toybox.System;
 // It records what the code CALLS. It says nothing about what a panel shows.
 class HrDc {
     var w; var h;
-    var arcs;        // drawArc call count
+    var arcs;        // drawArc call count, BOTH edges
+    var arcsL;       // drawArc calls belonging to the LEFT-edge arc
+    var linesL;      // drawLine calls belonging to the LEFT-edge arc
     var arcLo;       // every drawArc's degStart, in call order
     var arcHi;       // every drawArc's degEnd, in call order
     var lines;       // drawLine call count
@@ -79,7 +82,7 @@ class HrDc {
 
     function initialize(width, height) {
         w = width; h = height;
-        arcs = 0; arcLo = []; arcHi = []; lines = 0; texts = []; throwAtArc = 0;
+        arcs = 0; arcsL = 0; linesL = 0; arcLo = []; arcHi = []; lines = 0; texts = []; throwAtArc = 0;
     }
 
     function getWidth()  { return w; }
@@ -96,14 +99,26 @@ class HrDc {
     // unpinned, and the gaps ARE the no-data channel: changing the loop stride
     // from `i * 2.0 * seg` to `i * seg` abuts the three segments into a solid
     // track with no gaps, and every count-based case stays green.
+    // SIDE-AWARE, because #123 puts a second arc on the right edge and every
+    // case in this file is about the LEFT one. Both arcs are centred on cx, so
+    // x cannot separate them -- the ANGLE can: every left-edge angle has
+    // cos < 0 (152..208) and every right-edge angle has cos > 0 (332..28).
+    //
+    // The plain `arcs` / `lines` totals are kept so a case can still assert
+    // about the whole screen; `arcsL` / `linesL` are what the heart-rate cases
+    // use, so adding or changing the other arc cannot silently move them.
     function drawArc(x, y, r, attr, degStart, degEnd) {
         arcs++;
+        if (Math.cos(degStart * Math.PI / 180.0) < 0) { arcsL++; }
         arcLo.add(degStart);
         arcHi.add(degEnd);
         if (throwAtArc > 0 && arcs >= throwAtArc) { throw new Lang.Exception(); }
     }
 
-    function drawLine(x1, y1, x2, y2) { lines++; }
+    function drawLine(x1, y1, x2, y2) {
+        lines++;
+        if (x1 < w / 2 && x2 < w / 2) { linesL++; }
+    }
 
     function drawText(x, y, font, s, just) {
         texts.add(x.toString() + "|" + y.toString() + "|" + font.toString() +
@@ -706,10 +721,10 @@ class HrProbe extends StrongRowView {
     p.setHrState(128, System.getTimer(), true);
     var d = new HrDc(240, 240);
     p.runUpdate(d);
-    if (d.arcs != 3 || d.lines != 3) {
+    if (d.arcsL != 3 || d.linesL != 3) {
         logger.error("a work step with a live heart rate must draw 3 arcs " +
                      "(track, fill, band rail) and 3 lines (2 band ticks, " +
-                     "1 head tick); got " + d.arcs + " arcs, " + d.lines + " lines");
+                     "1 head tick); got " + d.arcsL + " arcs, " + d.linesL + " lines");
         return false;
     }
     return true;
@@ -724,11 +739,11 @@ class HrProbe extends StrongRowView {
     p.setHrState(0, 0, false);
     var d = new HrDc(240, 240);
     p.runUpdate(d);
-    if (d.arcs != 4 || d.lines != 2) {
+    if (d.arcsL != 4 || d.linesL != 2) {
         logger.error("a work step with no heart rate must draw 4 arcs (3 " +
                      "track segments + the band rail) and 2 lines (the band " +
-                     "ticks, no head tick); got " + d.arcs + " arcs, " +
-                     d.lines + " lines");
+                     "ticks, no head tick); got " + d.arcsL + " arcs, " +
+                     d.linesL + " lines");
         return false;
     }
     return true;
@@ -743,9 +758,9 @@ class HrProbe extends StrongRowView {
     p.setHrState(128, System.getTimer(), true);
     var d = new HrDc(240, 240);
     p.runUpdate(d);
-    if (d.arcs != 3 || d.lines != 3) {
+    if (d.arcsL != 3 || d.linesL != 3) {
         logger.error("pausing must not remove the heart-rate arc: got " +
-                     d.arcs + " arcs, " + d.lines + " lines");
+                     d.arcsL + " arcs, " + d.linesL + " lines");
         return false;
     }
     return true;
@@ -761,9 +776,9 @@ class HrProbe extends StrongRowView {
     p.setHrState(128, System.getTimer(), true);
     var d = new HrDc(240, 240);
     p.runUpdate(d);
-    if (d.arcs != 0 || d.lines != 0) {
+    if (d.arcsL != 0 || d.linesL != 0) {
         logger.error("free-row mode must draw no arc geometry at all; got " +
-                     d.arcs + " arcs, " + d.lines + " lines");
+                     d.arcsL + " arcs, " + d.linesL + " lines");
         return false;
     }
     if (d.texts.size() < 4) {
@@ -1028,11 +1043,11 @@ class HrProbe extends StrongRowView {
     p.setHrState(105, stamp, true);
     var d = new HrDc(240, 240);
     p.runUpdate(d);
-    if (d.arcs != 4 || d.lines != 2) {
+    if (d.arcsL != 4 || d.linesL != 2) {
         logger.error("a STALE heart rate must render exactly as an absent one " +
                      "(4 arcs: 3 track segments + the band rail; 2 lines: the " +
-                     "band ticks and no head tick). Got " + d.arcs + " arcs, " +
-                     d.lines + " lines -- a non-zero bpm with an expired " +
+                     "band ticks and no head tick). Got " + d.arcsL + " arcs, " +
+                     d.linesL + " lines -- a non-zero bpm with an expired " +
                      "timestamp is being drawn as though it were live");
         return false;
     }
@@ -1053,10 +1068,10 @@ class HrProbe extends StrongRowView {
     p.setHrState(105, stamp, true);
     var d = new HrDc(240, 240);
     p.runUpdate(d);
-    if (d.arcs != 3 || d.lines != 3) {
+    if (d.arcsL != 3 || d.linesL != 3) {
         logger.error("a FRESH 105 bpm must render as present (3 arcs: whole " +
                      "track + band rail + fill; 3 lines: 2 band ticks + the " +
-                     "head tick); got " + d.arcs + " arcs, " + d.lines +
+                     "head tick); got " + d.arcsL + " arcs, " + d.linesL +
                      " lines. If this and the stale case agree, the staleness " +
                      "test above proves nothing");
         return false;
@@ -1111,10 +1126,10 @@ class HrProbe extends StrongRowView {
     // the premise that the track is issued before the band rail and the fill;
     // a lower bound would let a reordering shift the indices it reads while
     // still passing.
-    if (d.arcs != parts + 1) {
+    if (d.arcsL != parts + 1) {
         logger.error("expected exactly " + (parts + 1) + " arcs (" + parts +
                      " track segments + the band rail, no fill in the no-data " +
-                     "state); got " + d.arcs);
+                     "state); got " + d.arcsL);
         return false;
     }
     // Every index below is a LOOP variable. The type checker rejects a literal
