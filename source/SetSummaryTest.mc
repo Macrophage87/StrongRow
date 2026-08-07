@@ -132,24 +132,51 @@ using Toybox.Test;
 
 // -- Coherence ---------------------------------------------------------------
 
-// The three quantities are not independent: distance = spm * minutes * m/str.
-// Deriving all of them from ONE set of totals is what guarantees it, and this
-// case is what would catch a future edit that latched a derived figure for one
-// cell while deriving another.
-(:test) function test_set_theCellsAgreeWithEachOther(logger) {
-    var strokes = 64;
-    var sec     = 240.0;
-    var dist    = 400.0;
-    var spm = StrongRowView.setAvgSpm(strokes, sec);
-    var dps = StrongRowView.setAvgDps(dist, strokes);
-    var d   = StrongRowView.setDistM(dist);
-    // spm * minutes * m/str must reconstruct the distance.
-    var recon = spm * (sec / 60.0) * dps;
-    if (recon < d - 0.01 || recon > d + 0.01) {
-        logger.error("the cells disagree: " + spm + " spm x " + (sec / 60.0) +
-                     " min x " + dps + " m/str = " + recon + ", but the " +
-                     "distance cell says " + d + ". All four cells must derive " +
-                     "from one set of raw totals");
+// The three quantities are not independent, but a RECONSTRUCTION test cannot
+// see that -- an earlier version of this case computed spm * minutes * m/str
+// and compared it to the distance, which is (S*60/T) * (T/60) * (D/S) == D
+// identically. Every term cancels. It passed for any inputs, including the
+// paused case that was live when it was written, and the commit message
+// claimed it pinned cell coherence. It pinned algebra.
+//
+// Pinned instead against values computed by hand, so a wrong denominator in
+// any one cell reds it: a 240 s interval covering 400 m in 63 strokes.
+(:test) function test_set_theCellsMatchHandComputedValues(logger) {
+    var spm = StrongRowView.setAvgSpm(63, 240.0);   // 63 * 60 / 240 = 15.75
+    var dps = StrongRowView.setAvgDps(400.0, 63);   // 400 / 63      = 6.349...
+    var d   = StrongRowView.setDistM(400.0);
+    if (spm < 15.74 || spm > 15.76) {
+        logger.error("expected 15.75 spm, got " + spm);
+        return false;
+    }
+    if (dps < 6.34 || dps > 6.36) {
+        logger.error("expected 6.35 m/str, got " + dps);
+        return false;
+    }
+    if (d < 399.99 || d > 400.01) {
+        logger.error("expected 400 m, got " + d);
+        return false;
+    }
+    return true;
+}
+
+// The denominators must be DIFFERENT quantities. spm divides by seconds and
+// m/str divides by strokes; an edit that fed the same denominator to both
+// would keep every case above green if the numbers happened to line up, so
+// this drives them apart deliberately.
+(:test) function test_set_rateAndDpsUseDifferentDenominators(logger) {
+    // Same strokes, different durations -> spm changes, m/str does not.
+    var spmA = StrongRowView.setAvgSpm(60, 240.0);
+    var spmB = StrongRowView.setAvgSpm(60, 480.0);
+    var dpsA = StrongRowView.setAvgDps(400.0, 60);
+    var dpsB = StrongRowView.setAvgDps(400.0, 60);
+    if (spmA <= spmB) {
+        logger.error("doubling the duration must halve the stroke rate; got " +
+                     spmA + " then " + spmB);
+        return false;
+    }
+    if (dpsA != dpsB) {
+        logger.error("m/stroke must not depend on the interval duration");
         return false;
     }
     return true;

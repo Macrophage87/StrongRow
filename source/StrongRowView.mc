@@ -229,7 +229,6 @@ class StrongRowView extends Ui.View {
     // mStrokeCount is session-cumulative, so a delta is the only way to get
     // either one per-step.
     hidden var mSetNum;          // 1-based work interval currently accumulating, 0 = none
-    hidden var mSetStartMs;
     hidden var mSetDistBase;     // elapsedDist() when the interval began
     hidden var mSetPausedDist;   // distance accrued while paused, to subtract
     hidden var mPauseDistAt;     // elapsedDist() at the moment of the pause
@@ -466,9 +465,10 @@ class StrongRowView extends Ui.View {
         mPIdx        = 0;
         mPCount      = 0;
         mRate        = 0.0;
-        // #126: mStrokeCount is deliberately NOT reset here. resetDetector
-        // owns DSP state, which must survive a session boundary; the stroke
-        // count is session-scoped and is reset by beginSessionAccum().
+        // #126: mStrokeCount is deliberately NOT reset here. resetDetector runs
+        // ONCE PER APP LAUNCH -- initialize() is its only caller -- and owns DSP
+        // state; the stroke count is session-scoped and is reset by
+        // beginSessionAccum(), which every recording-start path calls.
         // mDecim / mAcDt deliberately NOT seeded here (#8): computeCoeffs() is
         // their single source of truth and runs immediately after this in
         // initialize(). The old hardcoded 5 / 0.2 duplicated computeCoeffs(25)
@@ -2133,7 +2133,6 @@ class StrongRowView extends Ui.View {
     hidden function beginSessionAccum() {
         mStrokeCount   = 0;
         mSetNum        = 0;
-        mSetStartMs    = 0;
         mSetDistBase   = 0.0;
         mSetPausedDist = 0.0;
         mPauseDistAt   = 0.0;
@@ -2159,7 +2158,6 @@ class StrongRowView extends Ui.View {
     // uninitialised baseline.
     hidden function beginWorkAccum(num) {
         mSetNum        = num;
-        mSetStartMs    = System.getTimer();
         mSetDistBase   = elapsedDist();
         mSetPausedDist = 0.0;
         mSetStrokeBase = mStrokeCount;
@@ -2176,7 +2174,20 @@ class StrongRowView extends Ui.View {
         var dist = elapsedDist() - mSetDistBase - mSetPausedDist;
         if (dist < 0.0) { dist = 0.0; }
         mLastSetNum     = mSetNum;
-        mLastSetSec     = (System.getTimer() - mSetStartMs) / 1000.0;
+        // ONE CLOCK, and it is the pause-corrected one. An earlier revision
+        // stamped its own mSetStartMs from System.getTimer() and latched a raw
+        // wall-clock delta -- while the distance was pause-corrected and the HR
+        // was gated on !mPaused. Seconds was then the only total carrying
+        // paused time, so a 60 s pause in a 4-minute set latched 300 s and
+        // avg spm read 12.6 where the athlete rowed 15.75. A 20% under-report
+        // on glance priority 1, rendered as a value rather than a dash.
+        //
+        // stepElapsed() reads mStepStartMs, which togglePause already credits
+        // the paused span to (#74). latchWorkAccum runs at the top of
+        // advanceStep while mStepIdx still names the outgoing WORK, and
+        // mStepStartMs is stamped at every WORK entry, so this IS the
+        // interval's unpaused duration with no second clock to keep in sync.
+        mLastSetSec     = stepElapsed();
         mLastSetDist    = dist;
         // MINUS-ONE-STROKE BIAS, stated rather than left to be rediscovered as
         // a defect. registerStroke only counts a stroke whose period falls in
@@ -2601,12 +2612,31 @@ class StrongRowView extends Ui.View {
     // Every cell renders a dash for null. A dash is a distinct answer; a zero
     // is a claim about the interval.
     hidden function drawSetGrid(dc, w, h) {
+        // MEASURED, both axes. An earlier revision measured only the columns
+        // and took the rows from a design mockup: at FONT_MEDIUM the value rows
+        // overran the row beneath them by 12-18 px on every device, ink on ink
+        // in the same column, because the pitch was 0.09h against a font
+        // 0.132h-0.143h tall.
+        //
+        // getFontHeight over all 12 manifest devices gives XTINY <= 0.0817h,
+        // TINY <= 0.1107h and FONT_NUMBER_MILD <= 0.2476h. The countdown is
+        // VCENTER at 0.30h so its box ends at 0.4238h, and the footer starts at
+        // 0.87h -- 0.446h of usable band. Two label+value pairs need
+        // 2*(0.0817 + 0.1107) = 0.385h of ink, which fits only at TINY, and
+        // only with the REST sub row suppressed (see onUpdate). At FONT_MEDIUM
+        // or FONT_SMALL it does not fit at any row positions.
+        //
+        // Worst clearances across all 12 devices, measured not derived:
+        //   vertical  2.46 px (fenix6 / 6pro / 7 / 7pro)
+        //   label gap 8.12 px (fenix843mm)
+        //   left edge 13.4 px to the #110 arc (fenix6spro)
+        //   right     15.4 px reserved for #123's arc (fenix6spro)
         var lx = w * 0.34;
         var rx = w * 0.66;
-        var lblY1 = h * 0.43;
-        var valY1 = h * 0.515;
-        var lblY2 = h * 0.605;
-        var valY2 = h * 0.69;
+        var lblY1 = h * 0.44;
+        var valY1 = h * 0.533;
+        var lblY2 = h * 0.655;
+        var valY2 = h * 0.749;
 
         var spm  = mLastSetValid ? setAvgSpm(mLastSetStrokes, mLastSetSec) : null;
         var dps  = mLastSetValid ? setAvgDps(mLastSetDist, mLastSetStrokes) : null;
@@ -2619,15 +2649,23 @@ class StrongRowView extends Ui.View {
         dc.drawText(lx, lblY2, Gfx.FONT_XTINY, "interval m", Gfx.TEXT_JUSTIFY_CENTER);
         dc.drawText(rx, lblY2, Gfx.FONT_XTINY, "avg bpm",    Gfx.TEXT_JUSTIFY_CENTER);
 
+        // toNumber() BEFORE %d. Both of these are Floats -- mLastSetDist comes
+        // from Activity.Info.elapsedDistance and setAvgBpm multiplies by 1.0 --
+        // and every other %d in this file is applied to a Number obtained by an
+        // explicit conversion. drawSetGrid is not inside the try/catch that
+        // wraps drawHrArc, so a type surprise here would take the whole screen
+        // at 4 Hz. Rounded rather than truncated: %d on 147.9 renders 147.
         dc.setColor(Gfx.COLOR_WHITE, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(lx, valY1, Gfx.FONT_MEDIUM,
+        dc.drawText(lx, valY1, Gfx.FONT_TINY,
                     (spm == null) ? "--" : spm.format("%.1f"), Gfx.TEXT_JUSTIFY_CENTER);
-        dc.drawText(rx, valY1, Gfx.FONT_MEDIUM,
+        dc.drawText(rx, valY1, Gfx.FONT_TINY,
                     (dps == null) ? "--" : dps.format("%.1f"), Gfx.TEXT_JUSTIFY_CENTER);
-        dc.drawText(lx, valY2, Gfx.FONT_MEDIUM,
-                    (dst == null) ? "--" : dst.format("%d"), Gfx.TEXT_JUSTIFY_CENTER);
-        dc.drawText(rx, valY2, Gfx.FONT_MEDIUM,
-                    (bpm == null) ? "--" : bpm.format("%d"), Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(lx, valY2, Gfx.FONT_TINY,
+                    (dst == null) ? "--" : (dst + 0.5).toNumber().format("%d"),
+                    Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(rx, valY2, Gfx.FONT_TINY,
+                    (bpm == null) ? "--" : (bpm + 0.5).toNumber().format("%d"),
+                    Gfx.TEXT_JUSTIFY_CENTER);
     }
 
     hidden function drawFoot(dc, w, h, dist) {
@@ -2955,7 +2993,11 @@ class StrongRowView extends Ui.View {
         else if (mPaused)           { title = "PAUSED"; }
         else if (type == STEP_WARM) { title = "WARM UP"; }
         else if (type == STEP_WORK) { title = "WORK " + st[:idx].toString() + "/" + mNumWork.toString(); }
-        else if (type == STEP_REST) { title = "REST"; }
+        else if (type == STEP_REST) {
+            // #109: the set number rides in the title, because the sub row that
+            // used to carry it stands down while the grid is up.
+            title = mLastSetValid ? ("REST - SET " + mLastSetNum.toString()) : "REST";
+        }
         else if (type == STEP_GATE) { title = "READY"; }
         else if (type == STEP_COOL) { title = "COOL DOWN"; }
         else                        { title = "DONE"; }
@@ -2982,11 +3024,20 @@ class StrongRowView extends Ui.View {
 
         var dispRate = outputRate();
         var col = rateColour(type == STEP_WORK, dispRate, mTgtLo, mTgtHi);
-        // #109: during REST the grid IS the screen. There is no stroke to
-        // correct, so the live numeral earns nothing there, while the interval
-        // just finished is the thing worth reading. Counting continues
-        // unchanged -- only the display changes.
-        if (type == STEP_REST) {
+        // #109: once a work interval has been completed, the grid IS the
+        // screen on every step that is not itself work. There is no stroke to
+        // correct outside a work step, so the live numeral earns nothing there,
+        // while the interval just finished is the thing worth reading.
+        // Counting continues unchanged -- only the display changes.
+        //
+        // NOT gated on STEP_REST alone, which an earlier revision did and which
+        // is wrong twice over. `restMinutes = 0` is a legal, supported setting
+        // (loadSettings clamps it to >= 0 and buildWorkout emits a REST step
+        // only when it is > 0), so a rest-free workout is WORK/GATE/WORK/GATE
+        // and the grid would NEVER have rendered. And the last work interval is
+        // followed by COOL or DONE rather than REST, so the hardest interval of
+        // the session was the one whose summary the athlete could not see.
+        if (type != STEP_WORK && mLastSetValid) {
             drawSetGrid(dc, w, h);
         } else {
             drawRate(dc, w, h, col);
@@ -2996,16 +3047,18 @@ class StrongRowView extends Ui.View {
         var sub;
         if (type == STEP_WARM)      { sub = "START to begin work 1"; }
         else if (type == STEP_WORK) { sub = "target " + mTgtLo.toString() + "-" + mTgtHi.toString() + " spm"; }
-        else if (type == STEP_REST) {
-            sub = (mLastSetValid ? ("set " + mLastSetNum.toString() + "   ") : "")
-                  + "next: WORK " + st[:nextn].toString();
-        }
+        else if (type == STEP_REST) { sub = "next: WORK " + st[:nextn].toString(); }
         else if (type == STEP_GATE) { sub = "to start WORK " + st[:nextn].toString(); }
         else if (type == STEP_COOL) { sub = "START when docked"; }
         else if (type == STEP_DONE) { sub = "BACK to save"; }
         else                        { sub = "target " + mTgtLo.toString() + "-" + mTgtHi.toString() + " spm"; }
         dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(w / 2, h * 0.78, Gfx.FONT_XTINY, sub, Gfx.TEXT_JUSTIFY_CENTER);
+        // #109: the grid needs the whole band between the countdown and the
+        // footer, so the sub row stands down whenever the grid is up. Its
+        // content is not lost -- the set number moves into the title.
+        if (!(type != STEP_WORK && mLastSetValid)) {
+            dc.drawText(w / 2, h * 0.78, Gfx.FONT_XTINY, sub, Gfx.TEXT_JUSTIFY_CENTER);
+        }
 
         drawFoot(dc, w, h, dist);
     }
