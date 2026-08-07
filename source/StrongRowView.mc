@@ -1122,6 +1122,30 @@ class StrongRowView extends Ui.View {
         return Gfx.COLOR_WHITE;
     }
 
+    // Pure: the [paused, recFailed] pair a toggle should leave behind, given
+    // what the athlete pressed and what the recorder reports (#74).
+    //
+    // Extracted because this mapping has regressed TWICE under review and the
+    // call site is not reachable from a (:test) -- the same argument footState
+    // makes, and the same seam rateColour and coreFieldsWanted use. Review
+    // caught both regressions; a pin is cheaper than a sixth round.
+    //
+    // THE RULE, in one line: mPaused drives the FIT write gate and the step
+    // machine, so it must NEVER fail closed; mRecFailed drives the footer
+    // claim, so it must.
+    //
+    //   resume attempt  -> [false, !live]  the gates open either way, and the
+    //                                      claim is honest about the doubt
+    //   pause, refused  -> [false, false]  still recording, so keep writing --
+    //                                      and the probe just PROVED it live,
+    //                                      which clears any stale failure
+    //   pause, taken    -> [true,  false]  a deliberate pause is not a failure
+    static function pauseFlags(wasPaused, live) {
+        if (wasPaused)  { return [false, !live]; }
+        if (live)       { return [false, false]; }
+        return [true, false];
+    }
+
     // Pure: which of the five footer states is showing (#74).
     //
     // WHERE THE GUARANTEE ACTUALLY LIVES, stated precisely because the obvious
@@ -1996,38 +2020,45 @@ class StrongRowView extends Ui.View {
             if (mSession != null) {
                 try { mSession.start(); } catch (e) {}
             }
-            if (sessionLive()) {
-                // Only credit the paused span once the resume actually took.
-                mStepStartMs += (now - mPausedAt);
-                mPaused    = false;
-                mRecFailed = false;
-            } else {
-                // FAILED, OR UNANSWERABLE -- and the two are NOT treated the
-                // same way by the two jobs mPaused does.
-                //
-                // mPaused is both the display claim AND onTick's write gate,
-                // and sessionLive() fails closed. An earlier revision left
-                // mPaused TRUE here, which is right for the claim and wrong for
-                // the gate: a resume that SUCCEEDED while isRecording() threw
-                // would have frozen every setData over a live session, and
-                // record-scope fields LATCH, so every record for the rest of
-                // the piece would re-emit the last pre-pause value. That is
-                // exactly the harm the stop branch below is written to avoid,
-                // and it does not become acceptable by moving it here.
-                //
-                // So: clear mPaused, raise mRecFailed. footState tests
-                // recFailed BEFORE paused, so the footer still says NOT
-                // RECORDING and the claim stays honest, while onTick resumes
-                // writing real values into whatever records are actually being
-                // emitted. The asymmetry is entirely one-way -- if the session
-                // really is dead those writes reach no records and cost
-                // nothing, whereas not writing to a live one corrupts the row.
-                mPaused    = false;
-                mRecFailed = true;
-                // mPausedAt is left ALONE on purpose: it marks the start of the
-                // pause, so a later successful resume credits the whole span
-                // rather than only the part after this attempt.
-            }
+            var live = sessionLive();
+
+            // THE PAUSED SPAN IS CREDITED ON BOTH PATHS, because mPaused goes
+            // false on both. An earlier revision credited it only when the
+            // resume was confirmed, which sounds careful and was a regression:
+            // clearing mPaused un-freezes the step machine (onTick gates on
+            // !mPaused), so an uncredited resume charges the whole pause to the
+            // running interval. A three-minute pause in a two-minute WORK step
+            // ends that step on the next tick -- a lap boundary in the wrong
+            // place, and alert() firing a vibration and a tone for a transition
+            // nobody earned, on an app whose first rule is never to alarm.
+            //
+            // mPausedAt is SPENT here, not preserved. There is no later entry
+            // to this branch to preserve it for: mPaused is set true in exactly
+            // one place below, and that same arm overwrites mPausedAt.
+            mStepStartMs += (now - mPausedAt);
+            mPaused = false;
+
+            // mPaused does THREE jobs -- the footer claim, onTick's FIT write
+            // gate, and the step machine -- and only the FIRST of them should
+            // follow a fail-closed answer. So the claim rides on mRecFailed
+            // instead, and the other two ride on mPaused.
+            //
+            // Why the write gate must not fail closed: a resume that SUCCEEDED
+            // while isRecording() threw would otherwise freeze every setData
+            // over a live session, and record-scope fields LATCH, so every
+            // record for the rest of the piece would re-emit the last
+            // pre-pause value. Stale data that decodes as real.
+            //
+            // footState tests recFailed BEFORE paused, so an unconfirmed resume
+            // still reads NOT RECORDING and the claim stays honest.
+            //
+            // The asymmetry favours writing, though not as strongly as an
+            // earlier revision of this comment asserted: whether setData on a
+            // stopped session is a harmless no-op is #76's open question and is
+            // NOT established here. What is established is the other side --
+            // withholding writes from a live session corrupts the row through
+            // the latch, measured in #36 and #48.
+            mRecFailed = pauseFlags(true, live)[1];
         } else {
             if (mSession != null) {
                 try { mSession.stop(); } catch (e) {}
@@ -2036,7 +2067,14 @@ class StrongRowView extends Ui.View {
                 // The stop did not take. Staying unpaused is correct, not a
                 // concession: records ARE still being emitted, so onTick must
                 // keep writing real values into them.
-                mPaused = false;
+                //
+                // And CLEAR mRecFailed -- sessionLive() has just proved the
+                // recorder is live, so a stale failure flag would leave the
+                // footer reading NOT RECORDING over a healthy row with no way
+                // out except a press that stops the healthy row.
+                var f = pauseFlags(false, true);
+                mPaused    = f[0];
+                mRecFailed = f[1];
             } else {
                 // Stopped, OR unanswerable. Unlike the resume branch these two
                 // do not need separating: pausing is what the athlete asked
@@ -2045,8 +2083,13 @@ class StrongRowView extends Ui.View {
                 // unconditional assignment this replaced always had. Stated
                 // rather than glossed, because "both branches derive the flags
                 // from isRecording()" is only true when isRecording() answers.
-                mPausedAt = now;
-                mPaused   = true;
+                //
+                // mRecFailed cleared: this is a deliberate pause, not a
+                // failure, and recFailed outranks paused in footState.
+                var g = pauseFlags(false, false);
+                mPausedAt  = now;
+                mPaused    = g[0];
+                mRecFailed = g[1];
             }
         }
     }
