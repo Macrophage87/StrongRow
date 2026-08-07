@@ -970,9 +970,18 @@ class StrongRowView extends Ui.View {
 
     // Pure: which of the five footer states is showing (#74).
     //
-    // WHY THIS EXISTS. The footer used to be gated on mStarted alone and never
-    // consulted whether a recording session actually exists. A startSession()
-    // that threw left mSession null while both callers set mStarted = true
+    // WHERE THE GUARANTEE ACTUALLY LIVES, stated precisely because the obvious
+    // reading of this function is wrong: footState does NOT consult mSession,
+    // and adding a session parameter would not help. What fixed #74 is that
+    // startSession() now REPORTS whether a started session exists and both
+    // callers set mStarted from that report -- so by the time mStarted reaches
+    // here it already means "recording", which is exactly what it falsely
+    // claimed before. This function's job is only to stop the footer conflating
+    // "start failed" with "not started yet".
+    //
+    // WHY IT EXISTS. The footer used to be gated on mStarted alone, and
+    // mStarted was set unconditionally. A startSession() that threw left
+    // mSession null while both callers set mStarted = true
     // regardless, so the watch rendered an ordinary red "REC 12:34 2.10km
     // 240str" row -- live timer, live distance, live stroke count -- for a row
     // that would produce no FIT file at all. The athlete finished the piece
@@ -1428,10 +1437,21 @@ class StrongRowView extends Ui.View {
         // take effect before throwing, nulling the handle would strand a live
         // recording that stopAndSave() could no longer reach. Leaving it lets
         // the next START press retry start() on the same session.
+        //
+        // ASK THE SESSION, do not infer from the throw. A throw that arrives
+        // AFTER start() took effect would otherwise report failure over a LIVE
+        // recording, and that is not a cosmetic lie: onTick gates every
+        // FitContributor write on mStarted, so the row would save with none of
+        // this app's fields in it -- the exact inverse of #74 and, for a
+        // training app, just as useless. isRecording() is the same handle
+        // stopAndSave already trusts to decide whether to call stop().
         if (mSession == null) { return false; }
         try {
             mSession.start();
         } catch (e) {
+            try {
+                if (mSession.isRecording()) { return true; }
+            } catch (e2) {}
             return false;
         }
         return true;
@@ -1507,15 +1527,36 @@ class StrongRowView extends Ui.View {
         alert(t);
     }
 
+    // #74: these are the SAME two SDK calls on the SAME handle that
+    // startSession guards, and they were left bare here. Leaving them bare
+    // would have had the file making two contradictory claims about whether
+    // ActivityRecording.start() can throw -- defended in one place, unprotected
+    // eighty lines away.
+    //
+    // And here the consequence is worse than the bug #74 is about. There is no
+    // try/catch anywhere in the frames above this one -- togglePause is reached
+    // from onPrimary, which is called from StrongRowDelegate.onSelect -- so a
+    // throw terminates the app, and stopAndSave() is the ONLY caller of
+    // mSession.save(). #74 loses a row that never started; an unguarded throw
+    // here loses a REAL row, mid-piece, with every field already recorded.
+    //
+    // Swallowed rather than surfaced: the pause state is a display concern, and
+    // the recording is the thing worth protecting. mPaused is still updated on
+    // both paths, so the view stays consistent with what the athlete pressed
+    // even if the session declined the transition.
     hidden function togglePause() {
         var now = System.getTimer();
         if (mPaused) {
             mStepStartMs += (now - mPausedAt);
-            if (mSession != null) { mSession.start(); }
+            if (mSession != null) {
+                try { mSession.start(); } catch (e) {}
+            }
             mPaused = false;
         } else {
             mPausedAt = now;
-            if (mSession != null) { mSession.stop(); }
+            if (mSession != null) {
+                try { mSession.stop(); } catch (e) {}
+            }
             mPaused = true;
         }
     }
