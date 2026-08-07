@@ -188,6 +188,11 @@ class StrongRowView extends Ui.View {
     hidden var mSteps;
     hidden var mStepIdx;
     hidden var mStarted;
+    // #74: "START was pressed and recording did NOT begin". Distinct from
+    // !mStarted, which also covers "not pressed yet" -- conflating the two would
+    // tell the athlete to press a button they have already pressed. Read only by
+    // footState; never gates recording logic.
+    hidden var mRecFailed;
     hidden var mPaused;
     hidden var mStepStartMs;
     hidden var mPausedAt;
@@ -234,6 +239,7 @@ class StrongRowView extends Ui.View {
         mRmssdN     = 0;
         mStartMs    = 0;
         mStarted    = false;
+        mRecFailed  = false;
         mPaused     = false;
         mStepIdx    = 0;
         mStepStartMs = 0;
@@ -1253,12 +1259,25 @@ class StrongRowView extends Ui.View {
                 //     and any downstream aggregate that does not guard for
                 //     it (#48; Connect's rendering is untested, tracked
                 //     in #53).
-                mFitRate = mSession.createField(
-                    "row_stroke_rate", 0, Fit.DATA_TYPE_FLOAT,
-                    { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
-                mFitDps = mSession.createField(
-                    "dist_per_stroke", 1, Fit.DATA_TYPE_FLOAT,
-                    { :mesgType => Fit.MESG_TYPE_RECORD, :units => "m" });
+                // #74: this pair had no inner try of its own, unlike all four
+                // later groups. A throw from either reached only the outer
+                // catch, whose whole body is `mSession = null` -- so it
+                // DISCARDED a session that had already been created, rather
+                // than nulling the handles that failed. Worse, a throw from the
+                // SECOND create left mFitRate non-null and pointing into that
+                // discarded session, and onTick then wrote into it at 4 Hz for
+                // the entire row.
+                try {
+                    mFitRate = mSession.createField(
+                        "row_stroke_rate", 0, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
+                    mFitDps = mSession.createField(
+                        "dist_per_stroke", 1, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "m" });
+                } catch (e) {
+                    mFitRate = null;
+                    mFitDps = null;
+                }
                 // explicit R-R / HRV logging, independent of the watch's
                 // "Log HRV" device setting
                 try {
@@ -1393,7 +1412,29 @@ class StrongRowView extends Ui.View {
                 mSession = null;
             }
         }
-        if (mSession != null) { mSession.start(); }
+        // #74: returns TRUE only if a session exists AND start() returned
+        // normally. Both callers set mStarted from this instead of setting it
+        // unconditionally, which is what turned every throw above into a row
+        // that looked like it was recording and produced no FIT file.
+        //
+        // Guarding start() also closes a path the issue does not enumerate: it
+        // used to sit outside the outer try, so a throw propagated out of
+        // startSession into onPrimary. mStarted was never set -- but mSession
+        // stayed NON-null, so every later START press found `mSession == null`
+        // false, skipped the whole creation block, fell through to this line
+        // and threw again. The app became permanently unstartable.
+        //
+        // Caught rather than nulling mSession, deliberately: if start() DID
+        // take effect before throwing, nulling the handle would strand a live
+        // recording that stopAndSave() could no longer reach. Leaving it lets
+        // the next START press retry start() on the same session.
+        if (mSession == null) { return false; }
+        try {
+            mSession.start();
+        } catch (e) {
+            return false;
+        }
+        return true;
     }
 
     hidden function stepRemaining() {
@@ -1411,8 +1452,12 @@ class StrongRowView extends Ui.View {
     function onPrimary() {
         if (!mWorkoutEnabled) {
             if (!mStarted) {
-                startSession();
-                mStarted = true;
+                // #74: observe the outcome. A failed start leaves mStarted
+                // false and raises mRecFailed, so the footer says NOT RECORDING
+                // rather than REC. Pressing START again retries.
+                mStarted = startSession();
+                mRecFailed = !mStarted;
+                if (!mStarted) { return; }
                 mPaused = false;
                 mStartMs = System.getTimer();
                 alert(STEP_WORK);
@@ -1437,8 +1482,13 @@ class StrongRowView extends Ui.View {
     }
 
     hidden function startWorkout() {
-        startSession();
-        mStarted = true;
+        // #74: same contract as the free-row path in onPrimary. The workout is
+        // NOT advanced when recording failed -- returning before mStepIdx = 0
+        // keeps the step machine where it was, so a retry starts the workout
+        // from the top rather than from a half-entered state.
+        mStarted = startSession();
+        mRecFailed = !mStarted;
+        if (!mStarted) { return; }
         mPaused = false;
         mStepIdx = 0;
         mStartMs = System.getTimer();
@@ -1509,6 +1559,12 @@ class StrongRowView extends Ui.View {
             mFitCtDiag = null;
         }
         mStarted = false;
+        // #74: the attempt is over either way, so the footer goes back to
+        // "START to record" rather than latching NOT RECORDING past the row it
+        // described. A successful retry would clear this anyway (mRecFailed is
+        // assigned from every startSession outcome); this covers the path where
+        // the athlete stops instead of retrying.
+        mRecFailed = false;
     }
 
     // #11: release, then CLEAR. Clearing is not tidiness -- these two fields
@@ -1740,11 +1796,21 @@ class StrongRowView extends Ui.View {
         var foot;
         var fcol = Gfx.COLOR_LT_GRAY;
         var km = (dist / 1000.0).format("%.2f") + "km";
-        if (!mSensorOk) {
+        // #74: the chain that used to live here was gated on mStarted alone and
+        // never consulted whether a session exists. It is now the pure
+        // footState(), pinned in FootStateTest.mc; this switch only maps a state
+        // to text and colour.
+        var fs = footState(mSensorOk, mPaused, mStarted, mRecFailed);
+        if (fs == $.FOOT_NO_ACCEL) {
             foot = "NO ACCEL"; fcol = Gfx.COLOR_RED;
-        } else if (mPaused) {
+        } else if (fs == $.FOOT_NO_REC) {
+            // ORANGE, not red: red is what a healthy REC row shows, and the two
+            // must not be confusable at a glance. Colour and layout only -- no
+            // tone, no vibration, no flash (#114).
+            foot = "NOT RECORDING"; fcol = Gfx.COLOR_ORANGE;
+        } else if (fs == $.FOOT_PAUSED) {
             foot = "PAUSED  " + mStrokeCount.toString() + "str"; fcol = Gfx.COLOR_YELLOW;
-        } else if (mStarted) {
+        } else if (fs == $.FOOT_REC) {
             foot = "REC " + totalElapsed() + " " + km + " " + mStrokeCount.toString() + "str";
             fcol = Gfx.COLOR_RED;
         } else {
