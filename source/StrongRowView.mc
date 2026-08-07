@@ -217,6 +217,35 @@ class StrongRowView extends Ui.View {
     hidden var mPCount;
     hidden var mRate;
     hidden var mStrokeCount;
+
+    // ---- per-work-interval accumulators (#109) --------------------------
+    // RAW TOTALS ONLY. Every figure the rest view shows is derived at read
+    // time from these by a pure static, so two cells on the same screen can
+    // never disagree about the interval they describe -- which is exactly what
+    // latching derived values would allow.
+    //
+    // "Base" members are the reading at the interval's start; the interval's
+    // own total is the delta. Activity.Info exposes no lap-scoped distance and
+    // mStrokeCount is session-cumulative, so a delta is the only way to get
+    // either one per-step.
+    hidden var mSetNum;          // 1-based work interval currently accumulating, 0 = none
+    hidden var mSetStartMs;
+    hidden var mSetDistBase;     // elapsedDist() when the interval began
+    hidden var mSetPausedDist;   // distance accrued while paused, to subtract
+    hidden var mPauseDistAt;     // elapsedDist() at the moment of the pause
+    hidden var mSetStrokeBase;   // mStrokeCount when the interval began
+    hidden var mSetHrSum;
+    hidden var mSetHrN;
+
+    // The LATCH: the last completed work interval, frozen at its boundary.
+    hidden var mLastSetValid;
+    hidden var mLastSetNum;
+    hidden var mLastSetSec;
+    hidden var mLastSetDist;
+    hidden var mLastSetStrokes;
+    hidden var mLastSetHrSum;
+    hidden var mLastSetHrN;
+
     // autocorrelation state
     hidden var mDecim;
     hidden var mAcDt;
@@ -338,6 +367,13 @@ class StrongRowView extends Ui.View {
         mStepIdx    = 0;
         mStepStartMs = 0;
         mPausedAt   = 0;
+        // #126: mStrokeCount was reset ONLY in resetDetector(), whose sole
+        // caller is this function -- so it was app-lifetime while the footer
+        // rendered it as the recording's count. Row twice without relaunching
+        // and the second row's footer included the first row's strokes.
+        // Initialised here, and reset per session in beginSessionAccum().
+        mStrokeCount = 0;
+        beginSessionAccum();
         loadSettings();
         buildWorkout();
     }
@@ -430,7 +466,9 @@ class StrongRowView extends Ui.View {
         mPIdx        = 0;
         mPCount      = 0;
         mRate        = 0.0;
-        mStrokeCount = 0;
+        // #126: mStrokeCount is deliberately NOT reset here. resetDetector
+        // owns DSP state, which must survive a session boundary; the stroke
+        // count is session-scoped and is reset by beginSessionAccum().
         // mDecim / mAcDt deliberately NOT seeded here (#8): computeCoeffs() is
         // their single source of truth and runs immediately after this in
         // initialize(). The old hardcoded 5 / 0.2 duplicated computeCoeffs(25)
@@ -579,6 +617,15 @@ class StrongRowView extends Ui.View {
 
     function onTick() as Void {
         sampleHr();
+        // #109: fold the reading into the current work interval. Gated on the
+        // SAME freshness test the arc uses, so a dropout contributes nothing
+        // rather than dragging the mean toward a stale value -- and gated on
+        // !mPaused so a rest taken mid-interval is not averaged in as work.
+        if (mSetNum > 0 && mStarted && !mPaused
+                && hrHave(mHrEver, mLastHrMs, nowMs(), $.HR_FRESH_MS)) {
+            mSetHrSum += mHrBpm;
+            mSetHrN   += 1;
+        }
         if (mStarted && !mPaused) {
             if (mFitRate != null) { mFitRate.setData(outputRate()); }
             if (mFitDps != null)  { mFitDps.setData(distPerStroke(currentSpeed())); }
@@ -1160,6 +1207,44 @@ class StrongRowView extends Ui.View {
         if (wasPaused)  { return [false, !live]; }
         if (live)       { return [false, false]; }
         return [true, recFailed];
+    }
+
+    // ============ #109: the rest view's numbers, as pure decisions =========
+    // Each takes RAW TOTALS and returns the derived figure, or NULL when there
+    // is nothing to say. Null rather than 0.0 on purpose: this repository has
+    // already shipped a zero that read as data (#86/#107), and a rest cell
+    // showing 0.0 m/str is a claim about the interval, not an absence.
+    //
+    // Callers must render the null as its own thing -- a dash, never a number.
+
+    // Strokes per minute over the interval. Not an average of the live rate
+    // estimator: that lags, and averaging a lagging estimator compounds it.
+    static function setAvgSpm(strokes, sec) {
+        if (sec == null || sec <= 0.0) { return null; }
+        if (strokes == null || strokes <= 0) { return null; }
+        return strokes * 60.0 / sec;
+    }
+
+    // Metres per stroke over the interval: interval distance / interval
+    // strokes. NOT the live distPerStroke(), which is an instantaneous ratio
+    // of two smoothed estimators and a different quantity entirely (#123).
+    static function setAvgDps(dist, strokes) {
+        if (strokes == null || strokes <= 0) { return null; }
+        if (dist == null || dist <= 0.0) { return null; }
+        return dist / strokes;
+    }
+
+    // Mean heart rate over the interval, from the sum and the sample count.
+    static function setAvgBpm(hrSum, hrN) {
+        if (hrN == null || hrN <= 0) { return null; }
+        return hrSum * 1.0 / hrN;
+    }
+
+    // Interval distance in whole metres, or null. Separate from the raw member
+    // so the "nothing to say" rule is applied in one place for every cell.
+    static function setDistM(dist) {
+        if (dist == null || dist <= 0.0) { return null; }
+        return dist;
     }
 
     // Pure: which of the five footer states is showing (#74).
@@ -1952,6 +2037,7 @@ class StrongRowView extends Ui.View {
                 if (!mStarted) { return; }
                 mPaused = false;
                 mStartMs = System.getTimer();
+                beginSessionAccum();
                 alert(STEP_WORK);
             } else {
                 togglePause();
@@ -1985,10 +2071,19 @@ class StrongRowView extends Ui.View {
         mStepIdx = 0;
         mStartMs = System.getTimer();
         mStepStartMs = mStartMs;
+        beginSessionAccum();
+        // See beginWorkAccum: with warmupCooldown off, mSteps[0] IS a work
+        // interval and never passes through advanceStep.
+        var s0 = mSteps[0];
+        if (s0[:type] == STEP_WORK) { beginWorkAccum(s0[:idx]); }
         alert(mSteps[0][:type]);
     }
 
     hidden function advanceStep() {
+        // #109: latch BEFORE the index moves, while mSteps[mStepIdx] still
+        // names the step that is ending.
+        var out = mSteps[mStepIdx];
+        if (out[:type] == STEP_WORK) { latchWorkAccum(); }
         mStepIdx++;
         var st = mSteps[mStepIdx];
         var t = st[:type];
@@ -1996,6 +2091,7 @@ class StrongRowView extends Ui.View {
             if (mSession != null) { try { mSession.addLap(); } catch (e) {} }
             mStepStartMs = System.getTimer();
         }
+        if (t == STEP_WORK) { beginWorkAccum(st[:idx]); }
         alert(t);
     }
 
@@ -2030,11 +2126,93 @@ class StrongRowView extends Ui.View {
     // that decodes as real is worse than a gap.
     //
     // So both branches ask isRecording() and set the flags from the answer.
+    // ---- #109 accumulator lifecycle --------------------------------------
+
+    // A new RECORDING begins. Clears the session-scoped stroke count (#126) and
+    // discards any latched interval from a previous row.
+    hidden function beginSessionAccum() {
+        mStrokeCount   = 0;
+        mSetNum        = 0;
+        mSetStartMs    = 0;
+        mSetDistBase   = 0.0;
+        mSetPausedDist = 0.0;
+        mPauseDistAt   = 0.0;
+        mSetStrokeBase = 0;
+        mSetHrSum      = 0;
+        mSetHrN        = 0;
+        mLastSetValid  = false;
+        mLastSetNum    = 0;
+        mLastSetSec    = 0.0;
+        mLastSetDist   = 0.0;
+        mLastSetStrokes = 0;
+        mLastSetHrSum  = 0;
+        mLastSetHrN    = 0;
+    }
+
+    // A WORK interval begins.
+    //
+    // MUST be called from BOTH startWorkout and advanceStep, and that is not
+    // defensive symmetry -- it is a real bug otherwise. With warmupCooldown
+    // false, buildWorkout makes mSteps[0] a STEP_WORK, so interval 1 is entered
+    // directly by startWorkout and never passes through advanceStep at all.
+    // Wiring only advanceStep would leave set 1 accumulating against an
+    // uninitialised baseline.
+    hidden function beginWorkAccum(num) {
+        mSetNum        = num;
+        mSetStartMs    = System.getTimer();
+        mSetDistBase   = elapsedDist();
+        mSetPausedDist = 0.0;
+        mSetStrokeBase = mStrokeCount;
+        mSetHrSum      = 0;
+        mSetHrN        = 0;
+    }
+
+    // A WORK interval ends: freeze its raw totals.
+    //
+    // Called from the TOP of advanceStep, before mStepIdx++, while
+    // mSteps[mStepIdx] still names the outgoing step.
+    hidden function latchWorkAccum() {
+        if (mSetNum <= 0) { return; }
+        var dist = elapsedDist() - mSetDistBase - mSetPausedDist;
+        if (dist < 0.0) { dist = 0.0; }
+        mLastSetNum     = mSetNum;
+        mLastSetSec     = (System.getTimer() - mSetStartMs) / 1000.0;
+        mLastSetDist    = dist;
+        // MINUS-ONE-STROKE BIAS, stated rather than left to be rediscovered as
+        // a defect. registerStroke only counts a stroke whose period falls in
+        // the valid window, so the FIRST stroke after every rest gap is
+        // rejected -- a 4-minute set at 16 spm latches 63, not 64. That is
+        // ~1.6% high on m/stroke and 0.25 spm low on the rate. ACCEPTED here
+        // rather than corrected, because a +1 fudge would be wrong for an
+        // interval entered mid-stroke and there is no way to tell the two
+        // apart from the count alone.
+        mLastSetStrokes = mStrokeCount - mSetStrokeBase;
+        mLastSetHrSum   = mSetHrSum;
+        mLastSetHrN     = mSetHrN;
+        mLastSetValid   = true;
+        mSetNum         = 0;
+    }
+
     hidden function togglePause() {
         var now = System.getTimer();
         if (mPaused) {
             if (mSession != null) {
                 try { mSession.start(); } catch (e) {}
+            }
+            // #109/#127: charge any distance that accrued while paused to
+            // mSetPausedDist so latchWorkAccum can subtract it.
+            //
+            // CORRECT WHETHER OR NOT elapsedDistance FREEZES while the session
+            // is stopped, which is what #127 exists to measure. If it freezes,
+            // this delta is zero and the correction is a no-op. If it does not,
+            // this is exactly the drift that would otherwise inflate the
+            // interval's distance and its metres-per-stroke -- in the
+            // flattering direction, which is the direction least likely to be
+            // questioned. Cheap enough that waiting for the measurement to
+            // decide would have been the worse trade.
+            if (mSetNum > 0) {
+                var drift = elapsedDist() - mPauseDistAt;
+                if (drift > 0.0) { mSetPausedDist += drift; }
             }
             var live = sessionLive();
 
@@ -2106,6 +2284,7 @@ class StrongRowView extends Ui.View {
                 // only ever true after a failure, clearing it here was a no-op
                 // on every healthy path and a lie on the one unhealthy one.
                 var g = pauseFlags(false, false, mRecFailed);
+                mPauseDistAt = elapsedDist();
                 mPausedAt  = now;
                 mPaused    = g[0];
                 mRecFailed = g[1];
@@ -2410,6 +2589,45 @@ class StrongRowView extends Ui.View {
         if (dps > 0.0) { txt += "  " + dps.format("%.1f") + "m/str"; }
         dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
         dc.drawText(w / 2, h * 0.70, Gfx.FONT_XTINY, txt, Gfx.TEXT_JUSTIFY_CENTER);
+    }
+
+    // #109: the completed interval, as a 2x2 grid.
+    //
+    // All four cells come from ONE set of latched raw totals, derived here by
+    // the pure statics. That is why the totals are latched rather than the
+    // figures: a grid makes any disagreement between cells immediately
+    // visible, and deriving them together is what stops it.
+    //
+    // Every cell renders a dash for null. A dash is a distinct answer; a zero
+    // is a claim about the interval.
+    hidden function drawSetGrid(dc, w, h) {
+        var lx = w * 0.34;
+        var rx = w * 0.66;
+        var lblY1 = h * 0.43;
+        var valY1 = h * 0.515;
+        var lblY2 = h * 0.605;
+        var valY2 = h * 0.69;
+
+        var spm  = mLastSetValid ? setAvgSpm(mLastSetStrokes, mLastSetSec) : null;
+        var dps  = mLastSetValid ? setAvgDps(mLastSetDist, mLastSetStrokes) : null;
+        var dst  = mLastSetValid ? setDistM(mLastSetDist) : null;
+        var bpm  = mLastSetValid ? setAvgBpm(mLastSetHrSum, mLastSetHrN) : null;
+
+        dc.setColor(Gfx.COLOR_DK_GRAY, Gfx.COLOR_TRANSPARENT);
+        dc.drawText(lx, lblY1, Gfx.FONT_XTINY, "avg spm",    Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(rx, lblY1, Gfx.FONT_XTINY, "avg m/str",  Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(lx, lblY2, Gfx.FONT_XTINY, "interval m", Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(rx, lblY2, Gfx.FONT_XTINY, "avg bpm",    Gfx.TEXT_JUSTIFY_CENTER);
+
+        dc.setColor(Gfx.COLOR_WHITE, Gfx.COLOR_TRANSPARENT);
+        dc.drawText(lx, valY1, Gfx.FONT_MEDIUM,
+                    (spm == null) ? "--" : spm.format("%.1f"), Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(rx, valY1, Gfx.FONT_MEDIUM,
+                    (dps == null) ? "--" : dps.format("%.1f"), Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(lx, valY2, Gfx.FONT_MEDIUM,
+                    (dst == null) ? "--" : dst.format("%d"), Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(rx, valY2, Gfx.FONT_MEDIUM,
+                    (bpm == null) ? "--" : bpm.format("%d"), Gfx.TEXT_JUSTIFY_CENTER);
     }
 
     hidden function drawFoot(dc, w, h, dist) {
@@ -2764,13 +2982,24 @@ class StrongRowView extends Ui.View {
 
         var dispRate = outputRate();
         var col = rateColour(type == STEP_WORK, dispRate, mTgtLo, mTgtHi);
-        drawRate(dc, w, h, col);
-        drawPace(dc, w, h, spd);
+        // #109: during REST the grid IS the screen. There is no stroke to
+        // correct, so the live numeral earns nothing there, while the interval
+        // just finished is the thing worth reading. Counting continues
+        // unchanged -- only the display changes.
+        if (type == STEP_REST) {
+            drawSetGrid(dc, w, h);
+        } else {
+            drawRate(dc, w, h, col);
+            drawPace(dc, w, h, spd);
+        }
 
         var sub;
         if (type == STEP_WARM)      { sub = "START to begin work 1"; }
         else if (type == STEP_WORK) { sub = "target " + mTgtLo.toString() + "-" + mTgtHi.toString() + " spm"; }
-        else if (type == STEP_REST) { sub = "next: WORK " + st[:nextn].toString(); }
+        else if (type == STEP_REST) {
+            sub = (mLastSetValid ? ("set " + mLastSetNum.toString() + "   ") : "")
+                  + "next: WORK " + st[:nextn].toString();
+        }
         else if (type == STEP_GATE) { sub = "to start WORK " + st[:nextn].toString(); }
         else if (type == STEP_COOL) { sub = "START when docked"; }
         else if (type == STEP_DONE) { sub = "BACK to save"; }
