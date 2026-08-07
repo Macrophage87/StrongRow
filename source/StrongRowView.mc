@@ -1123,27 +1123,43 @@ class StrongRowView extends Ui.View {
     }
 
     // Pure: the [paused, recFailed] pair a toggle should leave behind, given
-    // what the athlete pressed and what the recorder reports (#74).
+    // what the athlete pressed, what the recorder reports, and what the failure
+    // flag already was (#74).
     //
-    // Extracted because this mapping has regressed TWICE under review and the
-    // call site is not reachable from a (:test) -- the same argument footState
-    // makes, and the same seam rateColour and coreFieldsWanted use. Review
-    // caught both regressions; a pin is cheaper than a sixth round.
+    // Extracted because this mapping has regressed THREE times under review and
+    // the call site is not reachable from a (:test) -- the same argument
+    // footState makes, and the same seam rateColour and coreFieldsWanted use.
     //
     // THE RULE, in one line: mPaused drives the FIT write gate and the step
     // machine, so it must NEVER fail closed; mRecFailed drives the footer
     // claim, so it must.
     //
-    //   resume attempt  -> [false, !live]  the gates open either way, and the
-    //                                      claim is honest about the doubt
-    //   pause, refused  -> [false, false]  still recording, so keep writing --
-    //                                      and the probe just PROVED it live,
-    //                                      which clears any stale failure
-    //   pause, taken    -> [true,  false]  a deliberate pause is not a failure
-    static function pauseFlags(wasPaused, live) {
+    // `live` COMES FROM A FAIL-CLOSED PROBE. sessionLive() returns false for a
+    // dead session, a null handle AND a throw, so live == false PROVES NOTHING
+    // and only live == true is evidence. That asymmetry is why the third
+    // argument exists:
+    //
+    //   resume attempt   -> [false, !live]     gates open either way; the claim
+    //                                          is honest about the doubt
+    //   pause, refused   -> [false, false]     live == true is real evidence:
+    //                                          keep writing, and clear the flag
+    //   pause, taken     -> [true,  recFailed] PRESERVE it. An earlier revision
+    //                                          cleared it here, reasoning that a
+    //                                          deliberate pause is not a
+    //                                          failure. But this arm is reached
+    //                                          on live == false, which cannot
+    //                                          tell "my stop took" from "it was
+    //                                          already dead" -- so clearing was
+    //                                          a no-op on every healthy path
+    //                                          and erased the truth on the only
+    //                                          unhealthy one. One press out of
+    //                                          NOT RECORDING bought a
+    //                                          reassuring PAUSED over a dead
+    //                                          recorder.
+    static function pauseFlags(wasPaused, live, recFailed) {
         if (wasPaused)  { return [false, !live]; }
         if (live)       { return [false, false]; }
-        return [true, false];
+        return [true, recFailed];
     }
 
     // Pure: which of the five footer states is showing (#74).
@@ -2058,7 +2074,7 @@ class StrongRowView extends Ui.View {
             // NOT established here. What is established is the other side --
             // withholding writes from a live session corrupts the row through
             // the latch, measured in #36 and #48.
-            mRecFailed = pauseFlags(true, live)[1];
+            mRecFailed = pauseFlags(true, live, mRecFailed)[1];
         } else {
             if (mSession != null) {
                 try { mSession.stop(); } catch (e) {}
@@ -2072,7 +2088,7 @@ class StrongRowView extends Ui.View {
                 // recorder is live, so a stale failure flag would leave the
                 // footer reading NOT RECORDING over a healthy row with no way
                 // out except a press that stops the healthy row.
-                var f = pauseFlags(false, true);
+                var f = pauseFlags(false, true, mRecFailed);
                 mPaused    = f[0];
                 mRecFailed = f[1];
             } else {
@@ -2084,9 +2100,12 @@ class StrongRowView extends Ui.View {
                 // rather than glossed, because "both branches derive the flags
                 // from isRecording()" is only true when isRecording() answers.
                 //
-                // mRecFailed cleared: this is a deliberate pause, not a
-                // failure, and recFailed outranks paused in footState.
-                var g = pauseFlags(false, false);
+                // mRecFailed is PRESERVED, not cleared. This arm is reached on
+                // a fail-closed false, which cannot distinguish "the stop took"
+                // from "the session was already dead" -- and since the flag is
+                // only ever true after a failure, clearing it here was a no-op
+                // on every healthy path and a lie on the one unhealthy one.
+                var g = pauseFlags(false, false, mRecFailed);
                 mPausedAt  = now;
                 mPaused    = g[0];
                 mRecFailed = g[1];
