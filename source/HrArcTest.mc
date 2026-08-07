@@ -71,13 +71,15 @@ using Toybox.System;
 class HrDc {
     var w; var h;
     var arcs;        // drawArc call count
+    var arcLo;       // every drawArc's degStart, in call order
+    var arcHi;       // every drawArc's degEnd, in call order
     var lines;       // drawLine call count
     var texts;       // every drawText, as "x|y|font|string|justify"
     var throwAtArc;  // 1-based index of the drawArc that should throw; 0 = none
 
     function initialize(width, height) {
         w = width; h = height;
-        arcs = 0; lines = 0; texts = []; throwAtArc = 0;
+        arcs = 0; arcLo = []; arcHi = []; lines = 0; texts = []; throwAtArc = 0;
     }
 
     function getWidth()  { return w; }
@@ -89,8 +91,15 @@ class HrDc {
     // Counts FIRST, then fails -- the same rule LifeTimer.start states
     // (ViewLifecycleTest.mc:50-55): "never called" and "called and threw" must
     // stay distinguishable.
+    //
+    // Records the ANGLES too. The count alone left the drawn segment LAYOUT
+    // unpinned, and the gaps ARE the no-data channel: changing the loop stride
+    // from `i * 2.0 * seg` to `i * seg` abuts the three segments into a solid
+    // track with no gaps, and every count-based case stays green.
     function drawArc(x, y, r, attr, degStart, degEnd) {
         arcs++;
+        arcLo.add(degStart);
+        arcHi.add(degEnd);
         if (throwAtArc > 0 && arcs >= throwAtArc) { throw new Lang.Exception(); }
     }
 
@@ -990,7 +999,18 @@ class HrProbe extends StrongRowView {
     // Non-zero bpm, ever-seen true, timestamp far outside the freshness window.
     // Deliberately a BELOW-BAND value: if the gate ever fails open, the arc
     // renders blue, and blue means "below target" across the whole app.
-    p.setHrState(105, System.getTimer() - (10 * $.HR_FRESH_MS), true);
+    // Guarded, not assumed. System.getTimer() counts from DEVICE start, so on a
+    // simulator up for less than 50 s this stamp would be NEGATIVE and hrHave
+    // would reject it on its `lastMs > 0` sign term without ever reaching the
+    // freshness comparison this case exists to pin.
+    var stamp = System.getTimer() - (10 * $.HR_FRESH_MS);
+    if (stamp <= 0) {
+        logger.error("device uptime is under " + (10 * $.HR_FRESH_MS) +
+                     " ms, so this case would pass on hrHave's sign term " +
+                     "rather than on freshness. Re-run on a warmer device");
+        return false;
+    }
+    p.setHrState(105, stamp, true);
     var d = new HrDc(240, 240);
     p.runUpdate(d);
     if (d.arcs != 4 || d.lines != 2) {
@@ -1049,23 +1069,75 @@ class HrProbe extends StrongRowView {
     return true;
 }
 
-// The last segment must END on HR_ARC_BOT. This is what the integer version got
-// wrong, and it is a different claim from the one above: a seg that spanned the
-// sweep could still be laid out from the wrong origin.
-(:test) function test_hr_brokenTrackLastSegmentEndsAtTheSweepEnd(logger) {
+// The DRAWN layout, not the formula. The case above pins hrTrackSeg's
+// arithmetic; this pins what drawHrArc actually issues, which is a different
+// claim and the one that matters -- the GAPS are the no-data channel.
+//
+// Replaces a case that asserted
+//   HR_ARC_TOP + (parts-1)*2*seg + seg == HR_ARC_BOT
+// which is the case above rearranged: (2*parts-1)*seg == span, algebraically
+// identical for every parts and seg, so it could never red while the other
+// stayed green. It was credited with coverage it did not have.
+(:test) function test_hr_brokenTrackDrawsSeparatedSegments(logger) {
+    var p = new HrProbe();
+    p.enterWorkStep(false);
+    p.setHrState(0, 0, false);
+    var d = new HrDc(240, 240);
+    p.runUpdate(d);
+
     var parts = StrongRowView.hrTrackParts(false);
-    var seg   = StrongRowView.hrTrackSeg(parts);
-    var end   = $.HR_ARC_TOP + (parts - 1) * 2.0 * seg + seg;
-    if (end < $.HR_ARC_BOT - 0.001 || end > $.HR_ARC_BOT + 0.001) {
-        logger.error("the last of " + parts + " segments must end on " +
-                     "HR_ARC_BOT (" + $.HR_ARC_BOT + "); it ends at " + end);
+    // Track segments are the first `parts` arcs; the band rail follows them.
+    if (d.arcs < parts + 1) {
+        logger.error("expected at least " + (parts + 1) + " arcs (track " +
+                     "segments + band rail); got " + d.arcs);
         return false;
+    }
+    // Every index below is a LOOP variable. The type checker rejects a literal
+    // index into an array built with add(), which is why there is no
+    // arcLo[0] here -- same reason textLog walks its array rather than
+    // subscripting it.
+    var prevHi = -1;
+    for (var i = 0; i < parts; i++) {
+        var lo = d.arcLo[i];
+        var hi = d.arcHi[i];
+        if (i == 0 && lo != $.HR_ARC_TOP) {
+            logger.error("the first segment must start on HR_ARC_TOP (" +
+                         $.HR_ARC_TOP + "); it starts at " + lo);
+            return false;
+        }
+        if (i == parts - 1 && hi != $.HR_ARC_BOT) {
+            logger.error("the last segment must end on HR_ARC_BOT (" +
+                         $.HR_ARC_BOT + "); it ends at " + hi);
+            return false;
+        }
+        if (hi <= lo) {
+            logger.error("segment " + i + " is empty or inverted: [" + lo +
+                         "," + hi + "] -- equal angles make drawArc render a " +
+                         "FULL CIRCLE, the hazard HR_ARC_MIN_D exists for");
+            return false;
+        }
+        // THE POINT OF THE CASE. Consecutive segments must be SEPARATED. A
+        // stride of `i * seg` instead of `i * 2 * seg` draws three ABUTTING
+        // arcs -- a solid track that merely stops short -- and the no-data
+        // state stops being distinguishable from a present one.
+        if (prevHi >= 0 && lo <= prevHi) {
+            logger.error("segments " + (i - 1) + " and " + i + " abut or " +
+                         "overlap: previous ended at " + prevHi + ", this " +
+                         "starts at " + lo + ". The broken track IS the " +
+                         "no-data channel; with no gaps there is no channel");
+            return false;
+        }
+        prevHi = hi;
     }
     return true;
 }
 
-// A present heart rate draws ONE unbroken segment, so hrTrackSeg must hand back
-// the whole sweep rather than a slice of it.
+// hrTrackSeg must be TOTAL: it has to degrade sensibly at parts <= 1 rather
+// than dividing by one and handing back a slice. Stated as what it pins,
+// because an earlier version of this comment claimed the one-segment render
+// goes through hrTrackSeg. It does not -- drawHrArc takes its `parts <= 1`
+// branch and draws with HR_ARC_TOP / HR_ARC_BOT directly. This guards a future
+// caller, not the shipping path.
 (:test) function test_hr_wholeTrackIsTheWholeSweep(logger) {
     var seg = StrongRowView.hrTrackSeg(StrongRowView.hrTrackParts(true));
     var span = ($.HR_ARC_BOT - $.HR_ARC_TOP) * 1.0;

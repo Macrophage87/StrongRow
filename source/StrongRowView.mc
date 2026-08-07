@@ -2155,13 +2155,24 @@ class StrongRowView extends Ui.View {
     //      track and has no geometric edge of its own. Its extent is read as a
     //      CHROMATIC boundary against the track, not as a shape.
     //
-    //      That is still sound, and the reason is luminance rather than hue:
-    //      green 15.30:1, blue 8.19:1 and red 5.25:1 all sit against a track
-    //      of 2.82:1, so the boundary survives deuteranopia and greyscale. But
-    //      it is a LUMINANCE channel, not a geometric one, and anything
-    //      copying this construction -- #123's distance-per-stroke arc will --
-    //      inherits that constraint: whatever marks a position on this rail
-    //      must contrast with the FILLED track as well as the empty one;
+    //      AND THAT BOUNDARY IS WEAK, measured against the right pair. An
+    //      earlier revision of this correction cited green 15.30:1, blue
+    //      8.19:1 and red 5.25:1 -- but those are each colour against BLACK,
+    //      not against the track, so they said nothing about the boundary the
+    //      sentence was about. Against COLOR_DK_GRAY the fill contrasts at
+    //      green 5.43:1, blue 2.91:1, RED 1.86:1. Blue and red sit BELOW the
+    //      3:1 floor this file applies at :1092 to reject a colour outright.
+    //
+    //      So the fill is a REDUNDANT cue, not a load-bearing one, and the
+    //      design does not rest on it: the head tick is COLOR_WHITE at 7.46:1
+    //      against the track, and that is what actually carries the position.
+    //      Read the fill as "roughly how far, and which zone" -- at red in
+    //      particular its endpoint is nearly unreadable against the track.
+    //
+    //      Anything copying this construction -- #123's distance-per-stroke
+    //      arc will -- inherits the constraint: whatever marks a position on
+    //      this rail must contrast with the FILLED track as well as the empty
+    //      one, and must not lean on the fill's own edge to do it;
     //   2. the BAND is drawn ON THE TRACK -- a light rail inside the track
     //      spanning exactly the target band, closed by a radial tick at each
     //      end that crosses both the rail and the track. This is what carries
