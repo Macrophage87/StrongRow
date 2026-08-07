@@ -1155,6 +1155,10 @@ class StrongRowView extends Ui.View {
     // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
     // freshness is about R-R batch arrival and this is about a bpm read. Two
     // signals that happen to share a shape today and must be free to diverge.
+    static function hrHave(ever, lastMs, nowMs, threshMs) {
+        return ever && lastMs > 0 && (nowMs - lastMs) < threshMs;
+    }
+
     // The freshness clock, as one overridable call.
     //
     // Exists because System.getTimer() counts from DEVICE start, so any
@@ -1168,10 +1172,6 @@ class StrongRowView extends Ui.View {
     // A probe overrides this and the case becomes deterministic on any device.
     hidden function nowMs() {
         return System.getTimer();
-    }
-
-    static function hrHave(ever, lastMs, nowMs, threshMs) {
-        return ever && lastMs > 0 && (nowMs - lastMs) < threshMs;
     }
 
     // Pure: which zone is this heart rate in?
