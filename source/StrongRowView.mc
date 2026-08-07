@@ -82,9 +82,9 @@ const FOOT_IDLE     = 4;   // not started yet
 //
 // 80-190 rather than a wider span, and the reason is RESOLUTION, not taste.
 // drawArc truncates to whole degrees, so one degree is the finest distinction
-// the geometry can draw, and one degree costs (HI-LO)/sweep bpm. Over the 44
-// degree sweep below, 80-190 gives 0.4 deg/bpm, i.e. ONE DEGREE IS 2.5 BPM. A
-// 60-200 range over the same sweep would make it 3.2 bpm. Both ends are still
+// the geometry can draw, and one degree costs (HI-LO)/sweep bpm. Over the 56
+// degree sweep below, 80-190 gives 0.509 deg/bpm, i.e. ONE DEGREE IS 1.96 BPM.
+// A 60-200 range over the same sweep would make it 2.5 bpm. Both ends are still
 // outside any plausible rowing target -- the reference session ran 97-147 --
 // and a reading beyond either end clamps VISIBLY rather than silently, so the
 // cost of the narrower span is paid in a state the display announces.
@@ -92,28 +92,66 @@ const HR_DISP_LO = 80;
 const HR_DISP_HI = 190;
 // SWEEP, in drawArc degrees. 0 is 3 o'clock, 90 is 12, 180 is 9, 270 is 6, so
 // this is the left edge centred on 9 o'clock: low bpm at the bottom
-// (HR_ARC_BOT), high at the top (HR_ARC_TOP), +/-22 degrees of horizontal.
+// (HR_ARC_BOT), high at the top (HR_ARC_TOP), +/-28 degrees of horizontal.
+// SYMMETRIC about 180 by construction, and pinned as such
+// (test_hr_sweepIsSymmetricAboutNineOclock): every clearance below was computed
+// from a single half-sweep, which only describes the drawn shape while the two
+// ends are equidistant from horizontal.
 //
-// +/-22 IS MEASURED, NOT DERIVED, and the distinction is the whole history of
-// this constant. It was +/-30, chosen by arithmetic against the height
+// MEASURED, NOT DERIVED, and the distinction is the whole history of this
+// constant. It was once +/-30, chosen by arithmetic against the height
 // fractions of the rows above and below, and that arithmetic was wrong in two
 // ways at once: it tracked the CENTRELINE of each primitive rather than its
 // outermost pixel, and it assumed text widths instead of measuring them. The
 // arc overlapped rendered text on 11 of the 12 manifest devices -- by 21 px on
-// fr965 and 23 px on fenix843mm.
+// fr965 and 23 px on fenix843mm. It then shipped at +/-22, which was not a
+// conservative choice: against the layout of the day it was close to the
+// ceiling, because the pace row sat at h*0.70.
 //
-// The bound now comes from source/HrLayoutTest.mc, which renders every screen
-// this view can draw into a recording Dc, measures every string with the real
-// font metrics of a real Dc, expands every primitive to its PEN WIDTH, and
-// reports the worst separation. At +/-22 the worst margin over every step type,
-// every band settable in the declared range and every heart-rate state is
-// +13.4 px, on fenix6spro. Widening to +/-26 drops fenix843mm to 6.5 px, which
-// is why it is not wider.
+// #108 REMOVES THE PACE ROW FROM THE WORK VIEW, and that is what buys this.
+// The widening and the strip are one change for that reason and must not be
+// separated.
+//
+// WHAT DECIDED +/-28. MEASURED END TO END ON THE SHIPPING DRAW PATH: every
+// primitive onUpdate issues, recorded through a Dc that keeps its geometry and
+// expanded to its PEN WIDTH, against every string onUpdate draws, each measured
+// with getTextWidthInPixels and getFontHeight on a REAL Dc -- and against the
+// MIRROR of the drawn region about the vertical centreline, so #123's
+// right-edge arc keeps a lane of equal width. Worst signed separation, in
+// pixels, on the three devices that bind:
+//
+//     half-sweep   fenix6spro   fenix843mm   fr965
+//       +/-22         19.0         20.7       17.0
+//       +/-26         13.3         10.2       11.9
+//       +/-28         10.6          5.0        8.6   <- landed
+//       +/-30          8.2          0.7        3.2
+//       +/-32          6.2         -4.2       -0.2   <- overlaps
+//       +/-35          3.5         -9.3       -5.4   <- overlaps
+//
+// The ceiling is fenix843mm and it sits between +/-30 and +/-32. +/-28 is the
+// last whole degree with more than four pixels on every device.
+//
+// THE +/-35 THAT #110's GEOMETRY SECTION PROPOSED DOES NOT FIT. It overlaps by
+// 9.3 px on fenix843mm and 5.4 px on fr965. That estimate looked only at the
+// h*0.78 caption row on one device; what actually binds is the REST screen --
+// its pace row, and once the #109 grid is up, the grid's "interval m" label.
+//
+// Over all TWELVE devices at +/-28, with the #109 grid rendered, the worst is
+// 4.95 px on fenix843mm, and the mirrored lane clears by the same 4.95 px. The
+// tightest device once the grid is up is fenix6spro at 8.95 px.
+//
+// THE CONVENTION IS THE FONT BOX, NOT THE INK, and that is what makes 4.95 px a
+// conservative number rather than a thin one. A string is taken to occupy
+// dc.getFontHeight() vertically -- the same convention drawSetGrid uses -- and
+// for a FONT_NUMBER_* face that box is far taller than any digit drawn in it.
+// Nothing in this repository can measure glyph ink, so the larger true
+// clearance is NOT claimed. The claim is the one that was measured: no drawn
+// arc pixel enters any string's font box.
 //
 // None of that says anything about how the result looks. It says pixels do not
 // share coordinates.
-const HR_ARC_TOP = 158;
-const HR_ARC_BOT = 202;
+const HR_ARC_TOP = 152;
+const HR_ARC_BOT = 208;
 // MINIMUM DRAWN SWEEP, in whole degrees, for every arc this feature draws.
 // SDK 9.2.0 documents drawArc as truncating its parameters toward zero and
 // drawing A COMPLETE CIRCLE when degreeStart and degreeEnd are equal. So a band
@@ -1541,9 +1579,11 @@ class StrongRowView extends Ui.View {
     // "nothing is lost except an arc that could not have been seen". That is
     // false: the fill is the SOLE carrier of the blue / green / red zone
     // colour, so suppressing it suppresses the colour too. At the shipping
-    // constants the first heart rate with a visible fill is 83 bpm --
-    // MEASURED, by walking hrAngle over 0..200 -- so every reading from 0
-    // through 82 renders with no zone colour at all.
+    // constants the first heart rate with a visible fill is 82 bpm --
+    // MEASURED, by walking hrAngle over 0..260 -- so every reading from 0
+    // through 81 renders with no zone colour at all. (#108's wider sweep moved
+    // that threshold down from 83: a degree is worth less bpm now, so the
+    // second drawable degree arrives sooner.)
     //
     // Accepted, for two reasons. The head tick still marks the position, so
     // the reading is not invisible, only uncoloured. And the suppressed band
@@ -1577,7 +1617,7 @@ class StrongRowView extends Ui.View {
     // bpm instead would miss both.
     //
     // Widening is symmetric about the midpoint, then pushed back inside the
-    // sweep if it overran an end. With a 44-degree sweep and a 2-degree floor
+    // sweep if it overran an end. With a 56-degree sweep and a 2-degree floor
     // it cannot overrun both, so the second correction cannot undo the first.
     static function hrBandArc(lo, hi) {
         var a1 = hrAngle(hi);
@@ -1633,11 +1673,12 @@ class StrongRowView extends Ui.View {
     //
     // FLOAT division, deliberately. `parts` segments separated by `parts - 1`
     // gaps of the same width is `2 * parts - 1` equal slices of the sweep, and
-    // at the shipping constants that is 44 / 5. Computed in INTEGER arithmetic
-    // that truncates to 8, which drew [158,166] [174,182] [190,198] and left a
-    // FOUR-DEGREE TAIL WITH NO TRACK AT ALL -- the arc simply stopped short of
-    // its own end. 44 / 5.0 = 8.8 spans the sweep exactly, ending the last
-    // segment on HR_ARC_BOT.
+    // at the shipping constants that is 56 / 5. Integer arithmetic truncates
+    // that to 11 and leaves a FIVE-DEGREE TAIL WITH NO TRACK AT ALL -- the arc
+    // simply stops short of its own end. (At the previous 44-degree sweep the
+    // same defect truncated 8.8 to 8 and left a four-degree tail, drawing
+    // [158,166] [174,182] [190,198].) 56 / 5.0 = 11.2 spans the sweep exactly,
+    // ending the last segment on HR_ARC_BOT.
     //
     // The MIN_D floor is kept for the degenerate case where a future `parts`
     // would slice the sweep below the minimum drawable arc; when it fires the
@@ -2802,7 +2843,13 @@ class StrongRowView extends Ui.View {
                     Gfx.TEXT_JUSTIFY_CENTER);
     }
 
-    hidden function drawFoot(dc, w, h, dist) {
+    // #108: `fs` is now a PARAMETER rather than computed here, and the reason is
+    // that onUpdate has to make a decision about it before it can decide whether
+    // to call this at all -- the work view draws the footer only for a hard
+    // failure. Computing footState in both places would let the gate and the
+    // rendered claim be derived from two evaluations; passing it makes them one
+    // by construction. Behaviour is identical everywhere the footer is drawn.
+    hidden function drawFoot(dc, w, h, dist, fs) {
         var foot;
         var fcol = Gfx.COLOR_LT_GRAY;
         var km = (dist / 1000.0).format("%.2f") + "km";
@@ -2810,7 +2857,6 @@ class StrongRowView extends Ui.View {
         // never consulted whether a session exists. It is now the pure
         // footState(), pinned in FootStateTest.mc; this switch only maps a state
         // to text and colour.
-        var fs = footState(mSensorOk, mPaused, mStarted, mRecFailed);
         if (fs == $.FOOT_NO_ACCEL) {
             foot = "NO ACCEL"; fcol = Gfx.COLOR_RED;
         } else if (fs == $.FOOT_NO_REC) {
@@ -3037,7 +3083,49 @@ class StrongRowView extends Ui.View {
         var spd = currentSpeed();
         var dist = elapsedDist();
 
-        drawGps(dc, w, h);
+        // ================= #108: the per-step-type layout split ==============
+        //
+        // NOT DISPLAYED IS NOT THE SAME AS NOT RECORDED. Read this before
+        // "restoring" any numeral the work branch below leaves out, because
+        // that restoration is the predictable next edit and it would be
+        // undoing the feature rather than fixing a data loss:
+        //
+        //   * THE FIT FILE IS THE RECORD AND HAS NO ATTENTION BUDGET. onTick
+        //     writes row_stroke_rate, dist_per_stroke, rr_interval, rmssd,
+        //     corrective_rate, core_temperature and skin_temperature every
+        //     250 ms regardless of what is on the screen, and the
+        //     session-scope aggregates land in stopAndSave. The per-interval
+        //     accumulators (#109) run off onTick and advanceStep, not off the
+        //     draw path. NOTHING below changes any of that: removing an
+        //     element here removes a drawText and nothing else.
+        //   * THE WATCH SCREEN IS A GLANCE SURFACE AND HAS A HARD ATTENTION
+        //     BUDGET. The maintainer's constraint is a fraction of a second
+        //     between strokes. Six elements competing with the two that are
+        //     being read is the defect; five of them are useful at a rest
+        //     break, which is where they now live.
+        //
+        // So pruning the WORK screen is free of data cost, and that is the
+        // justification for it rather than a mitigation of it.
+        //
+        // WHAT IS NOT FREE, recorded as a decision and not an oversight: there
+        // is no recording assurance mid-interval any more. drawFoot is the only
+        // thing that says REC. PAUSED survives as the title, and both HARD
+        // FAILURES survive as the footer (workFootVisible) -- REC itself is the
+        // part that genuinely disappears.
+        //
+        // The split needs NO NEW STATE. `type` below is the whole of it.
+        //
+        // Computed before drawGps because the status pips are one of the groups
+        // the work view drops. In free-row mode mWorkoutEnabled is false, so
+        // `st` is null, `type` is -1 and `isWork` is false -- the pips are drawn
+        // exactly as before and the early return below is untouched. Free row
+        // has no step types at all, so none of this applies to it.
+        var st = (mWorkoutEnabled && mStarted) ? mSteps[mStepIdx] : null;
+        var type = (st != null) ? st[:type] : -1;
+        var isWork = (type == STEP_WORK);
+        var fs = footState(mSensorOk, mPaused, mStarted, mRecFailed);
+
+        if (!isWork) { drawGps(dc, w, h); }
 
         // ---- free-row mode (workout disabled) ----
         if (!mWorkoutEnabled) {
@@ -3047,13 +3135,11 @@ class StrongRowView extends Ui.View {
             drawPace(dc, w, h, spd);
             dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
             dc.drawText(w / 2, h * 0.78, Gfx.FONT_XTINY, "free row", Gfx.TEXT_JUSTIFY_CENTER);
-            drawFoot(dc, w, h, dist);
+            drawFoot(dc, w, h, dist, fs);
             return;
         }
 
         // ---- workout mode ----
-        var st = mStarted ? mSteps[mStepIdx] : null;
-        var type = (st != null) ? st[:type] : -1;
 
         // #110: the heart-rate arc, drawn during WORK and REST and nowhere
         // else. Drawn BEFORE every text element on purpose -- it sits in a
@@ -3157,6 +3243,23 @@ class StrongRowView extends Ui.View {
         }
         else if (type == STEP_COOL) { title = "COOL DOWN"; }
         else                        { title = "DONE"; }
+        // #108's element table asks for the interval label to be "kept, dimmed
+        // further" during work. IT IS KEPT AND IT IS NOT DIMMED, and that is a
+        // listed departure with an arithmetic reason rather than a preference.
+        //
+        // The only step below COLOR_LT_GRAY in the 64-colour palette these
+        // devices declare is COLOR_DK_GRAY (0x555555). Against the black
+        // onUpdate clears to, WCAG contrast is 9.04:1 for LT_GRAY and 2.82:1
+        // for DK_GRAY -- BELOW the 3:1 floor this file applies at rateColour to
+        // reject COLOR_DK_BLUE outright. Six of the twelve manifest devices are
+        // 8 bpp transflective MIP, where a sunlight-readable label matters most.
+        //
+        // Dimming a glance element below the floor the file already enforces
+        // would be trading a real legibility loss for a hierarchy gain that the
+        // strip already delivers by removing five competing elements. (Note the
+        // #109 grid labels DO ship at DK_GRAY; that inconsistency is
+        // pre-existing and is named in the pull request rather than changed
+        // here.)
         dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
         dc.drawText(w / 2, h * 0.13, Gfx.FONT_SMALL, title, Gfx.TEXT_JUSTIFY_CENTER);
 
@@ -3207,7 +3310,44 @@ class StrongRowView extends Ui.View {
             drawSetGrid(dc, w, h);
         } else {
             drawRate(dc, w, h, col);
-            drawPace(dc, w, h, spd);
+            // #108: the pace / metres-per-stroke row stands down during WORK.
+            // Two independent reasons, and the second is what makes it
+            // inseparable from the arc widening in this change:
+            //   * the maintainer reads those two numbers at a rest break, not
+            //     between strokes;
+            //   * it occupied h*0.70, which is the row the arc's lower end
+            //     reaches first. With it there the sweep was already near its
+            //     ceiling at +/-22; without it the measured ceiling is +/-28.
+            // The row is not left empty -- the work-left figure takes it, at
+            // the same y and with a strictly narrower string.
+            if (!isWork) {
+                drawPace(dc, w, h, spd);
+            } else {
+                // #108 section B. A LOWER BOUND, captioned as one.
+                //
+                // AT h*0.70, WHICH IS THE PACE ROW'S OWN y, and that placement
+                // is evidence rather than taste. Every clearance this row needs
+                // -- against the stroke-rate numeral above it and the caption
+                // below it -- is one the pace row has shipped with on all
+                // twelve devices, and the string is narrower than the one it
+                // replaces. MEASURED at FONT_XTINY on the four 454 px devices,
+                // which are the widest: "1800:00 work left" is 238 px against
+                // "-:--/500m  12.5m/str" at 277 px. The declared maximum,
+                // "3540:00 work left" (30 intervals of 60 minutes plus 29 rests
+                // of 60), has the same character count. So this row is strictly
+                // less demanding than the one it replaces, on both axes.
+                //
+                // The alternative -- tucking it directly under the countdown --
+                // does not fit: at h*0.42 it lands inside the stroke-rate
+                // numeral's font box on the 454 px devices, and this repository
+                // has no way to measure glyph ink, so "the ink probably clears"
+                // is not a claim it can make.
+                dc.setColor(Gfx.COLOR_LT_GRAY, Gfx.COLOR_TRANSPARENT);
+                dc.drawText(w / 2, h * 0.70, Gfx.FONT_XTINY,
+                            workLeftCaption(mmss(
+                                workLeftSec(mSteps, mStepIdx, stepRemaining()))),
+                            Gfx.TEXT_JUSTIFY_CENTER);
+            }
         }
 
         var sub;
@@ -3241,6 +3381,13 @@ class StrongRowView extends Ui.View {
             dc.drawText(w / 2, h * 0.78, Gfx.FONT_XTINY, sub, Gfx.TEXT_JUSTIFY_CENTER);
         }
 
-        drawFoot(dc, w, h, dist);
+        // #108: the footer stands down during WORK for every state EXCEPT a
+        // hard failure. The rule and its argument live on workFootVisible; the
+        // short version is that REC is the element the strip removes, PAUSED is
+        // already the title, and NO ACCEL / NOT RECORDING are failures that
+        // make the rest of this screen untrue.
+        if (workFootVisible(isWork, fs)) {
+            drawFoot(dc, w, h, dist, fs);
+        }
     }
 }
