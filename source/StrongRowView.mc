@@ -1574,11 +1574,31 @@ class StrongRowView extends Ui.View {
                 mPaused    = false;
                 mRecFailed = false;
             } else {
-                // Still paused, and now known to have failed. mPausedAt is left
-                // ALONE on purpose: it marks the start of the pause, so a later
-                // successful resume credits the whole span rather than only the
-                // part after this attempt.
+                // FAILED, OR UNANSWERABLE -- and the two are NOT treated the
+                // same way by the two jobs mPaused does.
+                //
+                // mPaused is both the display claim AND onTick's write gate,
+                // and sessionLive() fails closed. An earlier revision left
+                // mPaused TRUE here, which is right for the claim and wrong for
+                // the gate: a resume that SUCCEEDED while isRecording() threw
+                // would have frozen every setData over a live session, and
+                // record-scope fields LATCH, so every record for the rest of
+                // the piece would re-emit the last pre-pause value. That is
+                // exactly the harm the stop branch below is written to avoid,
+                // and it does not become acceptable by moving it here.
+                //
+                // So: clear mPaused, raise mRecFailed. footState tests
+                // recFailed BEFORE paused, so the footer still says NOT
+                // RECORDING and the claim stays honest, while onTick resumes
+                // writing real values into whatever records are actually being
+                // emitted. The asymmetry is entirely one-way -- if the session
+                // really is dead those writes reach no records and cost
+                // nothing, whereas not writing to a live one corrupts the row.
+                mPaused    = false;
                 mRecFailed = true;
+                // mPausedAt is left ALONE on purpose: it marks the start of the
+                // pause, so a later successful resume credits the whole span
+                // rather than only the part after this attempt.
             }
         } else {
             if (mSession != null) {
@@ -1590,6 +1610,13 @@ class StrongRowView extends Ui.View {
                 // keep writing real values into them.
                 mPaused = false;
             } else {
+                // Stopped, OR unanswerable. Unlike the resume branch these two
+                // do not need separating: pausing is what the athlete asked
+                // for, and if an unanswerable session is in fact still
+                // recording the cost is a latched span -- the same cost the
+                // unconditional assignment this replaced always had. Stated
+                // rather than glossed, because "both branches derive the flags
+                // from isRecording()" is only true when isRecording() answers.
                 mPausedAt = now;
                 mPaused   = true;
             }
@@ -1613,7 +1640,19 @@ class StrongRowView extends Ui.View {
 
     function stopAndSave() {
         if (mSession != null) {
-            if (mSession.isRecording()) { mSession.stop(); }
+            // #74: guarded, because everything that matters is BELOW it. An
+            // isRecording() that throws here propagates out through
+            // StrongRowDelegate.onBack and kills the app before save() at the
+            // bottom of this function -- and save() is the only call that
+            // writes the FIT. The whole row would be lost to a probe of the
+            // session's own state.
+            //
+            // Reusing sessionLive() rather than a bare try: it already fails
+            // closed, and "cannot answer" must not be read as "still
+            // recording" and then handed to stop().
+            if (sessionLive()) {
+                try { mSession.stop(); } catch (e) {}
+            }
             if (mFitAvgRmssd != null && mRmssdN > 0) {
                 mFitAvgRmssd.setData(mRmssdSum / mRmssdN);
             }
