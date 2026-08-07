@@ -1700,12 +1700,29 @@ class StrongRowView extends Ui.View {
                 // independently of recording, so drinking, wiping down or
                 // gesturing during a pause registers as strokes: 63 real
                 // strokes plus ten such movements latched 73 over a 240 s
-                // denominator, 18.25 spm against a true 15.75. A 16%
-                // OVER-report, across the default 16-18 target band.
+                // denominator, 18.25 spm.
                 //
-                // mRate and the DSP ring above are deliberately left running:
-                // they are the live estimator, and freezing them would make the
-                // rate numeral lie about the present rather than the interval.
+                // BOTH REFERENCES, because 15.75 is not the truth -- it is the
+                // gated counter still carrying the -1 bias documented at the
+                // latch. The athlete rowed 16.0. So it is a 16% over-report
+                // against what this app would otherwise show and 14% against
+                // reality, and either way it crosses the default 16-18 band.
+                //
+                // mRate and the DSP ring above are left running because
+                // clearing them would blank the numeral for NPER strokes after
+                // every resume.
+                //
+                // THAT IS A TRADE, NOT A CLEAN WIN, and the cost follows from
+                // the same premise as the paragraph above: sustained motion at
+                // a 1.5-10 s cadence during a pause holds the median at a rate
+                // no COUNTED stroke produced, and it survives the first two
+                // strokes after the resume because NPER is 5. It reaches more
+                // than the numeral -- outputRate feeds distPerStroke (and so
+                // mFitDps), rateColour's band, and correctiveRate's
+                // session-scope mCorrAccum. A quiet pause is safe: the ring
+                // times out after 4-12 s. Pre-existing behaviour, unchanged
+                // here; recorded so the next reader does not take it for
+                // deliberate correctness.
                 if (!mPaused) { mStrokeCount++; }
                 recomputeRate();
             }
@@ -2634,7 +2651,9 @@ class StrongRowView extends Ui.View {
         // 0.132h-0.143h tall.
         //
         // getFontHeight over all 12 manifest devices gives XTINY <= 0.0817h,
-        // TINY <= 0.1107h and FONT_NUMBER_MILD <= 0.2476h. The countdown is
+        // TINY <= 0.1115h (29/260 on the fenix6/6pro/7/7pro family, which is
+        // also where the 2.46 px worst vertical gap below comes from) and
+        // FONT_NUMBER_MILD <= 0.2476h. The countdown is
         // VCENTER at 0.30h so its box ends at 0.4238h, and the footer starts at
         // 0.87h -- 0.446h of usable band. Two label+value pairs need
         // 2*(0.0817 + 0.1107) = 0.385h of ink, which fits only at TINY, and
@@ -3016,10 +3035,23 @@ class StrongRowView extends Ui.View {
         else if (type == STEP_GATE) {
             // #109: the sub row that said "to start WORK n" stands down while
             // the grid is up, so the number rides here instead.
-            // ABBREVIATED, and measured: "READY - WORK 30" -- reachable, since
-            // numIntervals maxes at 30 -- overruns the round display's chord at
-            // the title row by 7 px on fenix6spro and 29 px on the 416/454
-            // devices. "READY - W30" clears it by 16.2 px at worst.
+            // ABBREVIATED, and measured against ONE reference: the chord
+            // half-width at the title row, taken at the lower of the text
+            // box's two edges.
+            //
+            //   "READY - WORK 30"  margin  -7.3 / -29.1 / -28.3 px  (240/416/454)
+            //   "READY - W30"      margin  16.2 /  16.4 /  20.7 px
+            //   "REST - SET 30"    margin  10.7 /   7.9 /  11.2 px
+            //
+            // An earlier revision quoted the overrun and the clearance as if
+            // they shared a reference; they are both margins against the chord,
+            // and the gap between the two strings is a fixed ~47 px of glyph.
+            //
+            // "30" is the range settings.xml DECLARES, not one the code
+            // enforces: loadSettings clamps numIntervals only at the low end,
+            // and the #21 note in that same function is about exactly this --
+            // a persisted or sideloaded value is not re-clamped on load. The
+            // abbreviated form still clears at three digits.
             title = mLastSetValid ? ("READY - W" + st[:nextn].toString())
                                   : "READY";
         }
@@ -3094,8 +3126,17 @@ class StrongRowView extends Ui.View {
         // from COOL and "BACK to save" from DONE. The second is the only text
         // on the app telling the athlete how to write the FIT.
         //
-        // What the two suppressed rows carried is preserved in their titles
-        // rather than lost: REST's set number and GATE's next-interval number.
+        // What the suppressed rows carried, stated exactly rather than
+        // generously. GATE's number IS preserved -- its title uses the same
+        // st[:nextn] the row used. REST's is SUBSTITUTED, not preserved: the
+        // row said "next: WORK i+1" and the title says the completed set i, so
+        // a forward-looking number becomes a backward-looking one.
+        //
+        // And NEITHER survives a pause: the `mPaused` title branch is tested
+        // before the type branches, so a paused REST reads "PAUSED" with no
+        // number anywhere. Adding !mPaused to this gate would restore the row
+        // and re-create the overlap it was suppressed for, so the number is
+        // accepted as lost on that one screen.
         if (!((type == STEP_REST || type == STEP_GATE) && mLastSetValid)) {
             dc.drawText(w / 2, h * 0.78, Gfx.FONT_XTINY, sub, Gfx.TEXT_JUSTIFY_CENTER);
         }

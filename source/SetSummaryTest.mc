@@ -15,11 +15,19 @@ using Toybox.Test;
 // and a rest cell reading 0.0 m/str is a claim about the interval, not an
 // absence. drawSetGrid renders a dash for null.
 //
-// SCOPE, stated rather than implied: these pin the PREDICATES, not the call
-// site. That drawSetGrid actually calls them, that latchWorkAccum fires at the
-// right boundary, and that beginWorkAccum is wired to BOTH startWorkout and
-// advanceStep are covered by review only -- none of those is reachable from a
-// (:test). Same caveat RateColourTest.mc and FootStateTest.mc both state.
+// SCOPE: these pin the PREDICATES, not the call site. That drawSetGrid calls
+// them, that latchWorkAccum fires at the right boundary, and that
+// beginWorkAccum is wired to BOTH startWorkout and advanceStep are covered by
+// review only here.
+//
+// NOT COVERED, WHICH IS NOT THE SAME AS NOT REACHABLE -- and an earlier version
+// of this note said the wrong one. HrProbe.runUpdate drives the shipping
+// onUpdate against HrGeoDc, a FAKE Dc that records every drawText, and it
+// already renders GATE, WARM, COOL and DONE in CI today; #121's segfault is
+// about a real graphics Dc and does not apply. The grid branch is simply
+// unreached, because HrProbe has no way to latch a set. That is the seam that
+// would have caught the two display regressions this PR went through, and it
+// is filed rather than left implied.
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator
 // on every PR, with the names pinned in scripts/expected_tests.txt -- update
@@ -163,20 +171,26 @@ using Toybox.Test;
 // The denominators must be DIFFERENT quantities. spm divides by seconds and
 // m/str divides by strokes; an edit that fed the same denominator to both
 // would keep every case above green if the numbers happened to line up, so
-// this drives them apart deliberately.
+// this drives each one against its own denominator deliberately.
+//
+// An earlier version of this case compared setAvgDps(400,60) with
+// setAvgDps(400,60) -- identical arguments to a pure static, so that half could
+// never fail. In the file whose whole point was removing a tautology.
 (:test) function test_set_rateAndDpsUseDifferentDenominators(logger) {
-    // Same strokes, different durations -> spm changes, m/str does not.
+    // Duration moves spm and must not move m/str; strokes must move m/str.
     var spmA = StrongRowView.setAvgSpm(60, 240.0);
     var spmB = StrongRowView.setAvgSpm(60, 480.0);
     var dpsA = StrongRowView.setAvgDps(400.0, 60);
-    var dpsB = StrongRowView.setAvgDps(400.0, 60);
+    var dpsB = StrongRowView.setAvgDps(400.0, 63);
     if (spmA <= spmB) {
         logger.error("doubling the duration must halve the stroke rate; got " +
                      spmA + " then " + spmB);
         return false;
     }
-    if (dpsA != dpsB) {
-        logger.error("m/stroke must not depend on the interval duration");
+    if (dpsA <= dpsB) {
+        logger.error("more strokes over the same distance must LOWER m/stroke " +
+                     "-- the stroke count is its denominator; got " + dpsA +
+                     " then " + dpsB);
         return false;
     }
     return true;
