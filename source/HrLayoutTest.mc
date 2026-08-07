@@ -46,18 +46,53 @@ using Toybox.Lang;
 
 // The arc's outward bound, as a fraction of display width: no pixel it draws
 // may sit at or right of this. MEASURED, on all twelve manifest devices, from
-// the same recording used for the collision figures -- the outermost drawn
-// pixel over every step type, band and heart-rate state lands between 0.1377w
-// (the four 454 px devices) and 0.1526w (fenix6spro, 240 px, where the integer
-// truncation of every derived dimension bites hardest). The pin is set at
-// 0.16w: above every measured value with room for rounding, and below the
-// nearest text a WORK or REST screen draws.
+// the same recording used for the collision figures.
+//
+// RAISED FROM 0.16 BY #108, and the reason is geometric rather than a
+// relaxation of standards. The outermost drawn pixel is the band tick at a
+// sweep END, at the arc's INNER radius -- x = cx - rTkIn*cos(S) + ptk/2 -- so
+// widening the sweep moves it right even though nothing about the radii
+// changes. At the shipping +/-22 it landed between 0.1377w and 0.1526w
+// (fenix6spro, 240 px, where the integer truncation of every derived dimension
+// bites hardest); at #108's +/-28 it lands between 0.1552w (the four 454 px
+// devices) and 0.1694w (fenix6spro). The pin is 0.18w: above every measured
+// value with room for rounding, and still below the nearest text a WORK or
+// REST screen draws.
+//
+// The pin was WIDENED, so between the commit that widened it and the commit
+// that widened the sweep the lane guard is looser than the geometry needs.
+// That is unavoidable when a lane grows and is stated rather than hidden.
 //
 // This is the invariant that keeps the geometry fix from silently unwinding. A
-// smaller radius, a wider sweep, a longer tick or a fatter pen all push the
-// outermost pixel right, toward the centred numerals -- and all of them red
-// here before they can reach the text.
-const HL_X_MAX_FRAC = 0.16;
+// smaller radius, a longer tick or a fatter pen all push the outermost pixel
+// right, toward the centred numerals -- and all of them red here before they
+// can reach the text.
+const HL_X_MAX_FRAC = 0.18;
+
+// The arc's vertical half-extent, as a fraction of display height: no pixel it
+// draws may sit further than this above or below the centreline.
+//
+// WHY THIS EXISTS. The x envelope above bounds the arc's LANE, and it gets
+// GREENER as the sweep widens in one important sense and worse in another: a
+// wider sweep pushes the outermost pixel right AND pushes the arc's ends down
+// and up, toward the rows the arc was moved away from. Nothing in this
+// repository could see the second motion. This is the companion that can.
+//
+// WHAT IT DOES NOT CLAIM. It is a SWEEP guard, not a collision proof. The
+// nearest text below the arc on a work screen sits at |dy| = 0.20h, INSIDE
+// this bound, and does not collide because it is horizontally separated --
+// which no font-free case can see. What this pins is that the sweep stays at
+// the width that was MEASURED clear against real font metrics on all twelve
+// devices (recorded in the pull request, per #121 not re-runnable in CI).
+// Anything that widens it reds here and has to be re-measured rather than
+// assumed.
+//
+// MEASURED at #108's +/-28 over all twelve manifest devices: the worst
+// half-extent is 0.2351h (the four 454 px devices) and the smallest 0.2332h
+// (fenix6spro). The pin is 0.245h -- above every measured value with room for
+// rounding, and below the 0.2500h that +/-30 would produce, so the next whole
+// degree of widening past what was measured reds.
+const HL_Y_MAX_FRAC = 0.245;
 
 // Sampling resolution, in degrees, along an arc path. At the largest radius
 // this app draws one degree is about 3.4 px and the smallest pen width in
@@ -134,6 +169,45 @@ function hlMaxDrawnX(geo) {
     }
 
     return maxX;
+}
+
+// The greatest distance above OR below the centreline that any primitive in
+// this render occupies. Same expansion rule as hlMaxDrawnX: arcs are sampled
+// along their path, lines at their endpoints, and every sample is widened by
+// half its pen -- the OUTERMOST PIXEL, not the centreline.
+function hlMaxDrawnDy(geo) {
+    var cy = geo.h / 2.0;
+    var maxDy = -9999.0;
+
+    for (var a = 0; a < geo.arcs.size(); a++) {
+        var arc = geo.arcs[a];
+        var cyA = arc[1]; var r = arc[2];
+        var half = arc[3] / 2.0;
+        var deg = arc[4];
+        var end = arc[5];
+        while (true) {
+            var y = cyA - r * Math.sin(deg * Math.PI / 180.0);
+            var dy = y - cy;
+            if (dy < 0.0) { dy = -dy; }
+            dy += half;
+            if (dy > maxDy) { maxDy = dy; }
+            if (deg >= end) { break; }
+            deg += $.HL_ARC_STEP_DEG;
+            if (deg > end) { deg = end; }
+        }
+    }
+
+    for (var l = 0; l < geo.lines.size(); l++) {
+        var ln = geo.lines[l];
+        var half2 = ln[4] / 2.0;
+        var da = ln[1] - cy; if (da < 0.0) { da = -da; }
+        var db = ln[3] - cy; if (db < 0.0) { db = -db; }
+        da += half2; db += half2;
+        if (da > maxDy) { maxDy = da; }
+        if (db > maxDy) { maxDy = db; }
+    }
+
+    return maxDy;
 }
 
 // -- Configuration space -------------------------------------------------------
@@ -321,7 +395,7 @@ function hlRender(p, cfg) {
                  limit.format("%.1f") + " @ " + where);
 
     if (worst >= limit) {
-        logger.error("#110: the heart-rate arc has drifted out of its lane. " +
+        logger.error("#110/#108: the heart-rate arc has drifted out of its lane. " +
                      "Outermost drawn pixel x=" + worst.format("%.1f") +
                      " on a " + ds.screenWidth + "-wide display, limit " +
                      limit.format("%.1f") + " (" + $.HL_X_MAX_FRAC +
@@ -329,6 +403,79 @@ function hlRender(p, cfg) {
                      "the centreline. Every pixel right of that lane is a " +
                      "pixel closer to the centred numerals the arc was moved " +
                      "away from -- see PR #119 for the measured clearances.");
+        return false;
+    }
+    return true;
+}
+
+// THE VERTICAL BOUND, on the two screens that draw the arc.
+//
+// The companion the x envelope needed and did not have. #108 widens the sweep
+// from +/-22 to +/-28, and the x envelope alone cannot police that: widening
+// pushes the outermost pixel right by a little and the arc's two ends down and
+// up by a lot, and only the first of those was ever measured by a case.
+//
+// Read the bound as "the sweep is still the width that was measured clear",
+// not as "nothing collides". Text at these heights is cleared HORIZONTALLY,
+// which needs font metrics this suite cannot obtain (#121); those clearances
+// are in the pull request, per device.
+//
+// The configuration is narrower than the x case's on purpose and the reason is
+// that the two are not measuring the same thing. The vertical extreme is
+// reached by the head tick at a sweep END, which happens exactly when the
+// reading is clamped off either end of the display range -- so the band and
+// heart-rate sweeps are what matter, and pause / accelerometer state cannot
+// move it (neither is read by drawHrArc).
+(:test) function test_hr_arcStaysWithinItsYEnvelope(logger) {
+    var k = new HrProbe();
+    var kinds = [ k.kindWork(), k.kindRest() ];
+    var names = [ "WORK", "REST" ];
+    var bands = hlBands();
+    var hrs = hlHrStates();
+    var ds = System.getDeviceSettings();
+    var limit = ds.screenHeight * $.HL_Y_MAX_FRAC;
+    var worst = -9999.0;
+    var where = "none";
+    var p = hlProbeFor(true);
+
+    for (var ki = 0; ki < kinds.size(); ki++) {
+        for (var bi = 0; bi < bands.size(); bi++) {
+            for (var hi = 0; hi < hrs.size(); hi++) {
+                var geo = hlRender(p, [kinds[ki], false,
+                                       bands[bi][0], bands[bi][1],
+                                       hrs[hi][0], hrs[hi][1], true, true]);
+                if (geo.arcs.size() == 0 && geo.lines.size() == 0) {
+                    logger.error(names[ki] + " drew no arc geometry at all; " +
+                                 "the bound below would be vacuous");
+                    return false;
+                }
+                var dy = hlMaxDrawnDy(geo);
+                if (dy > worst) {
+                    worst = dy;
+                    where = names[ki] + " band " + bands[bi][0] + "-" +
+                            bands[bi][1] + " hr " + hrs[hi][0] +
+                            (hrs[hi][1] ? "" : "(absent)");
+                }
+            }
+        }
+    }
+
+    logger.debug("HL y-envelope " + ds.screenWidth + "x" + ds.screenHeight +
+                 ": max |dy| " + worst.format("%.1f") + " (" +
+                 (worst / ds.screenHeight).format("%.4f") + "h), limit " +
+                 limit.format("%.1f") + " @ " + where);
+
+    if (worst >= limit) {
+        logger.error("#108: the heart-rate arc's sweep has grown past the " +
+                     "width that was measured clear. Furthest drawn pixel is " +
+                     worst.format("%.1f") + " px from the centreline on a " +
+                     ds.screenHeight + "-tall display, limit " +
+                     limit.format("%.1f") + " (" + $.HL_Y_MAX_FRAC +
+                     "h), at " + where + ". Measured at the PEN WIDTH, not " +
+                     "the centreline. A wider sweep moves the arc's ends DOWN " +
+                     "and UP toward the rows it was moved away from, and the " +
+                     "x envelope cannot see that motion -- re-measure the " +
+                     "clearances on all twelve devices before raising this.");
         return false;
     }
     return true;
