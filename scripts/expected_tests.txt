@@ -83,6 +83,14 @@ test_hr_wholeTrackIsTheWholeSweep
 test_hr_arclessScreensDrawNoArcGeometry
 test_hr_arcStaysWithinItsXEnvelope
 
+# source/WorkLayoutTest.mc
+test_lay_c0_freeRowDrawsTheFullScreen
+test_lay_c0_warmCoolDoneKeepTheFullScreen
+test_lay_c0_preStartKeepsTheFullScreen
+test_lay_c0_restAndGateKeepPipsAndFooter
+test_lay_c0_workKeepsTheTargetCaption
+test_lay_c0_workKeepsLabelAndRate
+
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork
 test_rate_whiteWhenNoData
