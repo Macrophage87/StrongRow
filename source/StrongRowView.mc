@@ -61,6 +61,15 @@ const RR_INVALID = 0xFFFF;
 // the last RANGE-accepted beat, mLastBeatMs) so a dropout stops polluting avg_rmssd.
 const RR_FRESH_MS = 5000;
 
+// Footer states (#74). Module scope rather than class `hidden const` for the
+// same reason STEP_WORK is passed to rateColour as a boolean: a static cannot
+// resolve an instance member, and footState must be reachable from a (:test).
+const FOOT_NO_ACCEL = 0;   // the accelerometer never came up -- nothing works
+const FOOT_NO_REC   = 1;   // START was pressed and recording did NOT begin
+const FOOT_PAUSED   = 2;
+const FOOT_REC      = 3;
+const FOOT_IDLE     = 4;   // not started yet
+
 // #110 -- left-edge heart-rate arc. At module (global) scope for exactly the
 // reason the R-R constants above are: a Monkey C class `const` is an instance
 // member, unreachable from a static method, and every decision this feature
@@ -270,6 +279,11 @@ class StrongRowView extends Ui.View {
     hidden var mSteps;
     hidden var mStepIdx;
     hidden var mStarted;
+    // #74: "START was pressed and recording did NOT begin". Distinct from
+    // !mStarted, which also covers "not pressed yet" -- conflating the two would
+    // tell the athlete to press a button they have already pressed. Read only by
+    // footState; never gates recording logic.
+    hidden var mRecFailed;
     hidden var mPaused;
     hidden var mStepStartMs;
     hidden var mPausedAt;
@@ -319,6 +333,7 @@ class StrongRowView extends Ui.View {
         mRmssdN     = 0;
         mStartMs    = 0;
         mStarted    = false;
+        mRecFailed  = false;
         mPaused     = false;
         mStepIdx    = 0;
         mStepStartMs = 0;
@@ -1107,6 +1122,91 @@ class StrongRowView extends Ui.View {
         return Gfx.COLOR_WHITE;
     }
 
+    // Pure: the [paused, recFailed] pair a toggle should leave behind, given
+    // what the athlete pressed, what the recorder reports, and what the failure
+    // flag already was (#74).
+    //
+    // Extracted because this mapping has regressed THREE times under review and
+    // the call site is not reachable from a (:test) -- the same argument
+    // footState makes, and the same seam rateColour and coreFieldsWanted use.
+    //
+    // THE RULE, in one line: mPaused drives the FIT write gate and the step
+    // machine, so it must NEVER fail closed; mRecFailed drives the footer
+    // claim, so it must.
+    //
+    // `live` COMES FROM A FAIL-CLOSED PROBE. sessionLive() returns false for a
+    // dead session, a null handle AND a throw, so live == false PROVES NOTHING
+    // and only live == true is evidence. That asymmetry is why the third
+    // argument exists:
+    //
+    //   resume attempt   -> [false, !live]     gates open either way; the claim
+    //                                          is honest about the doubt
+    //   pause, refused   -> [false, false]     live == true is real evidence:
+    //                                          keep writing, and clear the flag
+    //   pause, taken     -> [true,  recFailed] PRESERVE it. An earlier revision
+    //                                          cleared it here, reasoning that a
+    //                                          deliberate pause is not a
+    //                                          failure. But this arm is reached
+    //                                          on live == false, which cannot
+    //                                          tell "my stop took" from "it was
+    //                                          already dead" -- so clearing was
+    //                                          a no-op on every healthy path
+    //                                          and erased the truth on the only
+    //                                          unhealthy one. One press out of
+    //                                          NOT RECORDING bought a
+    //                                          reassuring PAUSED over a dead
+    //                                          recorder.
+    static function pauseFlags(wasPaused, live, recFailed) {
+        if (wasPaused)  { return [false, !live]; }
+        if (live)       { return [false, false]; }
+        return [true, recFailed];
+    }
+
+    // Pure: which of the five footer states is showing (#74).
+    //
+    // WHERE THE GUARANTEE ACTUALLY LIVES, stated precisely because the obvious
+    // reading of this function is wrong: footState does NOT consult mSession,
+    // and adding a session parameter would not help. What fixed #74 is that
+    // startSession() REPORTS whether a started session exists, both callers set
+    // mStarted from that report, and togglePause sets mRecFailed from
+    // isRecording() rather than from the keypress.
+    //
+    // THE EXACT INVARIANT, no stronger. mStarted means "a session was recording
+    // when startSession last returned". It is NOT a live reading, and nothing
+    // here re-checks the session. What makes the footer honest is that the two
+    // places which can invalidate it -- a failed start and a failed resume --
+    // both raise mRecFailed, and mRecFailed outranks everything below it. A
+    // session that dies for some third reason would still render as REC; no
+    // such path is known, and if one is found it belongs in mRecFailed too
+    // rather than in a new parameter here.
+    //
+    // WHY IT EXISTS. The footer used to be gated on mStarted alone, and
+    // mStarted was set unconditionally. A startSession() that threw left
+    // mSession null while both callers set mStarted = true
+    // regardless, so the watch rendered an ordinary red "REC 12:34 2.10km
+    // 240str" row -- live timer, live distance, live stroke count -- for a row
+    // that would produce no FIT file at all. The athlete finished the piece
+    // believing it recorded. That is the whole of #74, and it is worse than a
+    // crash: a crash is visible.
+    //
+    // Extracted as a pure static because startSession() itself is NOT reachable
+    // from a (:test) (CoreFieldGateTest.mc:10-12) while this decision is -- the
+    // same seam rateColour and coreFieldsWanted use.
+    //
+    // ORDER IS LOAD-BEARING. recFailed is tested before paused because in the
+    // failure state mPaused is whatever the previous session left behind, and a
+    // stale "PAUSED" would hide the failure behind a plausible-looking state.
+    // sensorOk stays first: with no accelerometer nothing downstream is true.
+    //
+    // Colour and layout only -- never a tone, vibration or flash (#114).
+    static function footState(sensorOk, paused, started, recFailed) {
+        if (!sensorOk)  { return $.FOOT_NO_ACCEL; }
+        if (recFailed)  { return $.FOOT_NO_REC; }
+        if (paused)     { return $.FOOT_PAUSED; }
+        if (started)    { return $.FOOT_REC; }
+        return $.FOOT_IDLE;
+    }
+
     // ============ #110: the heart-rate arc, as pure decisions ================
     // Every judgement the left-edge arc makes lives here, as a class-scope
     // static taking plain numbers and booleans -- the same seam filterRr /
@@ -1643,12 +1743,25 @@ class StrongRowView extends Ui.View {
                 //     and any downstream aggregate that does not guard for
                 //     it (#48; Connect's rendering is untested, tracked
                 //     in #53).
-                mFitRate = mSession.createField(
-                    "row_stroke_rate", 0, Fit.DATA_TYPE_FLOAT,
-                    { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
-                mFitDps = mSession.createField(
-                    "dist_per_stroke", 1, Fit.DATA_TYPE_FLOAT,
-                    { :mesgType => Fit.MESG_TYPE_RECORD, :units => "m" });
+                // #74: this pair had no inner try of its own, unlike all four
+                // later groups. A throw from either reached only the outer
+                // catch, whose whole body is `mSession = null` -- so it
+                // DISCARDED a session that had already been created, rather
+                // than nulling the handles that failed. Worse, a throw from the
+                // SECOND create left mFitRate non-null and pointing into that
+                // discarded session, and onTick then wrote into it at 4 Hz for
+                // the entire row.
+                try {
+                    mFitRate = mSession.createField(
+                        "row_stroke_rate", 0, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
+                    mFitDps = mSession.createField(
+                        "dist_per_stroke", 1, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "m" });
+                } catch (e) {
+                    mFitRate = null;
+                    mFitDps = null;
+                }
                 // explicit R-R / HRV logging, independent of the watch's
                 // "Log HRV" device setting
                 try {
@@ -1783,7 +1896,37 @@ class StrongRowView extends Ui.View {
                 mSession = null;
             }
         }
-        if (mSession != null) { mSession.start(); }
+        // #74: returns TRUE only if a session exists AND start() returned
+        // normally. Both callers set mStarted from this instead of setting it
+        // unconditionally, which is what turned every throw above into a row
+        // that looked like it was recording and produced no FIT file.
+        //
+        // Guarding start() also closes a path the issue does not enumerate: it
+        // used to sit outside the outer try, so a throw propagated out of
+        // startSession into onPrimary. mStarted was never set -- but mSession
+        // stayed NON-null, so every later START press found `mSession == null`
+        // false, skipped the whole creation block, fell through to this line
+        // and threw again. The app became permanently unstartable.
+        //
+        // Caught rather than nulling mSession, deliberately: if start() DID
+        // take effect before throwing, nulling the handle would strand a live
+        // recording that stopAndSave() could no longer reach. Leaving it lets
+        // the next START press retry start() on the same session.
+        //
+        // ASK THE SESSION, do not infer from the throw. A throw that arrives
+        // AFTER start() took effect would otherwise report failure over a LIVE
+        // recording, and that is not a cosmetic lie: onTick gates every
+        // FitContributor write on mStarted, so the row would save with none of
+        // this app's fields in it -- the exact inverse of #74 and, for a
+        // training app, just as useless. isRecording() is the same handle
+        // stopAndSave already trusts to decide whether to call stop().
+        if (mSession == null) { return false; }
+        try {
+            mSession.start();
+        } catch (e) {
+            return sessionLive();
+        }
+        return true;
     }
 
     hidden function stepRemaining() {
@@ -1801,8 +1944,12 @@ class StrongRowView extends Ui.View {
     function onPrimary() {
         if (!mWorkoutEnabled) {
             if (!mStarted) {
-                startSession();
-                mStarted = true;
+                // #74: observe the outcome. A failed start leaves mStarted
+                // false and raises mRecFailed, so the footer says NOT RECORDING
+                // rather than REC. Pressing START again retries.
+                mStarted = startSession();
+                mRecFailed = !mStarted;
+                if (!mStarted) { return; }
                 mPaused = false;
                 mStartMs = System.getTimer();
                 alert(STEP_WORK);
@@ -1827,8 +1974,13 @@ class StrongRowView extends Ui.View {
     }
 
     hidden function startWorkout() {
-        startSession();
-        mStarted = true;
+        // #74: same contract as the free-row path in onPrimary. The workout is
+        // NOT advanced when recording failed -- returning before mStepIdx = 0
+        // keeps the step machine where it was, so a retry starts the workout
+        // from the top rather than from a half-entered state.
+        mStarted = startSession();
+        mRecFailed = !mStarted;
+        if (!mStarted) { return; }
         mPaused = false;
         mStepIdx = 0;
         mStartMs = System.getTimer();
@@ -1847,22 +1999,150 @@ class StrongRowView extends Ui.View {
         alert(t);
     }
 
+    // #74: these are the SAME two SDK calls on the SAME handle that
+    // startSession guards, and they were left bare here. Leaving them bare
+    // would have had the file making two contradictory claims about whether
+    // ActivityRecording.start() can throw -- defended in one place, unprotected
+    // eighty lines away.
+    //
+    // And here the consequence is worse than the bug #74 is about. There is no
+    // try/catch anywhere in the frames above this one -- togglePause is reached
+    // from onPrimary, which is called from StrongRowDelegate.onSelect -- so a
+    // throw terminates the app, and stopAndSave() is the ONLY caller of
+    // mSession.save(). #74 loses a row that never started; an unguarded throw
+    // here loses a REAL row, mid-piece, with every field already recorded.
+    //
+    // Swallowed rather than surfaced: a throw here must not cost the row.
+    //
+    // BUT mPaused IS DERIVED FROM THE RECORDER, NOT FROM THE BUTTON, and that
+    // distinction is the whole of #74. An earlier revision of this function
+    // swallowed the throw and then set mPaused from the keypress anyway,
+    // justifying it as "the view stays consistent with what the athlete
+    // pressed". That re-created this issue's exact lie in a new place: a resume
+    // that threw left mStarted true, mPaused false and mRecFailed false, which
+    // footState reads as FOOT_REC -- a red REC row over a session that is not
+    // recording, and onTick writing into it for the rest of the piece.
+    //
+    // The failed STOP direction is just as bad and less obvious: a stop that
+    // did not take leaves the session emitting records while onTick's
+    // `!mPaused` gate gives up writing, and record-scope fields LATCH, so every
+    // record for the rest of the stall re-emits the last live value. Stale data
+    // that decodes as real is worse than a gap.
+    //
+    // So both branches ask isRecording() and set the flags from the answer.
     hidden function togglePause() {
         var now = System.getTimer();
         if (mPaused) {
+            if (mSession != null) {
+                try { mSession.start(); } catch (e) {}
+            }
+            var live = sessionLive();
+
+            // THE PAUSED SPAN IS CREDITED ON BOTH PATHS, because mPaused goes
+            // false on both. An earlier revision credited it only when the
+            // resume was confirmed, which sounds careful and was a regression:
+            // clearing mPaused un-freezes the step machine (onTick gates on
+            // !mPaused), so an uncredited resume charges the whole pause to the
+            // running interval. A three-minute pause in a two-minute WORK step
+            // ends that step on the next tick -- a lap boundary in the wrong
+            // place, and alert() firing a vibration and a tone for a transition
+            // nobody earned, on an app whose first rule is never to alarm.
+            //
+            // mPausedAt is SPENT here, not preserved. There is no later entry
+            // to this branch to preserve it for: mPaused is set true in exactly
+            // one place below, and that same arm overwrites mPausedAt.
             mStepStartMs += (now - mPausedAt);
-            if (mSession != null) { mSession.start(); }
             mPaused = false;
+
+            // mPaused does THREE jobs -- the footer claim, onTick's FIT write
+            // gate, and the step machine -- and only the FIRST of them should
+            // follow a fail-closed answer. So the claim rides on mRecFailed
+            // instead, and the other two ride on mPaused.
+            //
+            // Why the write gate must not fail closed: a resume that SUCCEEDED
+            // while isRecording() threw would otherwise freeze every setData
+            // over a live session, and record-scope fields LATCH, so every
+            // record for the rest of the piece would re-emit the last
+            // pre-pause value. Stale data that decodes as real.
+            //
+            // footState tests recFailed BEFORE paused, so an unconfirmed resume
+            // still reads NOT RECORDING and the claim stays honest.
+            //
+            // The asymmetry favours writing, though not as strongly as an
+            // earlier revision of this comment asserted: whether setData on a
+            // stopped session is a harmless no-op is #76's open question and is
+            // NOT established here. What is established is the other side --
+            // withholding writes from a live session corrupts the row through
+            // the latch, measured in #36 and #48.
+            mRecFailed = pauseFlags(true, live, mRecFailed)[1];
         } else {
-            mPausedAt = now;
-            if (mSession != null) { mSession.stop(); }
-            mPaused = true;
+            if (mSession != null) {
+                try { mSession.stop(); } catch (e) {}
+            }
+            if (sessionLive()) {
+                // The stop did not take. Staying unpaused is correct, not a
+                // concession: records ARE still being emitted, so onTick must
+                // keep writing real values into them.
+                //
+                // And CLEAR mRecFailed -- sessionLive() has just proved the
+                // recorder is live, so a stale failure flag would leave the
+                // footer reading NOT RECORDING over a healthy row with no way
+                // out except a press that stops the healthy row.
+                var f = pauseFlags(false, true, mRecFailed);
+                mPaused    = f[0];
+                mRecFailed = f[1];
+            } else {
+                // Stopped, OR unanswerable. Unlike the resume branch these two
+                // do not need separating: pausing is what the athlete asked
+                // for, and if an unanswerable session is in fact still
+                // recording the cost is a latched span -- the same cost the
+                // unconditional assignment this replaced always had. Stated
+                // rather than glossed, because "both branches derive the flags
+                // from isRecording()" is only true when isRecording() answers.
+                //
+                // mRecFailed is PRESERVED, not cleared. This arm is reached on
+                // a fail-closed false, which cannot distinguish "the stop took"
+                // from "the session was already dead" -- and since the flag is
+                // only ever true after a failure, clearing it here was a no-op
+                // on every healthy path and a lie on the one unhealthy one.
+                var g = pauseFlags(false, false, mRecFailed);
+                mPausedAt  = now;
+                mPaused    = g[0];
+                mRecFailed = g[1];
+            }
+        }
+    }
+
+    // "Is a recording actually running right now?" -- false for no session and
+    // false for a session that cannot answer.
+    //
+    // Failing closed on a throw is deliberate: every caller uses this to decide
+    // whether to CLAIM the app is recording, and an unanswerable session is not
+    // a claim worth making.
+    hidden function sessionLive() {
+        if (mSession == null) { return false; }
+        try {
+            return mSession.isRecording();
+        } catch (e) {
+            return false;
         }
     }
 
     function stopAndSave() {
         if (mSession != null) {
-            if (mSession.isRecording()) { mSession.stop(); }
+            // #74: guarded, because everything that matters is BELOW it. An
+            // isRecording() that throws here propagates out through
+            // StrongRowDelegate.onBack and kills the app before save() at the
+            // bottom of this function -- and save() is the only call that
+            // writes the FIT. The whole row would be lost to a probe of the
+            // session's own state.
+            //
+            // Reusing sessionLive() rather than a bare try: it already fails
+            // closed, and "cannot answer" must not be read as "still
+            // recording" and then handed to stop().
+            if (sessionLive()) {
+                try { mSession.stop(); } catch (e) {}
+            }
             if (mFitAvgRmssd != null && mRmssdN > 0) {
                 mFitAvgRmssd.setData(mRmssdSum / mRmssdN);
             }
@@ -1899,6 +2179,12 @@ class StrongRowView extends Ui.View {
             mFitCtDiag = null;
         }
         mStarted = false;
+        // #74: the attempt is over either way, so the footer goes back to
+        // "START to record" rather than latching NOT RECORDING past the row it
+        // described. A successful retry would clear this anyway (mRecFailed is
+        // assigned from every startSession outcome); this covers the path where
+        // the athlete stops instead of retrying.
+        mRecFailed = false;
     }
 
     // #11: release, then CLEAR. Clearing is not tidiness -- these two fields
@@ -2130,11 +2416,21 @@ class StrongRowView extends Ui.View {
         var foot;
         var fcol = Gfx.COLOR_LT_GRAY;
         var km = (dist / 1000.0).format("%.2f") + "km";
-        if (!mSensorOk) {
+        // #74: the chain that used to live here was gated on mStarted alone and
+        // never consulted whether a session exists. It is now the pure
+        // footState(), pinned in FootStateTest.mc; this switch only maps a state
+        // to text and colour.
+        var fs = footState(mSensorOk, mPaused, mStarted, mRecFailed);
+        if (fs == $.FOOT_NO_ACCEL) {
             foot = "NO ACCEL"; fcol = Gfx.COLOR_RED;
-        } else if (mPaused) {
+        } else if (fs == $.FOOT_NO_REC) {
+            // ORANGE, not red: red is what a healthy REC row shows, and the two
+            // must not be confusable at a glance. Colour and layout only -- no
+            // tone, no vibration, no flash (#114).
+            foot = "NOT RECORDING"; fcol = Gfx.COLOR_ORANGE;
+        } else if (fs == $.FOOT_PAUSED) {
             foot = "PAUSED  " + mStrokeCount.toString() + "str"; fcol = Gfx.COLOR_YELLOW;
-        } else if (mStarted) {
+        } else if (fs == $.FOOT_REC) {
             foot = "REC " + totalElapsed() + " " + km + " " + mStrokeCount.toString() + "str";
             fcol = Gfx.COLOR_RED;
         } else {
