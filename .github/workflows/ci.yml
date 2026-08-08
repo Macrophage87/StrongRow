@@ -106,6 +106,17 @@ jobs:
         # reds -- the mechanical enforcement that adding or removing a (:test)
         # is two edits (source + pin) and can never redden this job.
         run: python3 scripts/test_check_ciq_tests.py
+      - name: Cue-replay self-test (runner-free RED/GREEN)
+        # scripts/cue_replay.py is a PYTHON TRANSCRIPTION of the display-cue
+        # decision in source/StrongRowView.mc, and the figures quoted in that
+        # file's CUE_* comment block are derived from it. A transcription that
+        # drifts from its original publishes numbers for a machine that never
+        # shipped -- which is exactly what happened once and is why the harness
+        # is in the repository at all. This suite re-asserts, against the
+        # transcription, the same numeric vectors source/CueZoneTest.mc asserts
+        # against the Monkey C, and re-derives every published figure from
+        # scripts/fixtures/cue_work_laps.txt. Pure Python: no container, no SDK.
+        run: python3 scripts/test_cue_replay.py
 
   # 3) Compile the unit-test build for EVERY manifest device in ONE job, so the
   #    SDK image is pulled once (not once per device via a matrix). A per-device

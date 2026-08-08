@@ -239,50 +239,132 @@ const CUEZ_IN    = 1;    // hold
 const CUEZ_ABOVE = 2;    // ease off
 
 // ============ the cue's three tunables ======================================
-// CHOSEN BY REPLAY AGAINST TWO RECORDED ROWS, not by feel. Both were decoded
-// per second, work laps only, from the row_stroke_rate developer field:
+// CHOSEN BY REPLAY AGAINST TWO RECORDED ROWS, not by feel -- and every figure
+// below is REGENERABLE IN ONE COMMAND:
 //
-//   4x15' durability, calm water, target 18-20 spm, 3620 s of work
-//   8x3'  strength-endurance, choppy water, target 16-18 spm, 1436 s of work
+//     python3 scripts/cue_replay.py
 //
-// THE FAILURE BEING FIXED IS TRANSIENT SPIKES, not a biased median. The choppy
-// row reads above 1.25x its own baseline on 8.7% of seconds and peaks at 2.51x;
-// its lap medians then walk 16.5 -> 15.0 -> 14.2 -> 13.2 against a 16-18 target
-// -- the athlete easing off against a cue that was lying. The calm row never
-// exceeds 1.5x in 3620 seconds and lands in band. The driver is WATER STATE, not
-// cadence: within the calm row, the lap abandoned early for chop spikes on 3.5%
-// of seconds against 1.0% and 1.3% for its calm laps, at the same cadence.
+// That harness drives THE RULE BELOW (cueBandZone / cueTarget / cueStep,
+// transcribed into Python, with the transcription pinned against the same
+// numeric vectors source/CueZoneTest.mc asserts against this file) over the work
+// laps of both recordings, which are committed as
+// scripts/fixtures/cue_work_laps.txt. scripts/test_cue_replay.py re-derives
+// every number quoted here and reds if any of them moves, so this comment can no
+// longer drift away from the data.
+//
+// RETRACTION, kept rather than edited away because the retracted claims were
+// load-bearing for the whole design. An earlier revision of this block quoted
+// figures produced by a DIFFERENT machine from the one that shipped: a two-stage
+// replay whose deadband ran free on every sample, whose persistence window was
+// chosen by the zone being LEFT rather than by the candidate, and which counted
+// SAMPLES rather than milliseconds. Replaying the shipped rule instead retracts
+// four claims, each corrected in place below:
+//   * the choppy row's false-high improvement. Advertised 6.9% -> 4.5%. It is
+//     actually UNCHANGED. This is the sentence the design was sold on.
+//   * the flicker figures (2.88 -> 1.41 calm, 2.92 -> 1.94 choppy).
+//   * a lap-median "walk" of 16.5 -> 15.0 -> 14.2 -> 13.2, which was a selective
+//     subsequence of a series that is not monotone.
+//   * "the calm row never exceeds 1.5x", which it does.
+// No CODE was wrong; the evidence quoted for it was.
+//
+// THE TWO ROWS, work laps only, from the row_stroke_rate developer field. A zero
+// is the app's no-data sentinel (drawRate renders it "--.-"), so it is an
+// ABSENCE and not a slow stroke, and it is excluded from every figure here:
+//
+//   4x15' durability, calm water, target 18-20 spm
+//     laps over 600 s: 4 laps, 3522 recorded seconds, 3496 carrying a reading
+//   8x3'  strength-endurance, choppy water, target 16-18 spm
+//     laps within 5 s of 180: 8 laps, 1442 recorded seconds, 1436 with a reading
+//
+// THE FAILURE BEING FIXED IS TRANSIENT SPIKES, not a biased median. Against its
+// own row median the choppy row reads above 1.25x on 8.7% of its reading-seconds
+// and peaks at 37.5 spm (2.43x); the calm row reads above 1.25x on 4.0% and
+// peaks at 31.9 spm (1.60x). (Not "never exceeds 1.5x": the calm row does, on 2
+// of 3496 seconds. The earlier absolute claim is withdrawn -- the difference
+// between the rows is a factor of two on the 1.25x statistic, which is the real
+// point and does not need an absolute to stand on.)
+//
+// THE CHOPPY ROW'S EIGHT WORK-LAP MEDIANS, in full, against a 16-18 target:
+//
+//     16.5, 15.0, 14.2, 15.2, 13.2, 14.3, 16.1, 16.0
+//
+// FIVE of the eight sit below band and the middle of the session sags to 13.2 --
+// the athlete easing off against a cue that was lying -- before the last two
+// intervals recover into band. The series is NOT monotone and it DOES recover;
+// the retracted "16.5 -> 15.0 -> 14.2 -> 13.2" was laps 1, 2, 3 and 5 with lap 4
+// dropped from the middle and laps 6-8 dropped from the end.
+//
+// THE DRIVER IS WATER STATE RATHER THAN CADENCE, but the within-row evidence for
+// that is weaker than an earlier revision claimed, so it is restated rather than
+// quietly kept. Per calm work lap, the share of reading-seconds above 1.25x THAT
+// LAP's own median is 1.0%, 5.5%, 1.3%, 3.5%; the 3.5% lap is the one abandoned
+// early for chop. The earlier revision quoted "3.5% against 1.0% and 1.3%" and
+// left out the 5.5% lap -- which is spikier than the chop lap and breaks the
+// comparison. What the recordings do support is the BETWEEN-row difference:
+// 8.7% choppy against 4.0% calm, same statistic, same definition.
 //
 // SCORED BY DIRECTION OF ERROR, because the damaging error is FALSE-HIGH:
-// telling the athlete to ease off while they are actually in the band.
+// telling the athlete to ease off while they are actually in the band. TRUTH is
+// a 31 s CENTRED median of the measurement put through the plain band; a FLIP is
+// a zone change between consecutive SCORED seconds. Every definition and every
+// denominator is in scripts/cue_replay.py in code rather than in prose, because
+// their absence is precisely why the superseded figures could not be checked.
 //
-//   strategy                       calm false-high   choppy false-high
-//   raw band comparison (before)         11.6%             6.9%
-//   asymmetric deadband + persist         2.4%             4.5%
+//   row     metric        raw (before)   shipped cueStep (after)
+//   calm    FALSE-HIGH        11.8%              2.6%
+//   calm    false-low          7.1%              1.8%
+//   calm    missed-HIGH        6.2%             15.3%
+//   calm    flips/min          2.87              1.10
+//   calm    lag                 0 s               1 s
+//   choppy  FALSE-HIGH         6.9%              6.9%
+//   choppy  false-low         18.1%              3.0%
+//   choppy  missed-HIGH        1.5%              2.5%
+//   choppy  flips/min          2.30              1.17
+//   choppy  lag                 0 s               5 s
 //
-// Zone flicker roughly halves with it (2.88 -> 1.41 flips/min calm, 2.92 -> 1.94
-// choppy). Lag is 1 s calm and 6 s choppy.
+// WHAT THAT TABLE SAYS, INCLUDING THE PART THAT WAS SOLD WRONG. On the CALM row
+// the cue does what it was chosen to do: FALSE-HIGH 11.8% -> 2.6%. On the CHOPPY
+// row it does not reduce false-high AT ALL -- 28 of 403 truth-in-band seconds
+// either way, and only 18 of those are the same seconds, so it relocates them
+// rather than removing them. The choppy row's real and reproducible gains are
+// FALSE-LOW 18.1% -> 3.0% and flicker 2.30 -> 1.17 flips/min. A later strategy
+// comparison should be scored against those, never against the 4.5% this block
+// used to advertise. Whether the choppy row's residual false-high wants a
+// further change is a live question and NOT settled here.
 //
-// THE COST, ACCEPTED DELIBERATELY: missed-HIGH rises from 6.3% to 14.0% (calm)
-// and 4.5% to 7.9% (choppy). A late warning is far cheaper than a false one, and
-// the deadband is only 1 spm, so a genuine overshoot past +1 still arrives --
-// four seconds later.
+// FLICKER roughly halves on both rows, and by more than was advertised: 2.87 ->
+// 1.10 flips/min calm, 2.30 -> 1.17 choppy.
+//
+// THE COST, ACCEPTED DELIBERATELY: missed-HIGH rises from 6.2% to 15.3% of
+// scored seconds (calm) and 1.5% to 2.5% (choppy), and the median lag on a
+// genuine zone change goes from 0 s to 1 s (calm) and 5 s (choppy). A late
+// warning is far cheaper than a false one, and the deadband is only 1 spm, so a
+// genuine overshoot past +1 still arrives -- four seconds later.
 //
 // DO NOT "IMPROVE" THIS BY SMOOTHING THE NUMBER. Pre-smoothing the displayed
-// rate and deriving the zone from the smoothed value makes the choppy row WORSE,
-// measured:
-//   deadband+persist on the raw rate  -> choppy false-high  4.5%
-//   median-5, then deadband           -> choppy false-high  8.4%
-//   median-9, then deadband           -> choppy false-high 12.5%
-//   Hampel,   then deadband           -> choppy false-high 11.1%
-// A Hampel filter does not suppress the 37.5 spm spike at all. FILTER THE ZONE,
-// NOT THE NUMBER: the displayed number stays raw outputRate() because it is the
-// measurement, and the colour carries the instruction.
+// rate and taking the zone from the smoothed value makes BOTH rows worse on
+// FALSE-HIGH. Re-measured on the SHIPPED rule with CAUSAL (trailing) filters,
+// which is the only kind a live display could run:
+//
+//   pre-filter          calm false-high   choppy false-high
+//   none (shipped)            2.6%              6.9%
+//   median-5                  3.4%              9.7%
+//   median-9                  4.7%             13.2%
+//   Hampel (7, 3 MAD)         2.9%              6.9%
+//
+// The Hampel row is the instructive one: it moves the choppy figure not at all,
+// because it does not suppress the 37.5 spm spike. That spike is SIX CONSECUTIVE
+// SECONDS at the very first second of a work lap, so a trailing window has
+// nothing but the spike in it -- its own median is 37.5 and its MAD is zero, and
+// a trailing median-5 passes all six through unchanged. An outlier rejector
+// cannot reject what it has only ever seen. FILTER THE ZONE, NOT THE NUMBER: the
+// displayed number stays raw outputRate() because it is the measurement, and the
+// colour carries the instruction.
 //
 // WHAT NONE OF THIS MEASURES: how the result reads on a wrist mid-stroke. These
 // figures are a replay of two recordings against a decision function. They say
-// the cue would have lied less often; they do not say the athlete would have
-// rowed better.
+// the cue would have lied less often on the calm row and flickered less on both;
+// they do not say the athlete would have rowed better.
 const CUE_DEADBAND = 1.0;         // spm, paid on EXIT from the band only
 const CUE_PERSIST_OUT_MS = 4000;  // ms a change to an out-of-band cue must hold
 const CUE_PERSIST_IN_MS  = 1000;  // ms a change back into the band must hold
