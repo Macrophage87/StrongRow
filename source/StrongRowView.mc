@@ -238,6 +238,55 @@ const CUEZ_BELOW = 0;    // row harder
 const CUEZ_IN    = 1;    // hold
 const CUEZ_ABOVE = 2;    // ease off
 
+// ============ the cue's three tunables ======================================
+// CHOSEN BY REPLAY AGAINST TWO RECORDED ROWS, not by feel. Both were decoded
+// per second, work laps only, from the row_stroke_rate developer field:
+//
+//   4x15' durability, calm water, target 18-20 spm, 3620 s of work
+//   8x3'  strength-endurance, choppy water, target 16-18 spm, 1436 s of work
+//
+// THE FAILURE BEING FIXED IS TRANSIENT SPIKES, not a biased median. The choppy
+// row reads above 1.25x its own baseline on 8.7% of seconds and peaks at 2.51x;
+// its lap medians then walk 16.5 -> 15.0 -> 14.2 -> 13.2 against a 16-18 target
+// -- the athlete easing off against a cue that was lying. The calm row never
+// exceeds 1.5x in 3620 seconds and lands in band. The driver is WATER STATE, not
+// cadence: within the calm row, the lap abandoned early for chop spikes on 3.5%
+// of seconds against 1.0% and 1.3% for its calm laps, at the same cadence.
+//
+// SCORED BY DIRECTION OF ERROR, because the damaging error is FALSE-HIGH:
+// telling the athlete to ease off while they are actually in the band.
+//
+//   strategy                       calm false-high   choppy false-high
+//   raw band comparison (before)         11.6%             6.9%
+//   asymmetric deadband + persist         2.4%             4.5%
+//
+// Zone flicker roughly halves with it (2.88 -> 1.41 flips/min calm, 2.92 -> 1.94
+// choppy). Lag is 1 s calm and 6 s choppy.
+//
+// THE COST, ACCEPTED DELIBERATELY: missed-HIGH rises from 6.3% to 14.0% (calm)
+// and 4.5% to 7.9% (choppy). A late warning is far cheaper than a false one, and
+// the deadband is only 1 spm, so a genuine overshoot past +1 still arrives --
+// four seconds later.
+//
+// DO NOT "IMPROVE" THIS BY SMOOTHING THE NUMBER. Pre-smoothing the displayed
+// rate and deriving the zone from the smoothed value makes the choppy row WORSE,
+// measured:
+//   deadband+persist on the raw rate  -> choppy false-high  4.5%
+//   median-5, then deadband           -> choppy false-high  8.4%
+//   median-9, then deadband           -> choppy false-high 12.5%
+//   Hampel,   then deadband           -> choppy false-high 11.1%
+// A Hampel filter does not suppress the 37.5 spm spike at all. FILTER THE ZONE,
+// NOT THE NUMBER: the displayed number stays raw outputRate() because it is the
+// measurement, and the colour carries the instruction.
+//
+// WHAT NONE OF THIS MEASURES: how the result reads on a wrist mid-stroke. These
+// figures are a replay of two recordings against a decision function. They say
+// the cue would have lied less often; they do not say the athlete would have
+// rowed better.
+const CUE_DEADBAND = 1.0;         // spm, paid on EXIT from the band only
+const CUE_PERSIST_OUT_MS = 4000;  // ms a change to an out-of-band cue must hold
+const CUE_PERSIST_IN_MS  = 1000;  // ms a change back into the band must hold
+
 class StrongRowView extends Ui.View {
 
     // step types
@@ -1337,7 +1386,22 @@ class StrongRowView extends Ui.View {
     // "where is this rate" against "does this rate justify changing the
     // instruction" -- and only the second one is allowed to depend on what is
     // already displayed.
+    //
+    // THE DEADBAND IS PAID ON EXIT ONLY, and the asymmetry is the design rather
+    // than an oversight. Leaving the band means starting to shout at the
+    // athlete, so it costs CUE_DEADBAND; coming back means saying "you're fine",
+    // which the athlete can afford to hear early, so it costs nothing and the
+    // rate has only to REACH the edge. A deadband applied on re-entry would make
+    // the default 16-18 band effectively 17-17 to get back into, and an athlete
+    // who corrected exactly onto the edge would be told to keep correcting.
+    //
+    // Implemented as a WIDENED BAND while the display says IN, which is exactly
+    // "leaving requires rate > hi + DEADBAND or rate < lo - DEADBAND" and keeps
+    // the no-data and boundary rules in one place instead of two.
     static function cueTarget(rate, lo, hi, cur) {
+        if (cur == $.CUEZ_IN) {
+            return cueBandZone(rate, lo - $.CUE_DEADBAND, hi + $.CUE_DEADBAND);
+        }
         return cueBandZone(rate, lo, hi);
     }
 
@@ -1364,9 +1428,60 @@ class StrongRowView extends Ui.View {
     // test would depend on how long the device has been up -- and CI's
     // simulator is seconds old while a desktop one is hours old, so such a case
     // passes where it is written and reds where it is judged.
+    //
+    // MEASURED IN MILLISECONDS, NEVER IN CALLS. onUpdate runs off a 250 ms tick,
+    // so a window counted in callbacks would make CUE_PERSIST_OUT_MS = 4 mean
+    // one second rather than four -- and it would silently retune itself if the
+    // tick period ever changed, or if the platform coalesced updates.
+    //
+    // WHICH WINDOW APPLIES IS DECIDED BY THE CANDIDATE, not by the zone being
+    // left, and that is the generalisation the measured result asks for: any
+    // out-of-band candidate is the EXPENSIVE claim ("ease off" / "row harder")
+    // and pays CUE_PERSIST_OUT_MS, whether it replaces IN or the other side of
+    // the band; a candidate of IN is the cheap claim and pays
+    // CUE_PERSIST_IN_MS.
     static function cueStep(rate, lo, hi, cur, cand, since, now) {
         var want = cueTarget(rate, lo, hi, cur);
-        return [want, want, now];
+
+        // Already showing what the rate asks for: nothing is pending, and the
+        // candidate is reset so that persistence means CONTINUOUS. Without this
+        // an intermittent spike would bank credit across the gaps between its
+        // appearances, which is a total rather than a persistence test.
+        if (want == cur) { return [cur, cur, now]; }
+
+        // CUEZ_NONE IS ADOPTED WITHOUT DELAY, in both directions.
+        //   into NONE:  drawRate switches the numeral to "--.-" on this very
+        //               frame, and a colour outliving the number it described is
+        //               a claim with nothing behind it.
+        //   out of NONE: there is no displayed instruction to protect, so the
+        //               first reading is the best answer available and delaying
+        //               it buys nothing. This is also what makes a work interval
+        //               start clean -- see the parking branch in onUpdate.
+        if (want == $.CUEZ_NONE || cur == $.CUEZ_NONE) {
+            return [want, want, now];
+        }
+
+        // A DIFFERENT candidate from last frame starts its own clock.
+        if (want != cand) { return [cur, want, now]; }
+
+        // A CLOCK THAT WENT BACKWARDS restarts the timer instead of adopting or
+        // stalling. Compared directly rather than through the difference, so no
+        // subtraction can overflow on the way to the test.
+        //
+        // SCOPE, stated because the neighbouring hazard is an open question here:
+        // System.getTimer() is a 32-bit millisecond counter and WRAPS, but
+        // whether a wrap presents as a backwards step or as correct two's
+        // -complement arithmetic depends on Monkey C's overflow semantics, which
+        // nothing in this repository measures -- #70 owns that for the
+        // pre-existing rrIsFresh / hrHave pair and this does not add to it. The
+        // guard is written so either answer is safe: worst case one window's
+        // delay, once every 24.85 days.
+        if (now < since) { return [cur, want, now]; }
+
+        var need = (want == $.CUEZ_IN) ? $.CUE_PERSIST_IN_MS
+                                       : $.CUE_PERSIST_OUT_MS;
+        if ((now - since) >= need) { return [want, want, now]; }
+        return [cur, cand, since];
     }
 
     // Pure: the colour for a cue zone.
