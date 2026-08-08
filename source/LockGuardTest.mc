@@ -1,6 +1,7 @@
 using Toybox.Test;
 using Toybox.Sensor;
 using Toybox.Lang;
+using Toybox.Math;
 
 // Suite for the STROKE-RATE LOCK GUARD -- the last decision the detector makes
 // before a rate reaches the screen, the FIT file and everything derived from
@@ -66,6 +67,31 @@ using Toybox.Lang;
 // One module, one member of `globals`. See the ceiling note above.
 module Lock {
 
+    // A WRITEABLE stand-in for Sensor.AccelerometerData / SensorData.
+    //
+    // DspTimeBaseTest's FakeAccel is reused everywhere a batch of ZEROES is
+    // wanted (Probe.feedQuiet), and is not widened here: its whole contract is
+    // "n samples of zero", three suites rely on that, and a constructor that
+    // sometimes carries a waveform is a stub that can drift into two things.
+    // These two are the same shape with mutable arrays, and they live inside
+    // `module Lock` so they cost no `globals` member.
+    class WaveAccel {
+        var x; var y; var z;
+        function initialize(n) {
+            x = new [n]; y = new [n]; z = new [n];
+            for (var i = 0; i < n; i++) { x[i] = 0; y[i] = 0; z[i] = 0; }
+        }
+    }
+
+    class WaveData {
+        var accelerometerData;
+        var heartRateData;
+        function initialize(n) {
+            accelerometerData = new WaveAccel(n);
+            heartRateData = null;
+        }
+    }
+
     // Drives the detector's two output-stage inputs directly.
     //
     // Extends HrProbe (HrArcTest.mc) rather than re-deriving from
@@ -125,7 +151,36 @@ module Lock {
             mAcLowConf = lowConf;
         }
 
-        function lockConfState() { return mAcConf; }
+        function lockConfState()   { return mAcConf; }
+        function lockPeriodState() { return mAcPeriod; }
+        function lockLowState()    { return mAcLowConf; }
+        function dtState()         { return mDt; }
+
+        // The estimator's own unlock threshold. A class `hidden const` is an
+        // INSTANCE member, so a (:test) free function cannot name it; exposing
+        // it here rather than transcribing 0.35 into an assertion keeps the pin
+        // keyed to the constant the shipping gate actually reads.
+        function acMinConf() { return AC_MIN_CONF; }
+
+        // NON-ZERO accelerometer batches through the SHIPPING onSensorData.
+        //
+        // feedQuiet above can only ever reach updateAutocorr's zero-energy
+        // early return, so nothing in this file used to reach the estimator's
+        // MAIN path at all -- which is how a fabricated mAcConf survived the
+        // whole suite. `samples` is a flat array of x-axis values, cut into
+        // batches of `chunk`; y and z stay at zero so the dominant-axis chooser
+        // cannot move off x mid-run.
+        function feedWave(samples, chunk) {
+            var i = 0;
+            while (i < samples.size()) {
+                var n = chunk;
+                if (i + n > samples.size()) { n = samples.size() - i; }
+                var d = new WaveData(n);
+                for (var k = 0; k < n; k++) { d.accelerometerData.x[k] = samples[i + k]; }
+                onSensorData(d as Sensor.SensorData);
+                i += n;
+            }
+        }
 
         // Recording stand-ins for the three record-scope handles.
         function installLockFields(rateF, confF, lowF) {
@@ -204,6 +259,37 @@ module Lock {
         var p = new Probe();
         p.setDetector(spm, acPeriod);
         return p;
+    }
+
+    // -- waveforms for the estimator's MAIN path --------------------------
+    // Both are functions of the SAMPLE INDEX and a fixed seed. Never
+    // System.getTimer(): a case that synthesises a signal from it passes on an
+    // hours-old desktop simulator and reds on CI's seconds-old one, which this
+    // repository has shipped once.
+
+    // A clean stroke cycle at `spm`, sampled at the accelerometer step the app
+    // configured. Amplitude is well over MIN_THR so the peak detector arms.
+    function sineWave(spm, n, dt, amp) {
+        var out = new [n];
+        var w = 2.0 * Math.PI / (60.0 / spm);
+        for (var i = 0; i < n; i++) {
+            out[i] = (amp * Math.sin(w * i * dt)).toNumber();
+        }
+        return out;
+    }
+
+    // The same energy with no period the estimator can find. Lehmer generator,
+    // multiplier 75 and modulus 65537, chosen so every intermediate stays under
+    // 5e6 and cannot overflow a 32-bit Number -- the arithmetic is the point,
+    // not the statistics.
+    function noiseWave(n, amp, seed) {
+        var out = new [n];
+        var s = seed;
+        for (var i = 0; i < n; i++) {
+            s = (s * 75 + 74) % 65537;
+            out[i] = (s % (2 * amp + 1)) - amp;
+        }
+        return out;
     }
 
     // Float comparison with a tolerance well under a tenth of a spm, which is
@@ -899,6 +985,96 @@ module Lock {
     return true;
 }
 
+// THE RECORDED CONFIDENCE IS THE NUMBER THE ESTIMATOR'S OWN GATE WAS TAKEN ON.
+//
+// WHY THIS CASE EXISTS, and it is a coverage hole rather than a live defect.
+// `mAcConf = lockConf(best, e)` is the only place the diagnostic member gets its
+// MAIN-PATH value, and nothing pinned it. The two cases that mention mAcConf
+// reach it another way: theConfidenceSentinelIsRestoredByTheEstimator exercises
+// only updateAutocorr's zero-energy early return, and theTickRecordsTheLockState
+// PLANTS a confidence through setLockState, so it pins onTick's READ of the
+// member and not the estimator's WRITE to it. Every existing route into
+// updateAutocorr from a (:test) went through feedQuiet, whose batches are
+// literal zeros, so the estimator always returned at the zero-energy line and
+// the main path was never executed at all. A mutant that computed the
+// confidence into a local -- leaving the gate, and therefore every detector
+// behaviour, byte-for-byte unchanged -- and assigned a constant to mAcConf
+// passed the entire suite.
+//
+// What lands in the file is that member: onTick calls mFitLockConf.setData(
+// mAcConf) with no intervening transform. So a decoupled member means
+// lock_confidence carries numbers no lock decision was ever taken on, on
+// precisely the rows #149 filed these fields to explain.
+//
+// WHAT IS ASSERTED IS A CONSISTENCY RELATION BETWEEN TWO THINGS THE SHIPPING
+// ESTIMATOR DID, never a re-derivation of best/e -- a case that recomputed the
+// confidence would pin its own arithmetic and nothing else. Both legs are
+// required and neither suffices: any CONSTANT satisfies at most one of them.
+(:test) function test_lock_theEstimatorRecordsTheConfidenceItsGateWasTakenOn(logger) {
+    // (a) A CLEAN 20 spm CYCLE LOCKS. 1200 samples is 48 s at the configured
+    // rate -- past AC_MIN_N with the ring full -- and the phase comes from the
+    // sample index, so this reads the same on CI's simulator and a desktop one.
+    var p = new Lock.Probe();
+    p.feedWave(Lock.sineWave(20.0, 1200, p.dtState(), 500), 25);
+    if (!(p.lockPeriodState() > 0.0) || p.lockLowState() != 0) {
+        logger.error("setup (a): a clean 20 spm cycle must leave the estimator " +
+                     "LOCKED with no low-confidence run, or the leg below is " +
+                     "asserting about a state it never reached. period=" +
+                     p.lockPeriodState() + " lowRun=" + p.lockLowState());
+        return false;
+    }
+    // The estimator PASSED its own gate -- that is what a zero run length after
+    // a locked estimate means -- so the confidence it recorded has to be one
+    // that passes it.
+    if (!(p.lockConfState() >= p.acMinConf())) {
+        logger.error("(a) the estimator locked and reset its low-confidence " +
+                     "run, which happens ONLY when the reading passed the " +
+                     p.acMinConf() + " gate -- so the confidence it recorded " +
+                     "must be at least that. It recorded " + p.lockConfState() +
+                     ", which is the number lock_confidence would carry for a " +
+                     "decision that was never taken on it");
+        return false;
+    }
+
+    // (b) THE OTHER SIDE. Aperiodic input with the same energy: the estimator
+    // runs its whole main path, finds no lag worth the gate, and advances the
+    // low-confidence run -- which happens ONLY on the failing branch.
+    var q = new Lock.Probe();
+    q.feedWave(Lock.noiseWave(1200, 500, 1), 25);
+    if (!(q.lockLowState() > 0)) {
+        logger.error("setup (b): aperiodic input must FAIL the confidence gate " +
+                     "and advance the low-confidence run, or the leg below is " +
+                     "asserting about a state it never reached. lowRun=" +
+                     q.lockLowState() + " period=" + q.lockPeriodState());
+        return false;
+    }
+    if (!(q.lockConfState() < q.acMinConf())) {
+        logger.error("(b) the estimator advanced its low-confidence run, which " +
+                     "happens ONLY when the reading FAILED the " +
+                     q.acMinConf() + " gate -- so the confidence it recorded " +
+                     "must be under it. It recorded " + q.lockConfState());
+        return false;
+    }
+
+    // (c) AND NEITHER LEG IS THE SENTINEL. Both windows carry real energy, so
+    // both reached lockConf's computed branch; a wiring that left
+    // LOCK_CONF_NONE standing on the main path would satisfy (b) by accident
+    // and would report "no estimate was computed" for every unlocked row.
+    var confs = [p.lockConfState(), q.lockConfState()];
+    for (var i = 0; i < 2; i++) {
+        if (!(confs[i] >= 0.0)) {
+            logger.error("(c) leg " + i + " recorded " + confs[i] + ", which is " +
+                         "not a computed confidence -- a correlation over an " +
+                         "energy is never negative, so this is the sentinel " +
+                         "surviving the main path. 'no estimate' and 'a bad " +
+                         "estimate' are the two states these fields exist to " +
+                         "tell apart");
+            return false;
+        }
+    }
+    return true;
+}
+
 // -- c5: the diagnostic differentials -----------------------------------------
 //
 // BOTH CASES BELOW ARE RED AGAINST c4 AND GREEN ONLY AT c6. The three handles
@@ -1176,6 +1352,28 @@ module Lock {
                              "drawRate renders it '--.-'");
                 return false;
             }
+        }
+
+        // AND THE HOLD IS FINITE. Without this the case is satisfied by a
+        // baseline that freezes FOREVER after the first paused stroke -- a
+        // mutant that survived the whole suite at 255/255 when this case was
+        // written. A guard whose reference stops tracking the athlete is not a
+        // relative guard; after 24 strokes at a steady rate the baseline must
+        // have converged on it. The tolerance is a tenth of a spm rather than
+        // Lock.near's half-thousandth, because this asserts CONVERGENCE and not
+        // an exact value: nineteen quarter-of-the-gap steps leave under 0.02
+        // spm of the largest gap any case here starts from, so a tenth is loose
+        // by a factor of five and still a hundredth of the 4.0 spm error a
+        // never-expiring hold leaves standing.
+        var drift = p.rateBase() - back;
+        if (drift < 0.0) { drift = -drift; }
+        if (!(drift < 0.1)) {
+            logger.error("after 24 strokes at a steady " + back + " spm the " +
+                         "baseline must have converged on it; it reads " +
+                         p.rateBase() + ". A hold that never expires satisfies " +
+                         "every other assertion in this case and leaves the " +
+                         "guard keyed to a rate the athlete has stopped rowing");
+            return false;
         }
     }
     return true;
