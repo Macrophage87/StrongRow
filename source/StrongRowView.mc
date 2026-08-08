@@ -221,6 +221,23 @@ const HRZ_BELOW = 0;
 const HRZ_IN    = 1;
 const HRZ_ABOVE = 2;
 
+// ============ the DISPLAY CUE's zone codes ==================================
+// The stroke-rate colour, treated as an INSTRUCTION rather than as a rendering
+// of the measurement. In the maintainer's words: "the in row measurement is
+// designed to just tell me whether I should increase or decrease my rate. Have
+// it keep the actual measurement in the file though."
+//
+// A CODE, never a colour, for the same reason HRZ_* is: "nothing to say" has to
+// be a different KIND of answer, or it collapses into "below band" one palette
+// edit later -- the #86 / #107 defect class.
+//
+// Module scope, like every constant a class-scope static must reach: a Monkey C
+// class `const` is an instance member and a static cannot resolve it.
+const CUEZ_NONE  = -1;   // no reading -- the numeral is "--.-"
+const CUEZ_BELOW = 0;    // row harder
+const CUEZ_IN    = 1;    // hold
+const CUEZ_ABOVE = 2;    // ease off
+
 class StrongRowView extends Ui.View {
 
     // step types
@@ -355,6 +372,25 @@ class StrongRowView extends Ui.View {
     hidden var mLastHrMs;
     hidden var mHrEver;
 
+    // ---- display-cue state ------------------------------------------------
+    // THREE fields, and none of them is a rate. The cue is a ZONE -- the
+    // instruction "row harder / hold / ease off" -- and the rate it was derived
+    // from is deliberately not kept, so nothing downstream can start reading a
+    // filtered NUMBER out of this layer. The number on screen and the number in
+    // the file both come straight from outputRate().
+    //
+    //   mCueZone   the zone currently DISPLAYED (a CUEZ_* code)
+    //   mCueCand   the zone the raw rate has been asking for
+    //   mCueSince  when it started asking, on the nowMs() clock (ms)
+    //
+    // Advanced ONLY from onUpdate. Nothing on the onTick path -- the path that
+    // writes row_stroke_rate, dist_per_stroke and corrective_rate -- reads or
+    // writes any of them, which is what makes "the file is unaffected" a
+    // structural property rather than a promise.
+    hidden var mCueZone;
+    hidden var mCueCand;
+    hidden var mCueSince;
+
     // R-R / HRV state
     hidden var mRrOk;
     hidden var mLastRrMs;     // last R-R BATCH arrival (display indicator)
@@ -433,6 +469,11 @@ class StrongRowView extends Ui.View {
         mHrBpm      = 0;
         mLastHrMs   = 0;
         mHrEver     = false;
+        // No cue until a work step has produced a reading. CUEZ_NONE is the
+        // "nothing to say" state, not a zone that happens to be off the band.
+        mCueZone    = $.CUEZ_NONE;
+        mCueCand    = $.CUEZ_NONE;
+        mCueSince   = 0;
         mRrOk       = false;
         mLastRrMs   = 0;
         mLastBeatMs = 0;
@@ -1254,6 +1295,96 @@ class StrongRowView extends Ui.View {
             return Gfx.COLOR_GREEN;                     // in band: hold
         }
         return Gfx.COLOR_WHITE;
+    }
+
+    // ============ the DISPLAY CUE ==========================================
+    // A layer that sits BETWEEN outputRate() and the colour, and reaches
+    // nothing else. It consumes the estimator's output and is read only by the
+    // draw path.
+    //
+    // WHAT IT MUST NOT TOUCH, listed because the whole instruction turns on it:
+    // outputRate(), recomputeRate(), registerStroke() and distPerStroke() are
+    // unchanged, so the three FIT writes computed from them --
+    // mFitRate.setData(outputRate()), mFitDps.setData(distPerStroke(...)) and
+    // correctiveRate()'s use of outputRate() -- record exactly what they
+    // recorded before. The displayed NUMBER is unchanged too: drawRate formats
+    // outputRate(). Only the COLOUR passes through here.
+    //
+    // rateColour above is left in place and unmodified. It is still the
+    // definition of "which colour does this rate deserve"; cueColour below
+    // agrees with it exactly on the memoryless mapping, and a (:test) sweeps
+    // the two against each other so the vocabulary cannot fork.
+
+    // Pure: the zone a rate falls in, with no memory at all. The band
+    // comparison and nothing else.
+    //
+    // Boundary inclusivity is rateColour's: `rate == lo` is neither `< lo` nor
+    // `> hi`, so it is IN, and likewise `rate == hi`.
+    //
+    // `rate <= 0.0` is CUEZ_NONE and not "very slow". outputRate() genuinely
+    // returns 0.0 when nothing has been measured and drawRate renders that as
+    // "--.-", so a zone here would be a colour on a dash.
+    static function cueBandZone(rate, lo, hi) {
+        if (rate <= 0.0) { return $.CUEZ_NONE; }
+        if (rate < lo)   { return $.CUEZ_BELOW; }
+        if (rate > hi)   { return $.CUEZ_ABOVE; }
+        return $.CUEZ_IN;
+    }
+
+    // Pure: the zone the raw rate is ASKING for, given the zone on screen.
+    //
+    // Separate from cueBandZone because the two answer different questions --
+    // "where is this rate" against "does this rate justify changing the
+    // instruction" -- and only the second one is allowed to depend on what is
+    // already displayed.
+    static function cueTarget(rate, lo, hi, cur) {
+        return cueBandZone(rate, lo, hi);
+    }
+
+    // Pure: one step of the cue's state machine.
+    //
+    //   rate   the raw estimator output (outputRate())
+    //   lo/hi  the target band, in spm
+    //   cur    the zone currently displayed
+    //   cand   the zone that has been asking to replace it
+    //   since  when it started asking, on the caller's clock (ms)
+    //   now    the caller's clock, in ms
+    //
+    // Returns [zone, candidate, since]. The caller stores all three and passes
+    // them back next frame; the function itself holds nothing.
+    //
+    // A STEP FUNCTION AND NOT A METHOD, so the whole decision is reachable from
+    // a (:test) with plain numbers -- the seam rateColour, pauseFlags,
+    // footState, hrZone and dpsZone all use. A (:test) never yields to the
+    // simulator event loop, so a decision buried in onUpdate is reachable only
+    // through a Dc and a fully-built view; this one is not.
+    //
+    // TIME IS A PARAMETER, not System.getTimer(). The caller passes nowMs(),
+    // which a probe overrides. A stamp synthesised from getTimer() inside a
+    // test would depend on how long the device has been up -- and CI's
+    // simulator is seconds old while a desktop one is hours old, so such a case
+    // passes where it is written and reds where it is judged.
+    static function cueStep(rate, lo, hi, cur, cand, since, now) {
+        var want = cueTarget(rate, lo, hi, cur);
+        return [want, want, now];
+    }
+
+    // Pure: the colour for a cue zone.
+    //
+    // The SAME three constants rateColour uses, and the identity is pinned by a
+    // (:test) that sweeps cueColour(isWork, cueBandZone(r, lo, hi)) against
+    // rateColour(isWork, r, lo, hi). Two vocabularies that merely happen to
+    // agree today would be one edit from disagreeing.
+    //
+    // `isWork` is a BOOLEAN for the reason rateColour states: STEP_WORK is a
+    // class `hidden const`, i.e. an instance member, so a static cannot resolve
+    // it.
+    static function cueColour(isWork, zone) {
+        if (!isWork) { return Gfx.COLOR_WHITE; }
+        if (zone == $.CUEZ_BELOW) { return Gfx.COLOR_BLUE; }   // row harder
+        if (zone == $.CUEZ_ABOVE) { return Gfx.COLOR_RED; }    // ease off
+        if (zone == $.CUEZ_IN)    { return Gfx.COLOR_GREEN; }  // hold
+        return Gfx.COLOR_WHITE;                                // CUEZ_NONE
     }
 
     // Pure: the [paused, recFailed] pair a toggle should leave behind, given
@@ -3647,8 +3778,28 @@ class StrongRowView extends Ui.View {
                         Gfx.TEXT_JUSTIFY_CENTER | Gfx.TEXT_JUSTIFY_VCENTER);
         }
 
+        // THE NUMBER AND THE INSTRUCTION, from here on, are two different
+        // things computed from one estimator reading:
+        //   dispRate  goes to drawRate untouched -- it is the measurement.
+        //   col       comes from the cue zone -- it is the instruction.
         var dispRate = outputRate();
-        var col = rateColour(type == STEP_WORK, dispRate, mTgtLo, mTgtHi);
+        var cue;
+        if (isWork) {
+            cue = cueStep(dispRate, mTgtLo, mTgtHi,
+                          mCueZone, mCueCand, mCueSince, nowMs());
+        } else {
+            // Off the WORK step nothing is being cued, so nothing is carried.
+            // Parking at CUEZ_NONE rather than leaving the machine running is
+            // what stops a zone derived from rest-cadence strokes appearing the
+            // instant the next work interval starts -- and it means the first
+            // work frame shows the true zone at once, with no cue in front of
+            // it to protect.
+            cue = [$.CUEZ_NONE, $.CUEZ_NONE, nowMs()];
+        }
+        mCueZone  = cue[0];
+        mCueCand  = cue[1];
+        mCueSince = cue[2];
+        var col = cueColour(isWork, mCueZone);
         // #109: on the RECOVERY screens the grid IS the screen -- there is no
         // stroke to correct, so the live numeral earns nothing, while the
         // interval just finished is the thing worth reading.

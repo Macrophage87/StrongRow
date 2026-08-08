@@ -412,3 +412,186 @@ function czWorkProbe() {
     }
     return true;
 }
+
+// -- c1: the new symbols, pinned where they are epoch-invariant ---------------
+//
+// c1 introduces cueBandZone / cueTarget / cueStep / cueColour and wires them at
+// the call site in place of the direct rateColour call. That wiring is
+// BEHAVIOUR-PRESERVING by construction -- cueStep adopts every zone at once and
+// cueColour reproduces rateColour's mapping exactly -- so nothing on screen
+// moves, and the c0 cases above stay green.
+//
+// Every case in THIS section is green at c1 and stays green once the hysteresis
+// lands at c3. They pin the parts that do not move: the vocabulary, the band
+// boundaries, the no-data state, and the two transitions that are adopted
+// without delay in every epoch. The cases that DO move are the c2 section
+// below, and they are red until c3 by design.
+
+(:test) function test_cue_theFourZonesAreDistinct(logger) {
+    var z = [$.CUEZ_NONE, $.CUEZ_BELOW, $.CUEZ_IN, $.CUEZ_ABOVE];
+    for (var i = 0; i < z.size(); i++) {
+        for (var j = i + 1; j < z.size(); j++) {
+            if (z[i] == z[j]) {
+                logger.error("cue zone codes " + i + " and " + j +
+                             " are both " + z[i] + " -- two states that " +
+                             "cannot be told apart is one state");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// THE VOCABULARY PIN. cueColour must agree with rateColour on the memoryless
+// mapping for every rate and both work states. This is what makes "the cue is a
+// layer in front of rateColour" true rather than aspirational: if a future edit
+// re-tunes one palette, this reds until the other follows.
+//
+// Sweeps the interesting rates rather than a range: both band edges, one
+// display tick either side of them, the no-data sentinel, a deep miss on each
+// side, and the estimator's ceiling.
+(:test) function test_cue_colourVocabularyMatchesRateColour(logger) {
+    var rates = [0.0, 10.0, 15.9, 16.0, 17.0, 18.0, 18.1, 25.0, 40.0];
+    var works = [true, false];
+    for (var w = 0; w < works.size(); w++) {
+        for (var i = 0; i < rates.size(); i++) {
+            var r = rates[i];
+            var viaZone = StrongRowView.cueColour(
+                works[w], StrongRowView.cueBandZone(r, $.CZ_LO, $.CZ_HI));
+            var direct  = StrongRowView.rateColour(works[w], r, $.CZ_LO, $.CZ_HI);
+            if (viaZone != direct) {
+                logger.error("the cue and the numeral have forked at rate " + r +
+                             " (isWork " + works[w] + "): cueColour said " +
+                             viaZone + ", rateColour said " + direct);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// The band edges belong to the band, and the outside starts immediately beyond
+// them -- the same boundary contract RateColourTest pins for the colour, stated
+// once more at the zone level because the deadband arriving at c3 moves the
+// EXIT threshold and must leave this alone.
+(:test) function test_cue_bandZoneBoundariesAreRateColours(logger) {
+    var cases = [[16.0, $.CUEZ_IN], [18.0, $.CUEZ_IN],
+                 [15.9, $.CUEZ_BELOW], [18.1, $.CUEZ_ABOVE],
+                 [0.0, $.CUEZ_NONE]];
+    for (var i = 0; i < cases.size(); i++) {
+        var got = StrongRowView.cueBandZone(cases[i][0], $.CZ_LO, $.CZ_HI);
+        if (got != cases[i][1]) {
+            logger.error("cueBandZone(" + cases[i][0] + ", 16, 18) is " + got +
+                         ", expected " + cases[i][1] +
+                         " -- the memoryless band comparison has moved");
+            return false;
+        }
+    }
+    return true;
+}
+
+// A step that asks for the zone already showing changes nothing and leaves no
+// pending candidate behind. True in every epoch, and it is the case that makes
+// "a candidate must be CONTINUOUS" checkable: one frame back at the current
+// zone clears whatever was pending.
+(:test) function test_cue_askingForTheDisplayedZoneClearsThePending(logger) {
+    var out = StrongRowView.cueStep(17.0, $.CZ_LO, $.CZ_HI,
+                                    $.CUEZ_IN, $.CUEZ_ABOVE, 1000, 2000);
+    if (out.size() != 3) {
+        logger.error("cueStep must return [zone, candidate, since]; got " +
+                     out.size() + " element(s)");
+        return false;
+    }
+    if (out[0] != $.CUEZ_IN) {
+        logger.error("an in-band rate against an in-band display must stay IN; " +
+                     "got zone " + out[0]);
+        return false;
+    }
+    if (out[1] != $.CUEZ_IN) {
+        logger.error("the pending ABOVE was not cleared: candidate is " + out[1] +
+                     " -- a candidate that survives a frame of disagreement is " +
+                     "not a persistence test, it is a total");
+        return false;
+    }
+    return true;
+}
+
+// NO DATA IS ADOPTED AT ONCE, both ways.
+//
+// Into CUEZ_NONE because the numeral becomes "--.-" on the same frame, and a
+// colour outliving the number it described is a claim with nothing behind it.
+// Out of CUEZ_NONE because there is no displayed instruction to protect: the
+// first reading is the best available answer and delaying it buys nothing.
+(:test) function test_cue_noDataIsAdoptedWithoutDelay(logger) {
+    var gone = StrongRowView.cueStep(0.0, $.CZ_LO, $.CZ_HI,
+                                     $.CUEZ_IN, $.CUEZ_IN, 5000, 5000);
+    if (gone[0] != $.CUEZ_NONE) {
+        logger.error("a zero estimator must drop the cue to CUEZ_NONE on the " +
+                     "same frame the numeral becomes '--.-'; got " + gone[0]);
+        return false;
+    }
+    var first = StrongRowView.cueStep(25.0, $.CZ_LO, $.CZ_HI,
+                                      $.CUEZ_NONE, $.CUEZ_NONE, 5000, 5000);
+    if (first[0] != $.CUEZ_ABOVE) {
+        logger.error("the first reading after no-data must be adopted at once " +
+                     "(nothing is displayed to protect); got " + first[0]);
+        return false;
+    }
+    return true;
+}
+
+// Off the work step there is no instruction, whatever zone is handed in.
+(:test) function test_cue_colourIsWhiteOffTheWorkStep(logger) {
+    var zs = [$.CUEZ_NONE, $.CUEZ_BELOW, $.CUEZ_IN, $.CUEZ_ABOVE];
+    for (var i = 0; i < zs.size(); i++) {
+        var c = StrongRowView.cueColour(false, zs[i]);
+        if (c != Gfx.COLOR_WHITE) {
+            logger.error("zone " + zs[i] + " outside a work step must be white " +
+                         "(COLOR_WHITE = " + Gfx.COLOR_WHITE + "); got " + c);
+            return false;
+        }
+    }
+    return true;
+}
+
+// THE STEP BOUNDARY. A work interval starts with no cue in front of it, so its
+// first frame shows the true zone at once.
+//
+// Driven end to end through the shipping draw path rather than through cueStep,
+// because the thing being pinned is the CALL SITE's decision to park the
+// machine off the work step -- cueStep itself cannot see a step type. Deleting
+// that branch reds this case and no other.
+(:test) function test_cue_workAfterARestStartsFromNoCue(logger) {
+    var p = new CueProbe();
+    p.setSpeed(0.0);
+    p.setDist(0.0);
+
+    // A work interval settled in band.
+    p.enterStepLive(p.kindWork(), false);
+    p.setRate(17.0);
+    czRenderAt(p, 0);
+    czRenderAt(p, 250);
+
+    // A rest long enough for any persistence window to have expired, rowed at
+    // the same in-band cadence, so the only thing that could carry across is
+    // the zone itself.
+    p.enterStepLive(p.kindRest(), false);
+    czRenderAt(p, 1000);
+    czRenderAt(p, 11000);
+
+    // Back to work, already over the band.
+    p.enterStepLive(p.kindWork(), false);
+    p.setRate(25.0);
+    var d = czRenderAt(p, 11250);
+
+    var c = czNumeralColour(d);
+    if (c != Gfx.COLOR_RED) {
+        logger.error("the first work frame after a rest must show the true " +
+                     "zone at once -- 25.0 against a 16-18 band is red " +
+                     "(COLOR_RED = " + Gfx.COLOR_RED + "); got " + c +
+                     ". A cue carried across the step boundary is a stale " +
+                     "instruction from a different activity");
+        return false;
+    }
+    return true;
+}
