@@ -622,6 +622,14 @@ class StrongRowView extends Ui.View {
     hidden var mCoreSensor;
     hidden var mFitCore;
     hidden var mFitSkin;
+    // #13. "Has setData been called on this field yet, in this session?" -- the
+    // exact question the FIT never-set pattern turns on, so it is tracked at the
+    // call site rather than inferred from the sensor's everSeen(). Two flags,
+    // not one: core and skin are accepted independently (#17), so a frame with
+    // valid skin and invalid core must open the skin field's gate without
+    // opening the core field's.
+    hidden var mCoreWritten;
+    hidden var mSkinWritten;
     hidden var mFitMaxCore;
     hidden var mFitCtDiag;
     hidden var mFitHsi;
@@ -667,6 +675,8 @@ class StrongRowView extends Ui.View {
         mCoreSensor = null;
         mFitCore    = null;
         mFitSkin    = null;
+        mCoreWritten = false;
+        mSkinWritten = false;
         mFitMaxCore = null;
         mFitCtDiag  = null;
         mFitHsi     = null;
@@ -1022,12 +1032,34 @@ class StrongRowView extends Ui.View {
                 mFitCorr.setData(cr);
                 mCorrAccum += cr / 240.0;   // spm integrated over a 250 ms tick
             }
+            // #13. The gate, not the value: what a dropout records and WHY is
+            // stated once, on ctTempWritable, because getting it backwards is
+            // the whole risk here. In one line -- nothing is written until the
+            // first current reading of the session (so a podless row leaves the
+            // never-set pattern instead of 4109 samples of 0 C), and after that
+            // first write a dropout keeps recording 0.0 C, because skipping
+            // would LATCH the last real reading and 0.0 C cannot collide with a
+            // measurement while 37.4 C can.
             if (mFitCore != null) {
                 var ct = mCoreSensor.coreTemp();
-                mFitCore.setData(ct);
+                if (ctTempWritable(ct, mCoreWritten)) {
+                    mFitCore.setData(ct);
+                    mCoreWritten = true;
+                }
+                // OUTSIDE the gate, and unchanged: ct is 0.0 on a dropout and
+                // can never raise the maximum, so this needs no guard of its
+                // own -- and `mMaxCore > 0.0` in stopAndSave remains the sole
+                // defence against a bogus 0 C max_core_temperature on a podless
+                // row, exactly as the note there says.
                 if (ct > mMaxCore) { mMaxCore = ct; }
             }
-            if (mFitSkin != null) { mFitSkin.setData(mCoreSensor.skinTemp()); }
+            if (mFitSkin != null) {
+                var st = mCoreSensor.skinTemp();
+                if (ctTempWritable(st, mSkinWritten)) {
+                    mFitSkin.setData(st);
+                    mSkinWritten = true;
+                }
+            }
             // #80: the heat strain index. WRITTEN ONLY WHEN THERE IS ONE, which
             // is the opposite of the core/skin lines above it, and the asymmetry
             // is forced rather than stylistic.
@@ -1507,6 +1539,67 @@ class StrongRowView extends Ui.View {
     // Null is the only absence the scale has, so null is the only rejection.
     static function hsiWritable(v) {
         return v != null;
+    }
+
+    // #13. May this tick call setData on a record-scope TEMPERATURE field,
+    // given the value the sensor is reporting and whether this field has ever
+    // been written in this session?
+    //
+    // ---- WHAT A DROPOUT RECORDS, AND WHY --------------------------------
+    //
+    // This is the decision #13 asks for, and the answer is not the one the
+    // issue suggests. #13 proposes skipping setData while stale, "leaving the
+    // record field absent for stale ticks". THAT IS NOT WHAT SKIPPING DOES.
+    // Record-scope FitContributor fields LATCH: #36 measured, byte level on
+    // fr965 / SDK 9.2.0, that a skipped write RE-EMITS THE PREVIOUS VALUE on
+    // the next record. So after one real reading, skipping republishes that
+    // reading for the rest of the row -- a flat 37.4 C trace no consumer can
+    // tell from a pod that stayed on and read steady. There is no per-record
+    // gap available in Monkey C at all: setData(NaN) lands as 0xFFC00000,
+    // which a decoder reads as a datum (#48), and setData(null) is an
+    // uncatchable native error that kills the app (#48).
+    //
+    // So the two cases have opposite best answers, and this one line is what
+    // keeps them apart:
+    //
+    //   BEFORE this field has ever been written -- a podless row, or a pod not
+    //   yet acquired -- write NOTHING. Records then carry the FLOAT never-set
+    //   invalid pattern (#48 measured 0xFFFFFFFF exactly where a field had not
+    //   yet been set as of that record; #80 re-measured the same for a FLOAT
+    //   record field and saw the slot absent rather than a number). That is a
+    //   genuine absence, and it is the half of #13 that is actually fixable:
+    //   today a row with no pod declares core_temperature and writes 0.0 into
+    //   every record -- the 4109-record row #102 was filed on.
+    //
+    //   AFTER a real reading has been written, KEEP WRITING 0.0. It is not a
+    //   fabrication and it is not #86/#107's "absence rendered as a value":
+    //   0.0 C is outside both accepted bands BY CONSTRUCTION (25-45 C core,
+    //   15-45 C skin), so it cannot collide with a measurement -- whereas a
+    //   latched 37.4 C can, and does. #83 states the same asymmetry from the
+    //   other side: 0.0 C survives as a marker precisely because it is
+    //   impossible as a reading, which is exactly why #80's heat-strain field
+    //   could NOT copy this shape (0.0 a.u. is an ordinary reading).
+    //   CoreP1.test_c0_dropoutAfterAReadingWritesZeroNotTheLastValue is what a
+    //   future "tidy this up into a skip" edit has to red first.
+    //
+    // `tempC > 0.0` is the freshness test, not a second-guess at one. The
+    // getters return `fresh ? reading : 0.0` and the clamps put every accepted
+    // reading strictly above zero, so the value ALONE carries the answer --
+    // which also means one platform read per tick instead of two, and no
+    // window in which freshness flips between a coreFresh() call and a
+    // coreTemp() call. CoreP1.test_c0_zeroIsNeverAnAcceptedReading pins that
+    // premise through the decoders rather than by restating the constants.
+    //
+    // WHAT IS AND IS NOT MEASURED. The latch and the never-set pattern were
+    // measured in the SIMULATOR (fr965 / SDK 9.2.0) for record-scope developer
+    // fields of this shape -- #36, #48, #80. NOTHING here has been measured for
+    // core_temperature or skin_temperature themselves, and what a DECODER
+    // RENDERS for either byte pattern is not measured for any field. Do not
+    // upgrade "the records carry the never-set pattern" into "the field is
+    // absent in Connect". #150 is the [Local] decode that would settle it, and
+    // it names the outcome that would falsify this design.
+    static function ctTempWritable(tempC, everWritten) {
+        return tempC > 0.0 || everWritten;
     }
 
     // The rightmost x a mark may occupy at height `yTop`, for a display whose
@@ -2824,14 +2917,20 @@ class StrongRowView extends Ui.View {
                 // is the ordinary case, not an edge case.
                 //
                 // Accepted cost, stated so it is a decision and not a surprise:
-                // a row with no pod now declares these three fields and writes
-                // core/skin every tick. coreTemp()/skinTemp() return 0.0 when
-                // nothing is fresh, so such a row logs 0.0 rather than leaving
-                // the fields unwritten. That is #13's territory (it owns the
-                // guard, and the freshness model it depends on); do not
-                // pre-empt it here. Note 0.0 cannot collide with a real reading
-                // -- the 25-45 C / 15-45 C clamps in CoreTempSensor put it
-                // outside the accepted band by construction in this code.
+                // a row with no pod still DECLARES these three fields, because
+                // the gate above does not consult everSeen().
+                //
+                // CORRECTED, #13 (this sentence used to end "so such a row logs
+                // 0.0 rather than leaving the fields unwritten. That is #13's
+                // territory ...; do not pre-empt it here"). #13 has landed and
+                // that is no longer true: onTick now withholds setData until
+                // the first current reading, so a podless row declares the
+                // fields and leaves every record carrying the never-set
+                // pattern. The guard is ctTempWritable and the reasoning lives
+                // there. Note 0.0 still cannot collide with a real reading --
+                // the 25-45 C / 15-45 C clamps in CoreTempSensor put it outside
+                // the accepted band by construction -- which is exactly why 0.0
+                // remains the marker for a dropout AFTER the first write.
                 //
                 // CONSEQUENCE FOR stopAndSave, do not "simplify" it away: with
                 // these fields now created on every row, `mFitMaxCore != null`
@@ -2845,6 +2944,13 @@ class StrongRowView extends Ui.View {
                 // on every row rather than only rows with a pod (whether a
                 // createField throw is reachable at all is #76).
                 if (coreFieldsWanted(mCoreSensor)) {
+                    // #13: a field that has just been created has never been
+                    // written, so both gates start closed. Reset HERE and not
+                    // only in initialize(): startSession() is what creates the
+                    // handles, and a recreated field must go back to leaving
+                    // the never-set pattern until a real reading arrives.
+                    mCoreWritten = false;
+                    mSkinWritten = false;
                     try {
                         mFitCore = mSession.createField(
                             "core_temperature", 7, Fit.DATA_TYPE_FLOAT,
