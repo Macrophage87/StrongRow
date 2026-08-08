@@ -586,6 +586,13 @@ class CoreTempSensor {
         if (mClosed) { return; }
         cancelReopen();
         if (delayMs <= 0) {
+            // The burst phase, reopening now so discovery keeps exactly the
+            // timing it had before #26. This IS a re-entry into openChannel()
+            // from inside openChannel()'s own catch, and it terminates only
+            // because mFails rises on every pass and ctBackoffMs stops
+            // returning 0 once the burst is spent. That is an ARITHMETIC bound,
+            // not a structural one, so it has a test in front of it:
+            // CoreP1.test_c0_backoffIsPositiveOncePastTheBurst.
             openChannel();
             return;
         }
@@ -593,10 +600,57 @@ class CoreTempSensor {
             mRetryTimer = makeRetryTimer();
             mRetryTimer.start(method(:onRetry), delayMs, false);
         } catch (e) {
-            // No timer available: fall back to today's behaviour rather than
-            // silently dropping the retry and leaving CORE dead.
-            mRetryTimer = null;
-            openChannel();
+            // Hand the timer back before dropping the reference. This is the
+            // rule #18 states for the ANT channel, applied to the other scarce
+            // resource this class allocates -- Connect IQ caps concurrent
+            // Timers just as the radio caps channels. cancelReopen() is where
+            // that rule already lives for timers, so it is REUSED rather than
+            // restated, the same way discardChannel() is shared by close() and
+            // #18's failure path. A start() that threw may still have armed the
+            // timer; stopping it is the only safe way to be sure.
+            cancelReopen();
+
+            // AND DELIBERATELY DO NOT REOPEN. This is the line that changed,
+            // and it is the whole of the residue #18 and #26 left behind:
+            //
+            //   * an immediate reopen here is precisely the unpaced re-search
+            //     #26 exists to stop. This branch is reachable only at
+            //     mFails >= CT_BURST_TRIES, where the ladder has just asked for
+            //     30 s or more -- answering that with "now" discards the ladder
+            //     at the one moment it is doing its job;
+            //   * and it does not terminate. openChannel()'s catch calls this
+            //     function and this function called openChannel() straight
+            //     back, so when the ANT open keeps throwing AND the timer keeps
+            //     failing to arm, the delay grows while every pass still
+            //     reopens immediately -- the arithmetic bound above never gets
+            //     to apply. MEASURED on fr965 / SDK 9.2.0: the simulator aborts
+            //     with "Error: Stack Overflow Error / Details: Failed invoking
+            //     <symbol>" on a stack alternating scheduleReopen and
+            //     openChannel all the way down to initialize(). The app DIES
+            //     during onLayout; it does not merely waste radio.
+            //
+            // THE COST, stated rather than hidden: the retry is dropped. When
+            // the channel never opened this was the last thing that could
+            // re-enter openChannel() -- no CHANNEL_CLOSED can arrive from a
+            // channel that is not open -- so CORE is dead for the rest of the
+            // app run. That is worse than a recovered retry and far better than
+            // a crash that takes the whole activity with it, and the priority
+            // order says which way to fall: a working app that does not crash
+            // comes before CORE compatibility.
+            //
+            // It is not invisible in the file either: openAttempts == openThrow
+            // with openOk == 0 already reads as "the channel never opened, and
+            // here is how hard it tried". A dedicated ct_diag bit for "the
+            // ladder stalled for want of a timer" was considered and NOT added
+            // -- it is a wire-format change (a new CT_DIAG_I_FLAGS bit, so a
+            // CT_DIAG_VERSION bump) to record a path never observed on any
+            // device.
+            //
+            // NOT MEASURED: whether Timer.start() ever fails here at all. The
+            // one real-row ct_diag readout available (#122) reached this branch
+            // with 22 of 22 opens succeeding, so neither failing resource has
+            // been seen in the field. This is a defensive fix on a path that is
+            // reachable by construction and whose outcome is now measured.
         }
     }
 

@@ -622,6 +622,14 @@ class StrongRowView extends Ui.View {
     hidden var mCoreSensor;
     hidden var mFitCore;
     hidden var mFitSkin;
+    // #13. "Has setData been called on this field yet, in this session?" -- the
+    // exact question the FIT never-set pattern turns on, so it is tracked at the
+    // call site rather than inferred from the sensor's everSeen(). Two flags,
+    // not one: core and skin are accepted independently (#17), so a frame with
+    // valid skin and invalid core must open the skin field's gate without
+    // opening the core field's.
+    hidden var mCoreWritten;
+    hidden var mSkinWritten;
     hidden var mFitMaxCore;
     hidden var mFitCtDiag;
     hidden var mFitHsi;
@@ -667,6 +675,8 @@ class StrongRowView extends Ui.View {
         mCoreSensor = null;
         mFitCore    = null;
         mFitSkin    = null;
+        mCoreWritten = false;
+        mSkinWritten = false;
         mFitMaxCore = null;
         mFitCtDiag  = null;
         mFitHsi     = null;
@@ -1022,12 +1032,34 @@ class StrongRowView extends Ui.View {
                 mFitCorr.setData(cr);
                 mCorrAccum += cr / 240.0;   // spm integrated over a 250 ms tick
             }
+            // #13. The gate, not the value: what a dropout records and WHY is
+            // stated once, on ctTempWritable, because getting it backwards is
+            // the whole risk here. In one line -- nothing is written until the
+            // first current reading of the session (so a podless row leaves the
+            // never-set pattern instead of 4109 samples of 0 C), and after that
+            // first write a dropout keeps recording 0.0 C, because skipping
+            // would LATCH the last real reading and 0.0 C cannot collide with a
+            // measurement while 37.4 C can.
             if (mFitCore != null) {
                 var ct = mCoreSensor.coreTemp();
-                mFitCore.setData(ct);
+                if (ctTempWritable(ct, mCoreWritten)) {
+                    mFitCore.setData(ct);
+                    mCoreWritten = true;
+                }
+                // OUTSIDE the gate, and unchanged: ct is 0.0 on a dropout and
+                // can never raise the maximum, so this needs no guard of its
+                // own -- and `mMaxCore > 0.0` in stopAndSave remains the sole
+                // defence against a bogus 0 C max_core_temperature on a podless
+                // row, exactly as the note there says.
                 if (ct > mMaxCore) { mMaxCore = ct; }
             }
-            if (mFitSkin != null) { mFitSkin.setData(mCoreSensor.skinTemp()); }
+            if (mFitSkin != null) {
+                var st = mCoreSensor.skinTemp();
+                if (ctTempWritable(st, mSkinWritten)) {
+                    mFitSkin.setData(st);
+                    mSkinWritten = true;
+                }
+            }
             // #80: the heat strain index. WRITTEN ONLY WHEN THERE IS ONE, which
             // is the opposite of the core/skin lines above it, and the asymmetry
             // is forced rather than stylistic.
@@ -2885,14 +2917,20 @@ class StrongRowView extends Ui.View {
                 // is the ordinary case, not an edge case.
                 //
                 // Accepted cost, stated so it is a decision and not a surprise:
-                // a row with no pod now declares these three fields and writes
-                // core/skin every tick. coreTemp()/skinTemp() return 0.0 when
-                // nothing is fresh, so such a row logs 0.0 rather than leaving
-                // the fields unwritten. That is #13's territory (it owns the
-                // guard, and the freshness model it depends on); do not
-                // pre-empt it here. Note 0.0 cannot collide with a real reading
-                // -- the 25-45 C / 15-45 C clamps in CoreTempSensor put it
-                // outside the accepted band by construction in this code.
+                // a row with no pod still DECLARES these three fields, because
+                // the gate above does not consult everSeen().
+                //
+                // CORRECTED, #13 (this sentence used to end "so such a row logs
+                // 0.0 rather than leaving the fields unwritten. That is #13's
+                // territory ...; do not pre-empt it here"). #13 has landed and
+                // that is no longer true: onTick now withholds setData until
+                // the first current reading, so a podless row declares the
+                // fields and leaves every record carrying the never-set
+                // pattern. The guard is ctTempWritable and the reasoning lives
+                // there. Note 0.0 still cannot collide with a real reading --
+                // the 25-45 C / 15-45 C clamps in CoreTempSensor put it outside
+                // the accepted band by construction -- which is exactly why 0.0
+                // remains the marker for a dropout AFTER the first write.
                 //
                 // CONSEQUENCE FOR stopAndSave, do not "simplify" it away: with
                 // these fields now created on every row, `mFitMaxCore != null`
@@ -2906,6 +2944,13 @@ class StrongRowView extends Ui.View {
                 // on every row rather than only rows with a pod (whether a
                 // createField throw is reachable at all is #76).
                 if (coreFieldsWanted(mCoreSensor)) {
+                    // #13: a field that has just been created has never been
+                    // written, so both gates start closed. Reset HERE and not
+                    // only in initialize(): startSession() is what creates the
+                    // handles, and a recreated field must go back to leaving
+                    // the never-set pattern until a real reading arrives.
+                    mCoreWritten = false;
+                    mSkinWritten = false;
                     try {
                         mFitCore = mSession.createField(
                             "core_temperature", 7, Fit.DATA_TYPE_FLOAT,
