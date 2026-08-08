@@ -296,7 +296,10 @@ class HrProbe extends StrongRowView {
     // accumulator and calling the real function is the same `hidden`-piercing
     // this class already does for setHrState and setDist -- `hidden` is
     // protected in Monkey C -- and it puts latchWorkAccum under a test for the
-    // first time (SetSummaryTest.mc:18-21 records it as review-covered only).
+    // first time. What it still does NOT reach is WHEN advanceStep calls that
+    // function, because this seeds the accumulator itself; SetSummaryTest.mc:25-30
+    // keeps that boundary on the review-only list rather than letting it be read
+    // as covered.
     //
     // RETURNS WHETHER THE LATCH TOOK. latchWorkAccum returns early when
     // mSetNum <= 0, and a silent no-op there would make every grid case vacuous
