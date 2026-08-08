@@ -475,6 +475,134 @@ module CoreP1 {
         return ok;
     }
 
+    // ---- c2 differentials --------------------------------------------------
+    // Every test below FAILS on main and passes after c3. Nothing else is in
+    // this commit.
+
+    // #13, the half that is actually fixable. A row whose pod is never acquired
+    // -- or a pod not yet found when START was pressed, which #75 established is
+    // the ORDINARY case and not an edge one -- must leave its temperature
+    // records never-set rather than writing a physiologically impossible 0.0
+    // into every one of them.
+    //
+    // On main this reds with 5 writes per field: startSession declares the
+    // fields without asking whether a pod has been heard (#75), and onTick then
+    // writes coreTemp()/skinTemp() unconditionally. That is the 4109-record row
+    // #102 was filed on, reproduced in five ticks.
+    (:test) function test_c2_theSilentPrefixWritesNothing(logger) {
+        var p = new TickProbe();
+        for (var i = 0; i < 5; i++) { p.tick(0.0, 0.0); }
+        var ok = true;
+        if (p.core.count() != 0) {
+            logger.error("a row with no CORE reading yet must not write core_temperature; " +
+                         "writes = " + p.core.count() + ", each one a 0.0 C sample");
+            ok = false;
+        }
+        if (p.skin.count() != 0) {
+            logger.error("a row with no CORE reading yet must not write skin_temperature; " +
+                         "writes = " + p.skin.count() + ", each one a 0.0 C sample");
+            ok = false;
+        }
+        return ok;
+    }
+
+    // The same fix stated the way it appears in the file: the FIRST value the
+    // field ever carries is a real reading. On main the first value is 0.0,
+    // written on the first tick after START, so every record from the start of
+    // the row to pod acquisition reads as a measurement of zero.
+    (:test) function test_c2_theFirstValueEverWrittenIsARealReading(logger) {
+        var p = new TickProbe();
+        p.tick(0.0, 0.0);
+        p.tick(0.0, 0.0);
+        p.tick(37.42, 33.00);
+        var ok = true;
+        if (p.core.count() != 1 || !almost(p.core.values[0], 37.42)) {
+            logger.error("core_temperature's first written value must be the reading, " +
+                         "got " + p.core.count() + " write(s), first = " + p.core.values[0]);
+            ok = false;
+        }
+        if (p.skin.count() != 1 || !almost(p.skin.values[0], 33.00)) {
+            logger.error("skin_temperature's first written value must be the reading, " +
+                         "got " + p.skin.count() + " write(s), first = " + p.skin.values[0]);
+            ok = false;
+        }
+        return ok;
+    }
+
+    // #18 x #26, the residue the merged fixes left in the RETRY path.
+    //
+    // scheduleReopen's catch calls openChannel(), and openChannel's own catch
+    // calls scheduleReopen(). When the ANT open keeps throwing AND the retry
+    // timer cannot be armed, that pair recurses with NO bound: the ladder's
+    // delay keeps growing, so the arithmetic bound
+    // (test_c0_backoffIsPositiveOncePastTheBurst) never applies -- every pass
+    // takes the timer branch, fails to arm, and reopens immediately anyway.
+    // Two frames per pass, forever, until the stack is exhausted.
+    //
+    // HOW THIS REDS ON MAIN, stated as it was OBSERVED rather than as it was
+    // predicted. It does not reach the probe's re-entry cap: the simulator
+    // (fr965 / SDK 9.2.0) aborts the test first with
+    //
+    //     Error: Stack Overflow Error
+    //     Details: Failed invoking <symbol>
+    //
+    // and a stack that alternates makeRetryTimer / scheduleReopen / openChannel
+    // all the way down to CoreTempSensor.initialize(). So the red is an ERROR,
+    // not a FAIL, and the defect is a CRASH rather than merely a wasted radio
+    // -- on a device where the ANT open throws and no Timer can be armed, the
+    // app dies during onLayout. The cap stays as a backstop for a shallower
+    // cycle a future edit might introduce; it is not what produces the red
+    // here, and this comment must not be read as saying it is.
+    //
+    // #26 is the other half of the same line: a fallback that reopens
+    // IMMEDIATELY is exactly the unpaced re-search #26 exists to stop, reached
+    // at mFails >= CT_BURST_TRIES where the ladder has just asked for 30 s.
+    (:test) function test_c2_anUnarmableRetryTimerDoesNotReopenTheChannel(logger) {
+        var p = new DeadTimerProbe();
+        var ok = true;
+        if (p.ranAway()) {
+            logger.error("openChannel <-> scheduleReopen recursed past the probe's cap: " +
+                         "a retry timer that cannot be armed must not be answered with " +
+                         "an immediate reopen -- that is unbounded recursion, and it is " +
+                         "#26's unpaced re-search besides");
+            ok = false;
+        }
+        if (p.openCount() != $.CT_BURST_TRIES) {
+            logger.error("open attempts = " + p.openCount() + ", expected exactly " +
+                         $.CT_BURST_TRIES + " -- the burst, and then nothing further");
+            ok = false;
+        }
+        return ok;
+    }
+
+    // #18's own defect class, in the code #18 added: a resource is allocated,
+    // something throws past it, and the reference is dropped without handing
+    // the resource back. Timers are capped per app on Connect IQ exactly as ANT
+    // channels are capped per radio.
+    //
+    // On main the catch does `mRetryTimer = null` and nothing else, so a Timer
+    // whose start() threw is orphaned -- and if it armed before throwing,
+    // cancelReopen() can no longer stop it either.
+    (:test) function test_c2_anUnarmableRetryTimerIsHandedBack(logger) {
+        var p = new DeadTimerProbe();
+        if (p.timerCount() < 1) {
+            logger.error("the ladder never reached the timer branch; nothing to assert on");
+            return false;
+        }
+        var t = p.timerAt(0);
+        if (t.starts != 1) {
+            logger.error("the timer's start() must have been attempted, starts = " + t.starts);
+            return false;
+        }
+        if (t.stops < 1) {
+            logger.error("start() threw and the timer was never stopped -- it is orphaned, " +
+                         "and cancelReopen() cannot reach it once the reference is dropped. " +
+                         "This is #18's defect, in the code #18 added.");
+            return false;
+        }
+        return true;
+    }
+
     (:test) function test_c0_backoffIsPositiveOncePastTheBurst(logger) {
         var ok = true;
         if (CoreTempSensor.ctBackoffMs($.CT_BURST_TRIES - 1) != 0) {
