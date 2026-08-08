@@ -880,5 +880,119 @@ module Lock {
     return true;
 }
 
+// -- c5: the diagnostic differentials -----------------------------------------
+//
+// BOTH CASES BELOW ARE RED AGAINST c4 AND GREEN ONLY AT c6. The three handles
+// exist at c4 and stay null; onTick does not know about them, so a recording
+// stand-in installed on each receives nothing.
+//
+// WHAT THESE CASES OBSERVE, at the strength the evidence supports and no
+// further: the ARGUMENT of an in-app setData call. They say nothing about what
+// lands in the file's bytes and nothing about what a decoder renders. Those
+// need a simulator session and a decode, and no (:test) in this repository can
+// obtain either.
+
+// THE TICK RECORDS THE LOCK STATE.
+//
+// One tick, one lock state, three values -- the plain case, so a failure names
+// which of the three is missing rather than "the diagnostics do not work".
+(:test) function test_lock_theTickRecordsTheLockState(logger) {
+    var f = Lock.fields();
+    var p = Lock.tickProbe(f);
+    // A 3.0 s lock is 20.0 spm; 0.42 is a confidence over the 0.35 unlock gate,
+    // so this is a HEALTHY LOCK -- the state the excursions would have to be
+    // measured against.
+    p.setLockState(3.0, 0.42, 0);
+    p.runTick();
+
+    var want = [20.0, 0.42, 0];
+    var names = ["lock_rate", "lock_confidence", "lock_lowconf_run"];
+    for (var i = 0; i < 3; i++) {
+        var got = f[i].last();
+        if (got == null) {
+            logger.error(names[i] + " was never written. Record-scope fields " +
+                         "LATCH, so a field this app declares and does not " +
+                         "write carries the type's never-set pattern before " +
+                         "the first write and then re-emits whatever it last " +
+                         "held -- an unwritten diagnostic is not a quiet " +
+                         "diagnostic");
+            return false;
+        }
+        if (!Lock.near(got * 1.0, want[i] * 1.0)) {
+            logger.error(names[i] + " must carry " + want[i] + " for a 3.0 s " +
+                         "lock at confidence 0.42 with no low-confidence run; " +
+                         "got " + got);
+            return false;
+        }
+    }
+    return true;
+}
+
+// NO LOCK IS RECORDED AS A STATE, NOT AS SILENCE.
+//
+// THE LOAD-BEARING CASE OF PART 2, and the trap it exists to close is specific.
+// The obvious implementation writes the lock rate only when there IS a lock --
+// it reads as caution. But record-scope FitContributor fields LATCH: a skipped
+// setData re-emits the previous value on the next record (#36, byte level). So
+// on the very rows this field exists to explain -- the ones where the lock
+// DROPS mid-piece -- that implementation would keep re-emitting the last good
+// lock rate and report a lock that was not there.
+//
+// Both halves are asserted, and the second is the one the caution-shaped
+// implementation fails: the VALUE must become the no-lock encoding, and a
+// SECOND WRITE must actually have happened.
+(:test) function test_lock_noLockIsRecordedAsAStateNotAsSilence(logger) {
+    var f = Lock.fields();
+    var p = Lock.tickProbe(f);
+
+    // A healthy lock first, so there is something to latch.
+    p.setLockState(3.0, 0.55, 0);
+    p.runTick();
+    if (!Lock.near(f[0].last(), 20.0)) {
+        logger.error("setup: the first tick must record the 20.0 spm lock; " +
+                     "got " + f[0].last());
+        return false;
+    }
+
+    // Then the lock drops: three low-confidence estimates in a row is exactly
+    // what updateAutocorr zeroes mAcPeriod on.
+    p.setLockState(0.0, 0.11, 3);
+    p.runTick();
+
+    if (!Lock.near(f[0].last(), $.LOCK_RATE_NONE)) {
+        logger.error("after the lock drops, lock_rate must carry the no-lock " +
+                     "encoding " + $.LOCK_RATE_NONE + "; it carries " +
+                     f[0].last() + ". If that is the previous 20.0, the write " +
+                     "was SKIPPED -- and a skipped write on a record-scope " +
+                     "field re-emits the last value, so the file would report " +
+                     "a lock that was not up. Skipping is not caution here, " +
+                     "it is fabrication");
+        return false;
+    }
+    if (f[0].vals.size() != 2) {
+        logger.error("two ticks must produce two lock_rate writes; got " +
+                     f[0].vals.size() + ". Withholding the write is the " +
+                     "specific defect this case exists to catch: it does not " +
+                     "leave a gap, it latches");
+        return false;
+    }
+
+    // The other two follow the drop as well -- the confidence that FAILED the
+    // gate is the interesting number, and the run counter is what says how long
+    // it has been failing.
+    if (!Lock.near(f[1].last(), 0.11)) {
+        logger.error("lock_confidence must carry the confidence the gate was " +
+                     "taken on even when it FAILED (0.11); got " + f[1].last());
+        return false;
+    }
+    if (f[2].last() != 3) {
+        logger.error("lock_lowconf_run must carry the consecutive " +
+                     "low-confidence count (3, the run length updateAutocorr " +
+                     "unlocks at); got " + f[2].last());
+        return false;
+    }
+    return true;
+}
+
 // ---- end of `module Lock` -------------------------------------------------
 }
