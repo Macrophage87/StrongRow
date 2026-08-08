@@ -93,18 +93,26 @@ DECL_RE = re.compile(_DECL_SRC)
 # checks -- its arithmetic, and that source/FootStateTest.mc's copies of them
 # are identical, so the two records can no longer drift apart:
 #
-#     CEILING 2b23b03 fenix6-family: 252 used of 253, 1 free -- the 1st file-scope (:test) added reds
+#     CEILING 2b23b03 fenix6-family: 252 used of 253, 1 free -- the 2nd file-scope (:test) added reds
 #     CEILING post-move fenix6-family: 238 used of 253, 15 free -- the 16th file-scope (:test) added reds
 #
 # (`2b23b03` is main before this work; `post-move` is this branch with
 # FootStateTest inside `module Foot`.)
 #
-# At 252 the next (:test) added anywhere at file scope red the required
-# compile-unit-test check on four devices with an error naming neither the test
-# nor the file, while fr965 (which run-tests uses) and release-build stayed
-# green -- so a green local run proved nothing. Tests inside a module cost ONE
-# member between them, which is what makes further testing possible on those
-# four devices at all.
+# THE LIMIT IS INCLUSIVE, and an earlier version of this comment got the
+# consequence wrong in the sentence directly under the correct count -- it said
+# the NEXT file-scope (:test) red the check. RETRACTED: 253 members BUILDS.
+# Bisected against every device the claim names, base 2b23b03, SDK 9.2.0:
+#
+#     N=1  fenix6 / fenix6pro / fenix6spro / fenix6xpro   BUILD SUCCESSFUL
+#     N=2  all four   Found 254 members in module 'globals', exceeding 253
+#
+# So one slot was genuinely spendable and it is the SECOND added test that reds
+# the required compile-unit-test check on those four devices, with an error
+# naming neither the test nor the file, while fr965 (which run-tests uses) and
+# release-build stay green -- so a green local run proves nothing. Tests inside
+# a module cost ONE member between them, which is what makes further testing
+# possible on those four devices at all.
 #
 # The scanner is deliberately crude: a balanced-brace walk over the
 # comment-stripped, literal-blanked text. `module NAME {` pushes NAME, any other

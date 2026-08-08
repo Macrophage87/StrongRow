@@ -34,19 +34,22 @@ using Toybox.Test;
 // functions against `monkeyc -d fenix6 --unit-test` (the compiler prints the
 // count only once it is already over):
 //
-//     CEILING 2b23b03 fenix6-family: 252 used of 253, 1 free -- the 1st file-scope (:test) added reds
+//     CEILING 2b23b03 fenix6-family: 252 used of 253, 1 free -- the 2nd file-scope (:test) added reds
 //     CEILING post-move fenix6-family: 238 used of 253, 15 free -- the 16th file-scope (:test) added reds
 //
 // Those two lines are the machine-readable record; scripts/list_tests.py
 // carries the same two verbatim and scripts/check_ceiling_notes.py fails if
 // the copies drift apart or if the arithmetic stops closing.
 //
-// On 2b23b03 that was ONE slot for the whole repository, so the next (:test)
-// added anywhere at file scope red the compile-unit-test check on fenix6,
-// fenix6pro, fenix6spro and fenix6xpro, with an error naming neither the test
-// nor the file. release-build was unaffected (tests are stripped) and
-// run-tests uses fr965, which compiles clean -- so a green local run proved
-// nothing.
+// THE LIMIT IS INCLUSIVE. An earlier version of this comment said the NEXT
+// (:test) added at file scope red the check; that is RETRACTED -- 253 members
+// builds. Bisected on base 2b23b03 against all four devices, SDK 9.2.0:
+// N=1 is BUILD SUCCESSFUL on fenix6, fenix6pro, fenix6spro and fenix6xpro, and
+// N=2 reports "Found 254 members in module 'globals'" on all four. So the one
+// free slot was spendable and the SECOND added file-scope (:test) is what reds
+// the compile-unit-test check, with an error naming neither the test nor the
+// file. release-build was unaffected (tests are stripped) and run-tests uses
+// fr965, which compiles clean -- so a green local run proved nothing.
 //
 // Every file-scope function and class costs one member. A `module { }` block
 // costs ONE, and everything inside it leaves 'globals' entirely. These fifteen

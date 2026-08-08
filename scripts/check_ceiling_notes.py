@@ -43,7 +43,7 @@ figures still have to be re-measured by bisection when the tree changes, and a
 note that is internally consistent but stale passes here. It also only sees
 notes that carry the marker: source/SetGridLayoutTest.mc holds an older,
 unmarked member-count table measured against a pre-2b23b03 tree, which this
-check does not read (filed separately).
+check does not read -- a known, deliberate hole, filed as #147.
 
 Usage:
   check_ceiling_notes.py [--root DIR]
