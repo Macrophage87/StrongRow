@@ -284,3 +284,129 @@ const CTW_DROPOUT = 0.0;
 }
 
 }
+
+module CoreDrop {
+
+// ===========================================================================
+// c2 -- the red differentials.
+// ===========================================================================
+// EVERY case below FAILS against the commit before the fix, where
+// ctTempWritable still carries main's unconditional `return true`, and passes
+// once the predicate lands. They are the only cases on this branch that move
+// between those two commits; the c0 and c1 sections are green on both sides.
+//
+// Assertions are written so a wrong result reports as FAIL rather than ERROR:
+// an ERROR says the case blew up, not which behaviour is wrong.
+
+// THE DEFECT, at its smallest. Before this field has ever been written there
+// is no previous value for the latch to re-emit, so withholding the write is
+// free -- and it is the difference between a record carrying the FLOAT
+// never-set pattern and a record carrying a fabricated 0.0 C.
+(:test) function test_ctw_c2_theSilentPrefixWritesNothing(logger) {
+    if (StrongRowView.ctTempWritable(false, CTW_DROPOUT) != false) {
+        logger.error("#13: a dropout sample BEFORE any real reading must not " +
+                     "be written -- there is no previous value to latch, so " +
+                     "writing 0.0 here fabricates a measurement for free");
+        return false;
+    }
+    return true;
+}
+
+// The row this issue is really about: #102's 68-minute session logged
+// core_temperature = 0.0 in all 4109 records because no pod was ever
+// acquired. Driven as a sequence of the length that actually happened, not as
+// a single call, so the case states the outcome in the units the file is
+// counted in.
+(:test) function test_ctw_c2_aPodlessRowWritesNothingAtAll(logger) {
+    var ever   = false;
+    var writes = 0;
+    for (var i = 0; i < 4109; i++) {
+        if (StrongRowView.ctTempWritable(ever, CTW_DROPOUT)) { writes++; }
+        ever = StrongRowView.ctTempEverAfter(ever, CTW_DROPOUT);
+    }
+    if (writes != 0) {
+        logger.error("a podless row wrote " + writes + " samples of 0.0 C; " +
+                     "#102's real row logged exactly this, 4109 records of a " +
+                     "physiologically impossible temperature");
+        return false;
+    }
+    if (ever) {
+        logger.error("the flag latched on a row that never had a reading");
+        return false;
+    }
+    return true;
+}
+
+// The whole timeline in one case: silent start, a pod, a dropout, the pod
+// back. This is Session A of #150's decode script, tick for tick, so a byte
+// pattern reported there lines up with an index here.
+//
+//   ticks  0- 9  nothing current      -> no write at all
+//   ticks 10-19  37.42 C              -> written; the FIRST write of the row
+//   ticks 20-29  dropped out          -> written, as the 0.0 marker
+//   ticks 30-39  36.90 C              -> written
+(:test) function test_ctw_c2_theFirstValueEverWrittenIsARealReading(logger) {
+    var samples = new [40];
+    for (var i = 0; i < 40; i++) {
+        if (i < 10)      { samples[i] = CTW_DROPOUT; }
+        else if (i < 20) { samples[i] = CTW_READING; }
+        else if (i < 30) { samples[i] = CTW_DROPOUT; }
+        else             { samples[i] = 36.90; }
+    }
+    var ever       = false;
+    var writes     = 0;
+    var firstIdx   = -1;
+    var firstValue = null;
+    for (var i = 0; i < 40; i++) {
+        if (StrongRowView.ctTempWritable(ever, samples[i])) {
+            writes++;
+            if (firstIdx < 0) { firstIdx = i; firstValue = samples[i]; }
+        }
+        ever = StrongRowView.ctTempEverAfter(ever, samples[i]);
+    }
+    var ok = true;
+    if (firstIdx != 10) {
+        logger.error("the first write landed at tick " + firstIdx +
+                     ", expected 10: every record before the first real " +
+                     "reading must stay unwritten");
+        ok = false;
+    }
+    if (!$.ctAlmostEq(firstValue, CTW_READING)) {
+        logger.error("the first value ever written was " + firstValue +
+                     ", expected " + CTW_READING + " -- the first thing in the " +
+                     "trace must be a measurement, not a marker");
+        ok = false;
+    }
+    if (writes != 30) {
+        logger.error("wrote " + writes + " of 40 ticks, expected 30 (ticks " +
+                     "10-39): the ten silent ticks are withheld and every " +
+                     "tick after the first reading is written, dropout or not");
+        ok = false;
+    }
+    return ok;
+}
+
+// setData(null) is an uncatchable native error that escapes try/catch and
+// kills the app (#48), so null must never reach it.
+//
+// UNREACHABLE FROM TODAY'S GETTERS, stated so the case is not read as
+// describing live behaviour: coreTempAt / skinTempAt return a clamp-accepted
+// value or the literal 0.0, never null. This pins the guard against a future
+// getter -- heatIndexAt already returns null for its absent case (#80), so a
+// "make the temperature getters consistent with it" edit is a plausible next
+// step, and it must not be able to reach setData through this gate.
+(:test) function test_ctw_c2_nullIsNeverHandedToSetData(logger) {
+    var ok = true;
+    if (StrongRowView.ctTempWritable(false, null) != false) {
+        logger.error("null must never be writable (never written epoch)");
+        ok = false;
+    }
+    if (StrongRowView.ctTempWritable(true, null) != false) {
+        logger.error("null must never be writable (already written epoch): " +
+                     "setData(null) is an uncatchable native error, #48");
+        ok = false;
+    }
+    return ok;
+}
+
+}
