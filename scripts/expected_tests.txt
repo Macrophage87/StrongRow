@@ -126,21 +126,17 @@ test_lay_workViewStillShowsAFailedRecording
 test_lay_pausedWorkViewDrawsNoFooterButKeepsTheTitle
 
 # source/CueZoneTest.mc
-test_cue_c0_fitRateIsTheRawEstimatorNotTheCue
-test_cue_c0_numeralStringIsTheRawEstimator
-test_cue_c0_sustainedOverspeedStillReadsRed
-test_cue_c0_steadyInBandReadsGreen
-test_cue_c0_rateColourIsMemoryless
-test_cue_c0_restStepNumeralStaysWhite
-test_cue_c0_freeRowNumeralStaysWhite
-test_cue_c0_noDataIsADashAndWhite
-test_cue_theFourZonesAreDistinct
-test_cue_colourVocabularyMatchesRateColour
-test_cue_bandZoneBoundariesAreRateColours
-test_cue_askingForTheDisplayedZoneClearsThePending
-test_cue_noDataIsAdoptedWithoutDelay
-test_cue_colourIsWhiteOffTheWorkStep
-test_cue_workAfterARestStartsFromNoCue
+#
+# DELIBERATELY FEW, and the reason is a measured hard ceiling rather than a
+# style choice: the fenix6 family caps a module at 253 members and the
+# --unit-test build of main already sits at 246 members of `globals`. A
+# module-scope function or class costs one member each; a `const` is inlined and
+# free. See the ceiling note at the top of source/CueZoneTest.mc -- the suite's
+# fixtures live in one `module` block (one member) and each (:test) below
+# carries several sections with its own message per section.
+test_cue_c0_theMeasurementSurvivesTheCue
+test_cue_c0_theSteadyAndTheWhiteStatesAreUnchanged
+test_cue_theSeamAgreesWithRateColourAndStartsClean
 
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork

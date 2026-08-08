@@ -21,393 +21,374 @@ using Toybox.Lang;
 //                  UNMODIFIED estimator output. If a recorded value moves, the
 //                  change is wrong.
 //
-// And the displayed NUMBER stays raw too -- only the colour is filtered. That is
-// not a stylistic preference, it is a measured result; the numbers are in the
-// pull request and the negative result is restated at the constants themselves
-// (StrongRowView.mc, the CUE_* block).
+// The displayed NUMBER stays raw too -- only the colour is filtered. That is a
+// measured result and not a preference; the negative result that rules out
+// filtering the number is recorded at the CUE_* constants in StrongRowView.mc.
+//
+// -- WHY THE CASES BELOW ARE SO FEW, AND SO SECTIONED ------------------------
+// MEASURED, and it is a hard ceiling rather than a style choice. The fenix6
+// family caps a module at 253 members, and the --unit-test build of main at
+// 920d4e1 already sits at 246 members of `globals`:
+//
+//     monkeyc -d fenix6 --unit-test, main + 14 (:test) functions
+//       -> ERROR: fenix6: Found 260 members in module 'globals',
+//          exceeding the limit of 253.
+//
+// So 246, and SEVEN free for this whole change. What counts is a module-scope
+// FUNCTION or CLASS, one member each. A module-scope `const` is inlined and
+// costs nothing (measured: 14 unreferenced consts compiled clean, 14 (:test)
+// functions did not). A `module` block costs ONE member and takes everything
+// inside it out of `globals` (measured: 14 tests + 2 classes + 2 functions
+// inside one module compiled clean).
+//
+// Hence the shape of this file: every helper, fixture and probe lives inside
+// the single `CueFix` module -- one member -- and there are SIX (:test)
+// functions, each carrying several sections with its own error message per
+// section. The first CI run of this branch is the evidence for all of the
+// above; it red compile-unit-test on fenix6/6pro/6spro/6xpro at 270 members
+// while fr965 compiled clean locally, which is exactly the class of defect a
+// local run cannot see.
+//
+// A (:test) function inside a `module` is RUN, but the simulator reports it as
+// `Module.name` while scripts/list_tests.py extracts the bare name -- so
+// pinning module-scoped tests would deadlock check_expected_tests.sh against
+// check_ciq_tests.py. Making the extractor module-aware would lift the ceiling
+// for the whole repository; it is a tooling change with its own differentials to
+// prove, so it is FILED rather than folded in here.
 //
 // -- WHAT THIS FILE CAN SEE --------------------------------------------------
-// CueDc below records every drawText the shipping draw path issues together
-// with the FOREGROUND COLOUR IN EFFECT AT THAT CALL. So a case here can say
-// which string was drawn in which colour. It cannot say anything about how that
-// looks on a wrist, and no case here claims to: #121 measured the CI container
+// CueFix.Dc records every drawText the shipping draw path issues together with
+// the FOREGROUND COLOUR IN EFFECT AT THAT CALL. So a case here can say which
+// string was drawn in which colour. It cannot say anything about how that looks
+// on a wrist, and no case here claims to: #121 measured the CI container
 // segfaulting the moment a test obtains a real graphics Dc, so no font metric
 // and no rendered pixel is available to any (:test) in this repository.
 //
 // It records what the code CALLS. It says nothing about what a panel shows.
 //
 // -- COMMIT PARTITION --------------------------------------------------------
-// This section is c0: CHARACTERIZATION PINS ON EXISTING SYMBOLS ONLY. Every
-// case in it is green on main at 920d4e1, before one line of the cue layer
-// exists, and green after the whole thing lands. They are the statements the
-// change must NOT falsify -- above all the two FIT-side ones.
+//   c0   characterization pins on existing symbols only, no source change
+//   c1   the cue seam, wired behaviour-preservingly
+//   c1b  this consolidation, to fit the ceiling measured above
+//   c2   the differentials -- RED against c1b, by design
+//   c3   the fix; touches no test file, no pin, no scripts/, no .github/
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator on
 // fr965. Test names are pinned in scripts/expected_tests.txt -- update that file
 // in the SAME commit as any (:test) change here. See docs/CI.md.
 
-// -- Fixture -----------------------------------------------------------------
-// The shipped default band (resources/settings/properties.xml: targetLo 16 /
-// targetHi 18), as module consts so no case can disagree with its own band by
-// typo. Same convention as RateColourTest.mc's RC_LO / RC_HI.
-const CZ_LO = 16;
-const CZ_HI = 18;
+// -- Fixture ------------------------------------------------------------------
+// One module, one member of `globals`. See the ceiling note above.
+module CueFix {
 
-// A COLOUR-RECORDING Dc.
-//
-// Duck-typed: onUpdate's `dc` is used only through method calls and the members
-// it reaches are untyped, so at runtime only duck typing applies and this needs
-// exactly the surface the shipping draw path uses -- measured, not guessed:
-// clear, setColor, setPenWidth, getWidth, getHeight, getFontHeight, drawText,
-// drawArc, drawLine.
-//
-// The one thing it adds over HrDc (HrArcTest.mc) is the COLOUR. HrDc's
-// setColor is a no-op, which is exactly right for a suite about geometry and
-// exactly wrong for a suite about a cue, since the cue's entire output IS the
-// colour.
-class CueDc {
-    var w; var h;
-    var fg;         // the foreground colour the last setColor established
-    var strings;    // every drawText string, in call order
-    var colours;    // the fg in effect at each of those calls
-    var fonts;      // the font each was drawn in
+    // The shipped default band (resources/settings/properties.xml: targetLo 16 /
+    // targetHi 18), named so no case can disagree with its own band by typo.
+    // Same convention as RateColourTest.mc's RC_LO / RC_HI.
+    const LO = 16;
+    const HI = 18;
 
-    function initialize(width, height) {
-        w = width; h = height;
-        fg = null;
-        strings = []; colours = []; fonts = [];
-    }
+    // A COLOUR-RECORDING Dc.
+    //
+    // Duck-typed: onUpdate's `dc` is used only through method calls and the
+    // members it reaches are untyped, so at runtime only duck typing applies and
+    // this needs exactly the surface the shipping draw path uses -- measured
+    // with a grep for `dc.`, not guessed: clear, setColor, setPenWidth,
+    // getWidth, getHeight, getFontHeight, drawText, drawArc, drawLine.
+    //
+    // The one thing it adds over HrDc (HrArcTest.mc) is the COLOUR. HrDc's
+    // setColor is a no-op, which is right for a suite about geometry and wrong
+    // for a suite about a cue, since the cue's entire output IS the colour.
+    class Dc {
+        var w; var h;
+        var fg;         // the foreground colour the last setColor established
+        var strings;    // every drawText string, in call order
+        var colours;    // the fg in effect at each of those calls
+        var fonts;      // the font each was drawn in
 
-    function getWidth()  { return w; }
-    function getHeight() { return h; }
-    // Never consulted by any assertion here: only drawSetGrid calls it, and no
-    // case in this file renders the #109 grid. Present so that a future case
-    // that does reach it fails on its assertion rather than on a missing method.
-    function getFontHeight(f) { return h / 10; }
+        function initialize(width, height) {
+            w = width; h = height;
+            fg = null;
+            strings = []; colours = []; fonts = [];
+        }
 
-    function setColor(f, b) { fg = f; }
-    function setPenWidth(p) { }
-    function clear()        { }
-    function drawArc(x, y, r, attr, degStart, degEnd) { }
-    function drawLine(x1, y1, x2, y2) { }
+        function getWidth()  { return w; }
+        function getHeight() { return h; }
+        // Never consulted by any assertion here: only drawSetGrid calls it, and
+        // no case in this file renders the #109 grid. Present so a future case
+        // that does reach it fails on its assertion rather than on a missing
+        // method.
+        function getFontHeight(f) { return h / 10; }
 
-    function drawText(x, y, font, s, just) {
-        strings.add(s);
-        colours.add(fg);
-        fonts.add(font);
-    }
-}
+        function setColor(f, b) { fg = f; }
+        function setPenWidth(p) { }
+        function clear()        { }
+        function drawArc(x, y, r, attr, degStart, degEnd) { }
+        function drawLine(x1, y1, x2, y2) { }
 
-// The big stroke-rate numeral, located BY ITS FONT rather than by its position
-// or its content.
-//
-// By font because that is the only identifier that is stable across everything
-// these cases vary. The string changes with the rate (and is "--.-" in the
-// no-data state, which is one of the states under test), and the y fraction is
-// a layout decision this file does not own. drawRate is the ONLY call site that
-// uses FONT_NUMBER_THAI_HOT / FONT_NUMBER_HOT -- the countdown beside it uses
-// FONT_NUMBER_MILD, a different constant -- so the font selects it exactly.
-function czNumeralIdx(d) {
-    for (var i = 0; i < d.fonts.size(); i++) {
-        var f = d.fonts[i];
-        if (f == Gfx.FONT_NUMBER_THAI_HOT || f == Gfx.FONT_NUMBER_HOT) {
-            return i;
+        function drawText(x, y, font, s, just) {
+            strings.add(s);
+            colours.add(fg);
+            fonts.add(font);
         }
     }
-    return -1;
-}
 
-function czNumeralColour(d) {
-    var i = czNumeralIdx(d);
-    return (i < 0) ? null : d.colours[i];
-}
-
-function czNumeralText(d) {
-    var i = czNumeralIdx(d);
-    return (i < 0) ? null : d.strings[i];
-}
-
-// A drawn screen, from a probe. Device dimensions come from the simulator the
-// suite is actually running on, exactly as WorkLayoutTest.wlRender does, so
-// drawRate's `w >= 300` font choice is the real one for that device rather than
-// a number this file picked.
-function czRender(p) {
-    var ds = System.getDeviceSettings();
-    var d = new CueDc(ds.screenWidth, ds.screenHeight);
-    p.runUpdate(d);
-    return d;
-}
-
-// Render at a stated instant on the probe's injected clock.
-//
-// NEVER System.getTimer(). That counts from DEVICE start, so a case that
-// synthesised its stamps from it would depend on how long the simulator had
-// been up -- and CI's simulator is seconds old while a desktop one is hours
-// old. This repository has already been bitten by that asymmetry (the note at
-// StrongRowView.nowMs); every stamp in this file is an absolute number chosen
-// by the case.
-function czRenderAt(p, tMs) {
-    p.setNowMs(tMs);
-    return czRender(p);
-}
-
-// A FitContributor field stand-in. Records every value written, in order, so a
-// case can assert on WHAT WAS HANDED TO setData.
-//
-// SCOPE, stated because this is precisely the claim this repository keeps
-// overreaching on: this observes the ARGUMENT of an in-app call. It says
-// nothing about what lands in the file's bytes and nothing about what a decoder
-// renders. Those need a simulator session and a decode, not a (:test).
-class CueField {
-    var vals;
-    function initialize() { vals = []; }
-    function setData(v) { vals.add(v); }
-    function last() { return (vals.size() == 0) ? null : vals[vals.size() - 1]; }
-}
-
-// -- Probe -------------------------------------------------------------------
-// Extends HrProbe (HrArcTest.mc) rather than re-deriving from StrongRowView:
-// the seams this suite needs -- the injected nowMs() clock, enterStep /
-// enterStepLive, runUpdate's Dc cast, the neutralised sensor and GPS starts,
-// the deterministic currentSpeed/elapsedDist -- already exist there and are
-// already exercised by two suites (HrLayoutTest, WorkLayoutTest). Duplicating
-// them would be a second copy free to drift.
-class CueProbe extends HrProbe {
-    function initialize() { HrProbe.initialize(); }
-
-    // Put the ESTIMATOR at a chosen rate.
+    // A FitContributor field stand-in. Records every value written, in order, so
+    // a case can assert on WHAT WAS HANDED TO setData.
     //
-    // Writes the detector's median (mRate) and clears the autocorrelation lock,
-    // which is the state registerStroke/recomputeRate leave behind for a steady
-    // cadence below FAST_NEEDS_LOCK. It does NOT bypass outputRate(): every
-    // assertion below reads the value through the shipping outputRate(), which
-    // for mAcPeriod == 0.0 and 0 < mRate <= 30 returns mRate unchanged. Rates
-    // used in this file are 14.0-25.0, well inside that.
-    //
-    // Direct rather than driveStrokes() because the cases here need the rate to
-    // CHANGE at a chosen instant -- a spike, a dip, a return -- and a median of
-    // the last five stroke periods cannot be steered to an exact value on a
-    // chosen frame.
-    function setRate(spm) {
-        mRate = spm;
-        mAcPeriod = 0.0;
+    // SCOPE, stated because this is precisely the claim this repository keeps
+    // overreaching on: this observes the ARGUMENT of an in-app call. It says
+    // nothing about what lands in the file's bytes and nothing about what a
+    // decoder renders. Those need a simulator session and a decode.
+    class Field {
+        var vals;
+        function initialize() { vals = []; }
+        function setData(v) { vals.add(v); }
+        function last() { return (vals.size() == 0) ? null : vals[vals.size() - 1]; }
     }
 
-    // The estimator's output, read through the shipping method.
-    function rawRate() { return outputRate(); }
+    // Extends HrProbe (HrArcTest.mc) rather than re-deriving from
+    // StrongRowView: the seams this suite needs -- the injected nowMs() clock,
+    // enterStepLive, runUpdate's Dc cast, the neutralised sensor and GPS starts,
+    // the deterministic currentSpeed/elapsedDist, the step-kind accessors --
+    // already exist there and are already exercised by two suites. Duplicating
+    // them would be a second copy free to drift.
+    class Probe extends HrProbe {
+        function initialize() { HrProbe.initialize(); }
 
-    // Hand the view a recording stand-in for the row_stroke_rate field, so a
-    // case can see the value onTick writes.
-    function installFitRate(f) { mFitRate = f; }
+        // Put the ESTIMATOR at a chosen rate.
+        //
+        // Writes the detector's median (mRate) and clears the autocorrelation
+        // lock, which is the state registerStroke/recomputeRate leave behind for
+        // a steady cadence below FAST_NEEDS_LOCK. It does NOT bypass
+        // outputRate(): every assertion reads the value through the shipping
+        // outputRate(), which for mAcPeriod == 0.0 and 0 < mRate <= 30 returns
+        // mRate unchanged. Rates used here are 14.0-25.0, well inside that.
+        //
+        // Direct rather than driveStrokes() because these cases need the rate to
+        // CHANGE at a chosen instant -- a spike, a dip, a return -- and a median
+        // of the last five stroke periods cannot be steered to an exact value on
+        // a chosen frame.
+        function setRate(spm) {
+            mRate = spm;
+            mAcPeriod = 0.0;
+        }
 
-    // The real 250 ms tick, called directly.
-    function runTick() { onTick(); }
-}
+        // The estimator's output, read through the shipping method.
+        function rawRate() { return outputRate(); }
 
-// A probe already in a live, unpaused WORK step with the default band.
-// enterStepLive (not enterStep) leaves the step clock running, so stepRemaining()
-// is the full interval and onTick's advanceStep() is not triggered -- these
-// cases must not advance the workout underneath themselves.
-function czWorkProbe() {
-    var p = new CueProbe();
-    p.enterStepLive(p.kindWork(), false);
-    p.setSpeed(0.0);
-    p.setDist(0.0);
-    return p;
+        // Hand the view a recording stand-in for the row_stroke_rate field.
+        function installFitRate(f) { mFitRate = f; }
+
+        // The real 250 ms tick, called directly.
+        function runTick() { onTick(); }
+    }
+
+    // The big stroke-rate numeral, located BY ITS FONT rather than by its
+    // position or its content.
+    //
+    // By font because that is the only identifier stable across everything these
+    // cases vary. The string changes with the rate (and is "--.-" in the no-data
+    // state, which is one of the states under test), and the y fraction is a
+    // layout decision this file does not own. drawRate is the ONLY call site
+    // using FONT_NUMBER_THAI_HOT / FONT_NUMBER_HOT -- the countdown beside it
+    // uses FONT_NUMBER_MILD, a different constant -- so the font selects it
+    // exactly.
+    function numeralIdx(d) {
+        for (var i = 0; i < d.fonts.size(); i++) {
+            var f = d.fonts[i];
+            if (f == Gfx.FONT_NUMBER_THAI_HOT || f == Gfx.FONT_NUMBER_HOT) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    function numeralColour(d) {
+        var i = numeralIdx(d);
+        return (i < 0) ? null : d.colours[i];
+    }
+
+    function numeralText(d) {
+        var i = numeralIdx(d);
+        return (i < 0) ? null : d.strings[i];
+    }
+
+    // Render at a stated instant on the probe's injected clock.
+    //
+    // NEVER System.getTimer(). That counts from DEVICE start, so a case that
+    // synthesised its stamps from it would depend on how long the simulator had
+    // been up -- and CI's simulator is seconds old while a desktop one is hours
+    // old. This repository has already been bitten by that asymmetry (the note
+    // at StrongRowView.nowMs); every stamp in this file is an absolute number
+    // chosen by the case.
+    //
+    // Device dimensions come from the simulator the suite is actually running
+    // on, exactly as WorkLayoutTest.wlRender does, so drawRate's `w >= 300` font
+    // choice is the real one for that device rather than a number picked here.
+    function renderAt(p, tMs) {
+        p.setNowMs(tMs);
+        var ds = System.getDeviceSettings();
+        var d = new Dc(ds.screenWidth, ds.screenHeight);
+        p.runUpdate(d);
+        return d;
+    }
+
+    // A probe already in a live, unpaused WORK step with the default band.
+    // enterStepLive (not enterStep) leaves the step clock running, so
+    // stepRemaining() is the full interval and onTick's advanceStep() is not
+    // triggered -- these cases must not advance the workout underneath
+    // themselves.
+    function workProbe() {
+        var p = new Probe();
+        p.enterStepLive(p.kindWork(), false);
+        p.setSpeed(0.0);
+        p.setDist(0.0);
+        return p;
+    }
 }
 
 // -- c0: characterization pins ------------------------------------------------
 // Green before the cue layer exists and green after it.
 
-// THE FILE-SIDE PIN, and the one the maintainer's instruction turns on: the
-// value handed to row_stroke_rate is the RAW estimator, never the cue.
+// THE MEASUREMENT SURVIVES THE CUE. Three sections, all about the two things the
+// maintainer's instruction protects: the file and the number.
 //
 // Constructed so that it is a real differential once the cue exists: the screen
 // is first put in band at 17.0, then the rate jumps to 25.0 and ONE frame is
 // drawn 250 ms later. After the change that frame is still showing the in-band
 // colour (the jump has not persisted long enough to be believed), so cue and
-// measurement genuinely disagree at the moment onTick runs -- and the field
-// must still receive 25.0.
+// measurement genuinely disagree at the moment onTick runs -- and both the field
+// and the numeral must still carry 25.0.
 //
-// Before the change the two agree trivially and the case is a plain
-// characterization pin. That is the point of writing it at c0: it is green in
-// both epochs and its meaning strengthens rather than changes.
-(:test) function test_cue_c0_fitRateIsTheRawEstimatorNotTheCue(logger) {
-    var p = czWorkProbe();
-    var f = new CueField();
+// Before the change the two agree trivially and this is a plain characterization
+// pin. That is the point of writing it at c0: it is green in both epochs and its
+// meaning strengthens rather than changes.
+(:test) function test_cue_c0_theMeasurementSurvivesTheCue(logger) {
+    var p = CueFix.workProbe();
+    var f = new CueFix.Field();
     p.installFitRate(f);
 
     p.setRate(17.0);
-    czRenderAt(p, 0);
+    CueFix.renderAt(p, 0);
     p.setRate(25.0);
-    czRenderAt(p, 250);
+    var d = CueFix.renderAt(p, 250);
 
+    // (a) the FIT write is the raw estimator, never the cue.
     p.runTick();
-
     var got = f.last();
     var want = p.rawRate();
     if (got == null) {
-        logger.error("onTick wrote nothing to row_stroke_rate at all");
+        logger.error("(a) onTick wrote nothing to row_stroke_rate at all");
         return false;
     }
-    if (got != want) {
-        logger.error("row_stroke_rate must carry the UNMODIFIED estimator: " +
-                     "outputRate() is " + want + " but setData got " + got);
+    if (got != want || got != 25.0) {
+        logger.error("(a) row_stroke_rate must carry the UNMODIFIED estimator: " +
+                     "outputRate() is " + want + ", the estimator was put at " +
+                     "25.0, and setData got " + got);
         return false;
     }
-    if (got != 25.0) {
-        logger.error("the estimator was put at 25.0 and the field received " +
-                     got + " -- the FIT path has acquired a filter");
+
+    // (b) the displayed NUMBER is the measurement too. Only the colour is a cue.
+    var s = CueFix.numeralText(d);
+    if (s == null || !s.equals("25.0")) {
+        logger.error("(b) the numeral must show the raw estimator ('25.0'); " +
+                     "got '" + s + "' -- the displayed NUMBER has been " +
+                     "filtered, which is the one thing the measured result " +
+                     "rules out");
+        return false;
+    }
+
+    // (c) the no-data state survives. outputRate() returns 0.0 when nothing has
+    // been measured, drawRate renders that as "--.-", and a dash must never be
+    // given an instruction colour -- the #86 / #107 defect class (a sentinel
+    // rendered as a reading), which a cue layer holding a previous zone is a
+    // fresh way to reintroduce.
+    p.setRate(0.0);
+    var d2 = CueFix.renderAt(p, 500);
+    var s2 = CueFix.numeralText(d2);
+    var c2 = CueFix.numeralColour(d2);
+    if (s2 == null || !s2.equals("--.-")) {
+        logger.error("(c) a zero estimator is the no-data state and must " +
+                     "render '--.-'; got '" + s2 + "'");
+        return false;
+    }
+    if (c2 != Gfx.COLOR_WHITE) {
+        logger.error("(c) '--.-' must be white (COLOR_WHITE = " +
+                     Gfx.COLOR_WHITE + "), never carrying a colour from the " +
+                     "last real reading; got " + c2);
         return false;
     }
     return true;
 }
 
-// THE OTHER HALF OF THE SPLIT: the displayed NUMBER is the measurement too.
-// Only the colour is a cue. Rendered one frame after a jump, i.e. at exactly
-// the moment the cue is allowed to disagree with the number.
-(:test) function test_cue_c0_numeralStringIsTheRawEstimator(logger) {
-    var p = czWorkProbe();
-    p.setRate(17.0);
-    czRenderAt(p, 0);
-    p.setRate(25.0);
-    var d = czRenderAt(p, 250);
-
-    var s = czNumeralText(d);
-    if (s == null) {
-        logger.error("no stroke-rate numeral was drawn at all");
+// THE STATES THAT MUST NOT MOVE. Lag is free; suppression and invention are not.
+(:test) function test_cue_c0_theSteadyAndTheWhiteStatesAreUnchanged(logger) {
+    // (a) steady in band -- what the athlete looks at for most of an interval.
+    var pin = CueFix.workProbe();
+    pin.setRate(17.0);
+    CueFix.renderAt(pin, 0);
+    CueFix.renderAt(pin, 250);
+    var cin = CueFix.numeralColour(CueFix.renderAt(pin, 20000));
+    if (cin != Gfx.COLOR_GREEN) {
+        logger.error("(a) 17.0 spm held inside a 16-18 band must read green " +
+                     "(COLOR_GREEN = " + Gfx.COLOR_GREEN + "); got " + cin);
         return false;
     }
-    if (!s.equals("25.0")) {
-        logger.error("the numeral must show the raw estimator ('25.0'); got '" +
-                     s + "' -- the displayed NUMBER has been filtered, which " +
-                     "is the one thing the measured result rules out");
+
+    // (b) a SUSTAINED overshoot still says so. Three frames, not an 80-frame
+    // sweep: what matters is the frame that starts a pending change and one far
+    // past any window it could be waiting on.
+    var pov = CueFix.workProbe();
+    pov.setRate(25.0);
+    CueFix.renderAt(pov, 0);
+    CueFix.renderAt(pov, 250);
+    var cov = CueFix.numeralColour(CueFix.renderAt(pov, 20000));
+    if (cov != Gfx.COLOR_RED) {
+        logger.error("(b) 25.0 spm held for 20 s against a 16-18 band must " +
+                     "read red (COLOR_RED = " + Gfx.COLOR_RED + "); got " + cov);
         return false;
     }
-    return true;
-}
 
-// A SUSTAINED out-of-band rate still says so. Lag is free; suppression is not.
-// The clock is advanced well past any plausible persistence window, so this
-// holds in both epochs and would red if a future edit ever made the cue sticky
-// enough to hide a real overshoot.
-(:test) function test_cue_c0_sustainedOverspeedStillReadsRed(logger) {
-    var p = czWorkProbe();
-    p.setRate(25.0);
-    // Three frames, not a 250 ms sweep: the frames that matter are the one that
-    // starts a pending change and one far past any window it could be waiting
-    // on. Rendering the eighty frames in between costs simulator time and pins
-    // nothing extra -- the suite is executed headlessly on every pull request.
-    czRenderAt(p, 0);
-    czRenderAt(p, 250);
-    var d = czRenderAt(p, 20000);
-    var c = czNumeralColour(d);
-    if (c != Gfx.COLOR_RED) {
-        logger.error("25.0 spm held for 20 s against a 16-18 band must read " +
-                     "red (COLOR_RED = " + Gfx.COLOR_RED + "); got " + c);
+    // (c) a REST step has no target, so it has no instruction.
+    var pr = new CueFix.Probe();
+    pr.enterStepLive(pr.kindRest(), false);
+    pr.setSpeed(0.0); pr.setDist(0.0);
+    pr.setRate(25.0);
+    var crest = CueFix.numeralColour(CueFix.renderAt(pr, 0));
+    if (crest != Gfx.COLOR_WHITE) {
+        logger.error("(c) a REST step draws the numeral white whatever the " +
+                     "rate (COLOR_WHITE = " + Gfx.COLOR_WHITE + "); got " +
+                     crest);
         return false;
     }
-    return true;
-}
 
-// The steady in-band state, which is what the athlete should be looking at for
-// most of an interval.
-(:test) function test_cue_c0_steadyInBandReadsGreen(logger) {
-    var p = czWorkProbe();
-    p.setRate(17.0);
-    czRenderAt(p, 0);
-    czRenderAt(p, 250);
-    var d = czRenderAt(p, 20000);
-    var c = czNumeralColour(d);
-    if (c != Gfx.COLOR_GREEN) {
-        logger.error("17.0 spm held inside a 16-18 band must read green " +
-                     "(COLOR_GREEN = " + Gfx.COLOR_GREEN + "); got " + c);
+    // (d) free row has no band at all.
+    var pf = new CueFix.Probe();
+    pf.setFreeRow();
+    pf.setSpeed(0.0); pf.setDist(0.0);
+    pf.setRate(25.0);
+    var cfree = CueFix.numeralColour(CueFix.renderAt(pf, 0));
+    if (cfree != Gfx.COLOR_WHITE) {
+        logger.error("(d) free row draws the numeral white (COLOR_WHITE = " +
+                     Gfx.COLOR_WHITE + "); got " + cfree);
         return false;
     }
-    return true;
-}
 
-// rateColour STAYS MEMORYLESS. The cue is a NEW layer in front of it, not an
-// edit to it -- and this is the case that stops the next reader from "simplify-
-// ing" the two back together. A Monkey C module-scope var would let a static
-// carry state between calls, so this is a reachable regression rather than a
-// theoretical one, and it would break every existing RateColourTest case's
-// premise at once.
-(:test) function test_cue_c0_rateColourIsMemoryless(logger) {
-    // Same input, asked twice, with a contradicting input in between.
-    var a = StrongRowView.rateColour(true, 25.0, $.CZ_LO, $.CZ_HI);
+    // (e) rateColour STAYS MEMORYLESS. The cue is a NEW layer in front of it,
+    // never an edit to it -- and this is what stops the next reader from
+    // "simplifying" the two back together. A module-scope var would let a static
+    // carry state between calls, so this is a reachable regression rather than a
+    // theoretical one, and it would break every RateColourTest case's premise at
+    // once.
+    var a = StrongRowView.rateColour(true, 25.0, CueFix.LO, CueFix.HI);
     for (var i = 0; i < 10; i++) {
-        StrongRowView.rateColour(true, 17.0, $.CZ_LO, $.CZ_HI);
+        StrongRowView.rateColour(true, 17.0, CueFix.LO, CueFix.HI);
     }
-    var b = StrongRowView.rateColour(true, 25.0, $.CZ_LO, $.CZ_HI);
+    var b = StrongRowView.rateColour(true, 25.0, CueFix.LO, CueFix.HI);
     if (a != b) {
-        logger.error("rateColour answered " + a + " then " + b + " for the " +
+        logger.error("(e) rateColour answered " + a + " then " + b + " for the " +
                      "same input -- it has acquired state, and every case in " +
                      "RateColourTest.mc silently depends on it not having any");
-        return false;
-    }
-    return true;
-}
-
-// OFF THE WORK STEP THERE IS NO CUE. A rest screen's numeral is white whatever
-// the estimator says, and that is unchanged: the instruction only exists while
-// there is a target to hold.
-(:test) function test_cue_c0_restStepNumeralStaysWhite(logger) {
-    var p = new CueProbe();
-    p.enterStepLive(p.kindRest(), false);
-    p.setSpeed(0.0);
-    p.setDist(0.0);
-    p.setRate(25.0);
-    var d = czRenderAt(p, 0);
-    var c = czNumeralColour(d);
-    if (c != Gfx.COLOR_WHITE) {
-        logger.error("a REST step draws the numeral white whatever the rate " +
-                     "(COLOR_WHITE = " + Gfx.COLOR_WHITE + "); got " + c);
-        return false;
-    }
-    return true;
-}
-
-// Free row has no band at all, so it has no instruction to give.
-(:test) function test_cue_c0_freeRowNumeralStaysWhite(logger) {
-    var p = new CueProbe();
-    p.setFreeRow();
-    p.setSpeed(0.0);
-    p.setDist(0.0);
-    p.setRate(25.0);
-    var d = czRenderAt(p, 0);
-    var c = czNumeralColour(d);
-    if (c != Gfx.COLOR_WHITE) {
-        logger.error("free row draws the numeral white (COLOR_WHITE = " +
-                     Gfx.COLOR_WHITE + "); got " + c);
-        return false;
-    }
-    return true;
-}
-
-// The no-data state survives. outputRate() returns 0.0 when nothing has been
-// measured, drawRate renders that as "--.-", and a dash must never be given an
-// instruction colour -- the #86 / #107 defect class (a sentinel rendered as a
-// reading), which a cue layer holding a previous zone is a fresh way to
-// reintroduce.
-(:test) function test_cue_c0_noDataIsADashAndWhite(logger) {
-    var p = czWorkProbe();
-    p.setRate(17.0);
-    czRenderAt(p, 0);
-    p.setRate(0.0);
-    var d = czRenderAt(p, 250);
-
-    var s = czNumeralText(d);
-    var c = czNumeralColour(d);
-    if (s == null || !s.equals("--.-")) {
-        logger.error("a zero estimator is the no-data state and must render " +
-                     "'--.-'; got '" + s + "'");
-        return false;
-    }
-    if (c != Gfx.COLOR_WHITE) {
-        logger.error("'--.-' must be white (COLOR_WHITE = " + Gfx.COLOR_WHITE +
-                     "), never carrying a colour from the last real reading; " +
-                     "got " + c);
         return false;
     }
     return true;
@@ -419,176 +400,129 @@ function czWorkProbe() {
 // the call site in place of the direct rateColour call. That wiring is
 // BEHAVIOUR-PRESERVING by construction -- cueStep adopts every zone at once and
 // cueColour reproduces rateColour's mapping exactly -- so nothing on screen
-// moves, and the c0 cases above stay green.
+// moves and the c0 cases above stay green.
 //
-// Every case in THIS section is green at c1 and stays green once the hysteresis
-// lands at c3. They pin the parts that do not move: the vocabulary, the band
-// boundaries, the no-data state, and the two transitions that are adopted
-// without delay in every epoch. The cases that DO move are the c2 section
-// below, and they are red until c3 by design.
+// This case is green at c1 and stays green once the hysteresis lands at c3. It
+// pins the parts that do not move: the vocabulary, the band boundaries, the
+// no-data state, the transitions adopted without delay in every epoch, and the
+// call site's decision to park the machine off the work step.
 
-(:test) function test_cue_theFourZonesAreDistinct(logger) {
+(:test) function test_cue_theSeamAgreesWithRateColourAndStartsClean(logger) {
+    // (a) four states, four codes. Two states that cannot be told apart is one
+    // state.
     var z = [$.CUEZ_NONE, $.CUEZ_BELOW, $.CUEZ_IN, $.CUEZ_ABOVE];
     for (var i = 0; i < z.size(); i++) {
         for (var j = i + 1; j < z.size(); j++) {
             if (z[i] == z[j]) {
-                logger.error("cue zone codes " + i + " and " + j +
-                             " are both " + z[i] + " -- two states that " +
-                             "cannot be told apart is one state");
+                logger.error("(a) cue zone codes " + i + " and " + j +
+                             " are both " + z[i]);
                 return false;
             }
         }
     }
-    return true;
-}
 
-// THE VOCABULARY PIN. cueColour must agree with rateColour on the memoryless
-// mapping for every rate and both work states. This is what makes "the cue is a
-// layer in front of rateColour" true rather than aspirational: if a future edit
-// re-tunes one palette, this reds until the other follows.
-//
-// Sweeps the interesting rates rather than a range: both band edges, one
-// display tick either side of them, the no-data sentinel, a deep miss on each
-// side, and the estimator's ceiling.
-(:test) function test_cue_colourVocabularyMatchesRateColour(logger) {
+    // (b) THE VOCABULARY PIN. cueColour must agree with rateColour on the
+    // memoryless mapping for every rate and both work states. This is what makes
+    // "the cue is a layer in front of rateColour" true rather than aspirational:
+    // if a future edit re-tunes one palette, this reds until the other follows.
+    // It also covers "white off the work step" for every zone.
     var rates = [0.0, 10.0, 15.9, 16.0, 17.0, 18.0, 18.1, 25.0, 40.0];
     var works = [true, false];
     for (var w = 0; w < works.size(); w++) {
         for (var i = 0; i < rates.size(); i++) {
             var r = rates[i];
             var viaZone = StrongRowView.cueColour(
-                works[w], StrongRowView.cueBandZone(r, $.CZ_LO, $.CZ_HI));
-            var direct  = StrongRowView.rateColour(works[w], r, $.CZ_LO, $.CZ_HI);
+                works[w], StrongRowView.cueBandZone(r, CueFix.LO, CueFix.HI));
+            var direct = StrongRowView.rateColour(works[w], r,
+                                                  CueFix.LO, CueFix.HI);
             if (viaZone != direct) {
-                logger.error("the cue and the numeral have forked at rate " + r +
-                             " (isWork " + works[w] + "): cueColour said " +
+                logger.error("(b) the cue and the numeral have forked at rate " +
+                             r + " (isWork " + works[w] + "): cueColour said " +
                              viaZone + ", rateColour said " + direct);
                 return false;
             }
         }
     }
-    return true;
-}
 
-// The band edges belong to the band, and the outside starts immediately beyond
-// them -- the same boundary contract RateColourTest pins for the colour, stated
-// once more at the zone level because the deadband arriving at c3 moves the
-// EXIT threshold and must leave this alone.
-(:test) function test_cue_bandZoneBoundariesAreRateColours(logger) {
+    // (c) the band edges belong to the band and the outside starts immediately
+    // beyond them. Stated at the zone level because the deadband arriving at c3
+    // moves the EXIT threshold and must leave this alone.
     var cases = [[16.0, $.CUEZ_IN], [18.0, $.CUEZ_IN],
                  [15.9, $.CUEZ_BELOW], [18.1, $.CUEZ_ABOVE],
                  [0.0, $.CUEZ_NONE]];
     for (var i = 0; i < cases.size(); i++) {
-        var got = StrongRowView.cueBandZone(cases[i][0], $.CZ_LO, $.CZ_HI);
+        var got = StrongRowView.cueBandZone(cases[i][0], CueFix.LO, CueFix.HI);
         if (got != cases[i][1]) {
-            logger.error("cueBandZone(" + cases[i][0] + ", 16, 18) is " + got +
-                         ", expected " + cases[i][1] +
+            logger.error("(c) cueBandZone(" + cases[i][0] + ", 16, 18) is " +
+                         got + ", expected " + cases[i][1] +
                          " -- the memoryless band comparison has moved");
             return false;
         }
     }
-    return true;
-}
 
-// A step that asks for the zone already showing changes nothing and leaves no
-// pending candidate behind. True in every epoch, and it is the case that makes
-// "a candidate must be CONTINUOUS" checkable: one frame back at the current
-// zone clears whatever was pending.
-(:test) function test_cue_askingForTheDisplayedZoneClearsThePending(logger) {
-    var out = StrongRowView.cueStep(17.0, $.CZ_LO, $.CZ_HI,
-                                    $.CUEZ_IN, $.CUEZ_ABOVE, 1000, 2000);
-    if (out.size() != 3) {
-        logger.error("cueStep must return [zone, candidate, since]; got " +
-                     out.size() + " element(s)");
+    // (d) a step that asks for the zone already showing changes nothing and
+    // leaves no pending candidate behind. This is what makes "a candidate must
+    // be CONTINUOUS" checkable: one frame back at the current zone clears
+    // whatever was pending.
+    var same = StrongRowView.cueStep(17.0, CueFix.LO, CueFix.HI,
+                                     $.CUEZ_IN, $.CUEZ_ABOVE, 1000, 2000);
+    if (same.size() != 3) {
+        logger.error("(d) cueStep must return [zone, candidate, since]; got " +
+                     same.size() + " element(s)");
         return false;
     }
-    if (out[0] != $.CUEZ_IN) {
-        logger.error("an in-band rate against an in-band display must stay IN; " +
-                     "got zone " + out[0]);
+    if (same[0] != $.CUEZ_IN || same[1] != $.CUEZ_IN) {
+        logger.error("(d) an in-band rate against an in-band display must stay " +
+                     "IN and discard the pending ABOVE; got zone " + same[0] +
+                     ", candidate " + same[1] + ". A candidate that survives a " +
+                     "frame of disagreement is not a persistence test, it is a " +
+                     "total");
         return false;
     }
-    if (out[1] != $.CUEZ_IN) {
-        logger.error("the pending ABOVE was not cleared: candidate is " + out[1] +
-                     " -- a candidate that survives a frame of disagreement is " +
-                     "not a persistence test, it is a total");
-        return false;
-    }
-    return true;
-}
 
-// NO DATA IS ADOPTED AT ONCE, both ways.
-//
-// Into CUEZ_NONE because the numeral becomes "--.-" on the same frame, and a
-// colour outliving the number it described is a claim with nothing behind it.
-// Out of CUEZ_NONE because there is no displayed instruction to protect: the
-// first reading is the best available answer and delaying it buys nothing.
-(:test) function test_cue_noDataIsAdoptedWithoutDelay(logger) {
-    var gone = StrongRowView.cueStep(0.0, $.CZ_LO, $.CZ_HI,
+    // (e) NO DATA IS ADOPTED AT ONCE, both ways. Into CUEZ_NONE because the
+    // numeral becomes "--.-" on the same frame and a colour outliving the number
+    // it described is a claim with nothing behind it; out of CUEZ_NONE because
+    // there is no displayed instruction to protect.
+    var gone = StrongRowView.cueStep(0.0, CueFix.LO, CueFix.HI,
                                      $.CUEZ_IN, $.CUEZ_IN, 5000, 5000);
     if (gone[0] != $.CUEZ_NONE) {
-        logger.error("a zero estimator must drop the cue to CUEZ_NONE on the " +
-                     "same frame the numeral becomes '--.-'; got " + gone[0]);
+        logger.error("(e) a zero estimator must drop the cue to CUEZ_NONE on " +
+                     "the same frame the numeral becomes '--.-'; got " + gone[0]);
         return false;
     }
-    var first = StrongRowView.cueStep(25.0, $.CZ_LO, $.CZ_HI,
+    var first = StrongRowView.cueStep(25.0, CueFix.LO, CueFix.HI,
                                       $.CUEZ_NONE, $.CUEZ_NONE, 5000, 5000);
     if (first[0] != $.CUEZ_ABOVE) {
-        logger.error("the first reading after no-data must be adopted at once " +
-                     "(nothing is displayed to protect); got " + first[0]);
+        logger.error("(e) the first reading after no-data must be adopted at " +
+                     "once (nothing is displayed to protect); got " + first[0]);
         return false;
     }
-    return true;
-}
 
-// Off the work step there is no instruction, whatever zone is handed in.
-(:test) function test_cue_colourIsWhiteOffTheWorkStep(logger) {
-    var zs = [$.CUEZ_NONE, $.CUEZ_BELOW, $.CUEZ_IN, $.CUEZ_ABOVE];
-    for (var i = 0; i < zs.size(); i++) {
-        var c = StrongRowView.cueColour(false, zs[i]);
-        if (c != Gfx.COLOR_WHITE) {
-            logger.error("zone " + zs[i] + " outside a work step must be white " +
-                         "(COLOR_WHITE = " + Gfx.COLOR_WHITE + "); got " + c);
-            return false;
-        }
-    }
-    return true;
-}
-
-// THE STEP BOUNDARY. A work interval starts with no cue in front of it, so its
-// first frame shows the true zone at once.
-//
-// Driven end to end through the shipping draw path rather than through cueStep,
-// because the thing being pinned is the CALL SITE's decision to park the
-// machine off the work step -- cueStep itself cannot see a step type. Deleting
-// that branch reds this case and no other.
-(:test) function test_cue_workAfterARestStartsFromNoCue(logger) {
-    var p = new CueProbe();
-    p.setSpeed(0.0);
-    p.setDist(0.0);
-
-    // A work interval settled in band.
+    // (f) THE STEP BOUNDARY, driven end to end through the shipping draw path
+    // because what is being pinned is the CALL SITE's decision to park the
+    // machine off the work step -- cueStep cannot see a step type. A work
+    // interval starts with no cue in front of it, so its first frame shows the
+    // true zone at once. Deleting that branch reds this section and no other.
+    var p = new CueFix.Probe();
+    p.setSpeed(0.0); p.setDist(0.0);
     p.enterStepLive(p.kindWork(), false);
     p.setRate(17.0);
-    czRenderAt(p, 0);
-    czRenderAt(p, 250);
-
-    // A rest long enough for any persistence window to have expired, rowed at
-    // the same in-band cadence, so the only thing that could carry across is
-    // the zone itself.
+    CueFix.renderAt(p, 0);
+    CueFix.renderAt(p, 250);
+    // A rest long enough for any persistence window to expire, rowed at the same
+    // in-band cadence, so the only thing that could carry across is the zone.
     p.enterStepLive(p.kindRest(), false);
-    czRenderAt(p, 1000);
-    czRenderAt(p, 11000);
-
+    CueFix.renderAt(p, 1000);
+    CueFix.renderAt(p, 11000);
     // Back to work, already over the band.
     p.enterStepLive(p.kindWork(), false);
     p.setRate(25.0);
-    var d = czRenderAt(p, 11250);
-
-    var c = czNumeralColour(d);
-    if (c != Gfx.COLOR_RED) {
-        logger.error("the first work frame after a rest must show the true " +
+    var cb = CueFix.numeralColour(CueFix.renderAt(p, 11250));
+    if (cb != Gfx.COLOR_RED) {
+        logger.error("(f) the first work frame after a rest must show the true " +
                      "zone at once -- 25.0 against a 16-18 band is red " +
-                     "(COLOR_RED = " + Gfx.COLOR_RED + "); got " + c +
+                     "(COLOR_RED = " + Gfx.COLOR_RED + "); got " + cb +
                      ". A cue carried across the step boundary is a stale " +
                      "instruction from a different activity");
         return false;
