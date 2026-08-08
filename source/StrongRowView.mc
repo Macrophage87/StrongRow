@@ -1165,6 +1165,31 @@ class StrongRowView extends Ui.View {
                 mFitCorr.setData(cr);
                 mCorrAccum += cr / 240.0;   // spm integrated over a 250 ms tick
             }
+            // #149: the lock state, WRITTEN UNCONDITIONALLY, which is the
+            // opposite of the heat-strain line below and the asymmetry is
+            // forced rather than stylistic.
+            //
+            // heat_strain_index withholds its write because 0.0 a.u. is an
+            // ordinary reading on that scale and writing it would fabricate a
+            // measurement. THESE THREE HAVE OUT-OF-BAND ENCODINGS FOR ABSENCE
+            // (LOCK_RATE_NONE lies outside [MIN_RATE, MAX_RATE]; LOCK_CONF_NONE
+            // is negative and a confidence never is), so the fabrication runs
+            // the OTHER WAY here: record-scope fields LATCH, so skipping the
+            // write on a dropped lock would re-emit the last good lock rate and
+            // report a lock that was not up -- on precisely the rows these
+            // fields exist to explain. Withholding is not caution here.
+            //
+            // Every value is a plain in-app read; nothing on this path can
+            // throw, so no try/catch is added that would only hide a defect.
+            if (mFitLockRate != null) {
+                mFitLockRate.setData(lockRateOf(mAcPeriod));
+            }
+            if (mFitLockConf != null) {
+                mFitLockConf.setData(mAcConf);
+            }
+            if (mFitLockLow != null) {
+                mFitLockLow.setData(lockLowClamp(mAcLowConf));
+            }
             if (mFitCore != null) {
                 var ct = mCoreSensor.coreTemp();
                 mFitCore.setData(ct);
@@ -3151,6 +3176,56 @@ class StrongRowView extends Ui.View {
                     mFitCorr = null;
                     mFitCorrTotal = null;
                 }
+                // #149: the LOCK-STATE DIAGNOSTICS. Record scope, ids 20-22.
+                //
+                // ITS OWN try/catch, per #74 and for the reason every group
+                // above gives for theirs: a throw here must not null handles
+                // that were already created successfully.
+                //
+                // OUTSIDE the coreFieldsWanted gate, unlike ct_diag: these
+                // describe the STROKE DETECTOR, which runs on every row, and a
+                // podless row is not a row without a stroke rate.
+                //
+                // WHY THE IDS START AT 20 rather than at 12. Another branch is
+                // in flight adding fields of its own, and a duplicate developer
+                // field id is a SEMANTIC collision git cannot see: two branches
+                // both taking 12 merge cleanly and produce one file in which
+                // the id means two things. Every id currently in this file was
+                // enumerated before choosing (0..11: row_stroke_rate,
+                // dist_per_stroke, rr_interval, rmssd, avg_rmssd,
+                // corrective_rate, total_corrective_strokes, core_temperature,
+                // skin_temperature, max_core_temperature, ct_diag,
+                // heat_strain_index), and 20 leaves the contiguous block free
+                // for that branch.
+                //
+                // WHAT IS NOT MEASURED, and it is deliberately not claimed.
+                // #77 measured eleven fields created and saved on fr965 /
+                // SDK 9.2.0, found no cap below 256, and found that AT id 256
+                // the SDK raises an uncatchable System Error that escapes this
+                // try. #80 measured twelve. FIFTEEN fields, and a
+                // NON-CONTIGUOUS id set, are beyond both -- so this is
+                // EXPECTED to behave and has not been observed to. A [Local]
+                // issue owns the simulator session and the decode; do not
+                // upgrade the expectation in this comment without one.
+                try {
+                    mFitLockRate = mSession.createField(
+                        "lock_rate", 20, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
+                    mFitLockConf = mSession.createField(
+                        "lock_confidence", 21, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "a.u." });
+                    // UINT16, not UINT8: the run is unbounded (see
+                    // lockLowClamp) and a UINT8 would wrap inside an ordinary
+                    // unlocked row. No :scale/:offset, so the saturating value
+                    // reaches the file verbatim and stays below 0xFFFF.
+                    mFitLockLow = mSession.createField(
+                        "lock_lowconf_run", 22, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "n" });
+                } catch (e) {
+                    mFitLockRate = null;
+                    mFitLockConf = null;
+                    mFitLockLow = null;
+                }
                 mCorrAccum = 0.0;
                 // Per-session accumulator, reset with the others above. It used
                 // to be reset INSIDE the CORE block below, which made its
@@ -3685,6 +3760,13 @@ class StrongRowView extends Ui.View {
             mFitMaxCore = null;
             mFitCtDiag = null;
             mFitHsi = null;
+            // #149. No session-scope companion and no save-time write: these
+            // are per-record diagnostics, and a session aggregate of a lock
+            // state would need a seen-flag guard of its own to avoid reporting
+            // "never locked" and "locked at 0.0" the same way.
+            mFitLockRate = null;
+            mFitLockConf = null;
+            mFitLockLow = null;
         }
         mStarted = false;
         // #74: the attempt is over either way, so the footer goes back to
