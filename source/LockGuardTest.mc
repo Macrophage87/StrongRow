@@ -58,6 +58,9 @@ using Toybox.Math;
 //   c4   the lock-state diagnostic symbols, wired behaviour-preservingly
 //   c5   the diagnostic differentials -- RED against c4, by design
 //   c6   the diagnostic fields and their writes
+//   c9   the GATE-INPUT encodings + plumbing, wired behaviour-preservingly
+//   c10  the gate-input differentials -- RED against c9, by design
+//   c11  the gate-input fields (ids 23-24) and their writes
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator on
 // fr965. Test names are pinned in scripts/expected_tests.txt -- update that file
@@ -1730,6 +1733,184 @@ module Lock {
         logger.error("the sweep never made the lock SNAP a reading, so the " +
                      "agreement above says nothing about the other way " +
                      "row_stroke_rate hides its input");
+        return false;
+    }
+    return true;
+}
+
+// -- c10: the gate-input differentials ----------------------------------------
+//
+// BOTH CASES BELOW ARE RED AGAINST c9 AND GREEN ONLY AT c11. The two handles
+// exist at c9 and stay null; onTick does not know about them, so the recording
+// stand-ins tickProbe installs receive nothing and `last()` is null.
+//
+// WHAT THESE CASES OBSERVE, at the strength the evidence supports and no
+// further -- the same scope note the c5 pair carries, because the temptation to
+// overreach is the same: the ARGUMENT of an in-app setData call. They say
+// nothing about what lands in the file's bytes and nothing about what a decoder
+// renders. Those need a simulator session and a decode, and no (:test) in this
+// repository can obtain either.
+
+// THE TICK RECORDS THE GATE'S OWN INPUTS.
+//
+// The state under test is #149's, exactly: a rower established near the choppy
+// row's 15.2 spm, a 25.0 spm median, and no lock to corroborate it. The gate
+// zeroes it, so row_stroke_rate carries 0.0 -- and THAT NUMBER ON ITS OWN IS
+// THE PROBLEM. It is the same 0.0 a tick with no median produces, so the
+// recording shows the symptom and never the mechanism, which is the situation
+// #149 was filed to escape.
+(:test) function test_lock_theTickRecordsTheGatesOwnInputs(logger) {
+    var f = Lock.fields();
+    var p = Lock.tickProbe(f);
+    // Established through the SHIPPING registerStroke, not assigned: what the
+    // gate keys on has to be what the detector really built.
+    p.rowAt(15.0, 8);
+    p.setDetector(25.0, 0.0);
+    p.runTick();
+
+    // (a) SETUP, AND THE AMBIGUITY. row_stroke_rate carries 0.0 for a reading
+    // the gate rejected.
+    if (!Lock.near(f[5].last(), 0.0)) {
+        logger.error("setup: a 25.0 spm median with no lock, against a 15.0 " +
+                     "spm baseline, must be ZEROED by the gate -- otherwise " +
+                     "this case is not observing the state #149 is about. " +
+                     "row_stroke_rate carries " + f[5].last());
+        return false;
+    }
+
+    // (b) THE PRE-GATE MEDIAN. Without it the 0.0 above is unreadable.
+    if (f[3].last() == null) {
+        logger.error("rate_raw was never written. Record-scope fields LATCH, " +
+                     "so a field this app declares and does not write carries " +
+                     "the type's never-set pattern before the first write and " +
+                     "then re-emits whatever it last held -- an unwritten " +
+                     "diagnostic is not a quiet diagnostic");
+        return false;
+    }
+    if (!Lock.near(f[3].last(), 25.0)) {
+        logger.error("rate_raw must carry the median the gate was GIVEN " +
+                     "(25.0), which is the number row_stroke_rate discards; " +
+                     "got " + f[3].last());
+        return false;
+    }
+
+    // (c) AND THE THRESHOLD'S INPUT. Not reconstructible offline: nextRateBase
+    // consumes the pre-gate median, so the recursion cannot be replayed from a
+    // file, and the zeroed and snapped cases discard the median outright so the
+    // output cannot be inverted either.
+    if (f[4].last() == null) {
+        logger.error("rate_base was never written, so the gate's own " +
+                     "threshold at this instant is unknown and unrecoverable " +
+                     "-- the same latch argument as rate_raw above applies");
+        return false;
+    }
+    if (!Lock.near(f[4].last(), 15.0)) {
+        logger.error("rate_base must carry the established baseline the gate " +
+                     "keys on (15.0); got " + f[4].last());
+        return false;
+    }
+
+    // (d) THE THREE READ TOGETHER ANSWER #149's QUESTION, and this leg is what
+    // separates "two numbers were written" from "the mechanism is now
+    // recoverable". Every step is a call into the SHIPPING statics on values
+    // taken from the recording stand-ins -- nothing is re-derived here.
+    if (!Lock.near(f[0].last(), $.LOCK_RATE_NONE)) {
+        logger.error("(d) lock_rate must say NO LOCK for this state, or the " +
+                     "replay below is reconstructing a decision that was not " +
+                     "taken; got " + f[0].last());
+        return false;
+    }
+    var gate = StrongRowView.fastGate(f[4].last());
+    if (!(f[3].last() > gate)) {
+        logger.error("(d) the recorded pair must SHOW the gate firing: " +
+                     "rate_raw (" + f[3].last() + ") above the threshold " +
+                     "rate_base reconstructs (" + gate + "). It does not, so " +
+                     "a reader still cannot tell a rejected reading from a " +
+                     "tick with no median");
+        return false;
+    }
+    var replay = StrongRowView.gatedRate(f[3].last(), 0.0, f[4].last());
+    if (!Lock.near(replay, f[5].last())) {
+        logger.error("(d) replaying the output stage from what the FILE " +
+                     "carries must give what row_stroke_rate carries; replay " +
+                     "gave " + replay + " against a recorded " + f[5].last());
+        return false;
+    }
+    return true;
+}
+
+// THE GATE INPUTS ARE RECORDED AS STATES, NOT AS SILENCE.
+//
+// THE LOAD-BEARING CASE, and the trap is the one part 1 already walked into
+// once: the obvious implementation writes a rate only when there IS one, which
+// reads as caution. Record-scope FitContributor fields LATCH -- a skipped
+// setData re-emits the previous value on the next record (#36, byte level) --
+// so on the rows these fields exist to explain, that implementation keeps
+// re-emitting the last median and the last baseline and reports rowing that
+// stopped minutes ago.
+//
+// The stop is driven through the SHIPPING stroke-ring timeout in onSensorData,
+// which clears BOTH quantities together, rather than by assigning zeros: it is
+// the state a real row ends in, and it is the one where a latched median is
+// most obviously a lie.
+(:test) function test_lock_theGateInputsAreRecordedAsStatesNotAsSilence(logger) {
+    var f = Lock.fields();
+    var p = Lock.tickProbe(f);
+
+    // A real row first, so there is something to latch.
+    p.rowAt(15.0, 8);
+    p.runTick();
+    if (!Lock.near(f[3].last(), 15.0) || !Lock.near(f[4].last(), 15.0)) {
+        logger.error("setup: the first tick must record the 15.0 spm median " +
+                     "and baseline; rate_raw=" + f[3].last() + " rate_base=" +
+                     f[4].last());
+        return false;
+    }
+
+    // Then the athlete stops. 4.0 s periods put the ring timeout at 8.8 s and
+    // the last stroke landed at t = 28.0 s on the detector's synthetic clock
+    // (mSampleIdx * mDt, mDt = 1/REQ_RATE = 0.04 s), so 1200 quiet samples take
+    // that clock to 48.0 s and clear the ring with margin. NOT
+    // System.getTimer(): this clock counts the samples this case feeds, so it
+    // reads the same on a seconds-old CI simulator and an hours-old desktop one.
+    p.feedQuiet(48, 25);
+    if (p.rawRate() != 0.0 || p.rateBase() != 0.0) {
+        logger.error("setup: 48 s of quiet must clear both the median and the " +
+                     "baseline through the shipping timeout, or the leg below " +
+                     "is asserting about a state it never reached. median=" +
+                     p.rawRate() + " baseline=" + p.rateBase());
+        return false;
+    }
+    p.runTick();
+
+    if (!Lock.near(f[3].last(), $.RATE_RAW_NONE)) {
+        logger.error("after the athlete stops, rate_raw must carry the " +
+                     "no-median encoding " + $.RATE_RAW_NONE + "; it carries " +
+                     f[3].last() + ". If that is the previous 15.0, the write " +
+                     "was SKIPPED -- and a skipped write on a record-scope " +
+                     "field re-emits the last value, so the file would report " +
+                     "a median the detector no longer had");
+        return false;
+    }
+    if (f[3].vals.size() != 2) {
+        logger.error("two ticks must produce two rate_raw writes; got " +
+                     f[3].vals.size() + ". Withholding the write is the " +
+                     "specific defect this case exists to catch: it does not " +
+                     "leave a gap, it latches");
+        return false;
+    }
+    if (!Lock.near(f[4].last(), $.RATE_BASE_NONE)) {
+        logger.error("the ring timeout takes the established rate with it, so " +
+                     "rate_base must carry " + $.RATE_BASE_NONE + " -- the " +
+                     "state in which the gate falls back to " +
+                     $.FAST_NEEDS_LOCK + ". It carries " + f[4].last() +
+                     ", which reconstructs a gate of " +
+                     StrongRowView.fastGate(f[4].last()));
+        return false;
+    }
+    if (f[4].vals.size() != 2) {
+        logger.error("two ticks must produce two rate_base writes; got " +
+                     f[4].vals.size());
         return false;
     }
     return true;
