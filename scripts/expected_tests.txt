@@ -125,21 +125,25 @@ test_lay_workViewStillShowsNoAccel
 test_lay_workViewStillShowsAFailedRecording
 test_lay_pausedWorkViewDrawsNoFooterButKeepsTheTitle
 
+# source/SetGridLayoutTest.mc
+test_grid_rowsAreDistinctAndOrderedDownTheScreen
+test_grid_restAndGateShowTheGridAndDropTheSubRow
+test_grid_coolAndDoneKeepTheLiveRowsAndTheSubRow
+test_grid_noLatchedSetMeansNoGridOnAnyScreen
+
 # source/CueZoneTest.mc
 #
-# DELIBERATELY FEW, and the reason is a measured hard ceiling rather than a
-# style choice: the fenix6 family caps a module at 253 members and the
-# --unit-test build of main already sits at 246 members of `globals`. A
-# module-scope function or class costs one member each; a `const` is inlined and
-# free. See the ceiling note at the top of source/CueZoneTest.mc -- the suite's
-# fixtures live in one `module` block (one member) and each (:test) below
-# carries several sections with its own message per section.
-test_cue_c0_theMeasurementSurvivesTheCue
-test_cue_c0_theSteadyAndTheWhiteStatesAreUnchanged
-test_cue_theSeamAgreesWithRateColourAndStartsClean
-test_cue_theDeadbandIsPaidOnExitOnly
-test_cue_theWindowsAreFourSecondsAndOneOnAClock
-test_cue_theScreenLagsTheColourNotTheNumber
+# Names are MODULE-QUALIFIED: every (:test) lives inside `module CueFix`, which
+# is what the simulator prints in the RESULTS table and what
+# scripts/list_tests.py now extracts (3460b27). The reason is the fenix6
+# family's 253-member cap on module 'globals' -- see the ceiling note at the top
+# of source/CueZoneTest.mc.
+CueFix.test_cue_c0_theMeasurementSurvivesTheCue
+CueFix.test_cue_c0_theSteadyAndTheWhiteStatesAreUnchanged
+CueFix.test_cue_theSeamAgreesWithRateColourAndStartsClean
+CueFix.test_cue_theDeadbandIsPaidOnExitOnly
+CueFix.test_cue_theWindowsAreFourSecondsAndOneOnAClock
+CueFix.test_cue_theScreenLagsTheColourNotTheNumber
 
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork
@@ -255,3 +259,32 @@ test_ct_diagAcqPeriodIsTheFirstOne
 test_ct_diagNoPodRowProfile
 test_ct_diagOpenOkRequiresOpenToReturnTrue
 test_ct_diagThreeHypothesesDistinct
+Hsi.test_lay_c0_statusRowDrawsEachLabelOnce
+Hsi.test_ct_c0_shippedDecodesIgnoreByte1
+Hsi.test_ct_c0_diagSlotKeyIsZeroToTwenty
+Hsi.test_ct_hsiRaw8Assembly
+Hsi.test_ct_hsiDecodeTable
+Hsi.test_ct_hsiInvalidIsNullNotTwentyFivePointFive
+Hsi.test_ct_hsiZeroIsAValueNotAbsence
+Hsi.test_ct_hsiIgnoresEveryOtherByte
+Hsi.test_ct_freshSensorHasNoHeatIndex
+Hsi.test_ct_hsiStalenessReturnsToNull
+Hsi.test_ct_diagHsiSlotsStartUnobserved
+Hsi.test_pip_markStaysInsideTheDisplay
+Hsi.test_pip_labelStaysInsideTheDisplay
+Hsi.test_pip_labelClearsTheRrPip
+Hsi.test_pip_widthBoundCoversEveryMeasuredLabel
+Hsi.test_pip_markIsShorterThanTheRow
+Hsi.test_pip_chordFollowsTheCircle
+Hsi.test_pip_zeroStrainIsWritable
+Hsi.test_ct_hsiFedFrameBecomesTheReading
+Hsi.test_ct_hsiZeroFrameIsARealReading
+Hsi.test_ct_hsiWithheldFrameChangesNothing
+Hsi.test_ct_hsiAlwaysInvalidHarmsNothingElse
+Hsi.test_ct_hsiSurvivesUnusableTemperatures
+Hsi.test_ct_diagCountsHeatStrainFrames
+Hsi.test_ct_diagHsiMaxCarriesTheHighHalf
+Hsi.test_ct_diagHsiIgnoresRejectedFrames
+Hsi.test_pip_markRidesTheStatusRowOnly
+Hsi.test_pip_absentStrainIsHollowAndPresentIsFilled
+Hsi.test_life_shutdownKeepsHeatFieldInvariantOnThrow

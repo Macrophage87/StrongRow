@@ -284,7 +284,17 @@ def run_checker(monkeydo_text, console_text="", expected_file=EXPECTED,
             with open(spath, "w", encoding="utf-8") as fh:
                 fh.write(harness_status)
             extra = ["--harness-status", spath]
-        if expected_file == "<empty>":
+        if isinstance(expected_file, (list, tuple)):
+            # A FULLY SYNTHETIC pin, written from the case's own name list.
+            # Needed for cases whose subject is the name SHAPE rather than the
+            # repository's contents -- a module-qualified row cannot be built
+            # out of the live pin without depending on the live pin containing
+            # one, which is a coupling the suite's docstring forbids.
+            names = list(expected_file)
+            expected_file = os.path.join(td, "synthetic_pin.txt")
+            with open(expected_file, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(names) + "\n")
+        elif expected_file == "<empty>":
             expected_file = os.path.join(td, "empty_pin.txt")
             with open(expected_file, "w", encoding="utf-8") as fh:
                 fh.write("# no names at all\n")
@@ -762,6 +772,49 @@ def _():
     # the pin shrank to 15, so the transcript was complete, the checker correctly
     # passed, and this rc=1 case reddened test-tooling on ANY two-test removal.
     return transcript({n: "PASS" for n in NAMES[:-2]})
+
+
+
+# ------------------------------------------- module-scoped test names -------
+# A (:test) declared inside `module M { ... }` runs exactly like a file-scope
+# one, and MEASURED on fr965 / SDK 9.2.0 the simulator prints its row as
+# "M.test_foo". The previous row pattern could not match that line, so the row
+# was DROPPED -- and a dropped row does not produce a clear error, it produces
+# the "executed but mis-tallied" complaint, which names the wrong cause. Module
+# scope is what keeps this repository able to add tests for the fenix6 family
+# at all (see the globals-limit note in list_tests.py), so these two cases pin
+# both directions of the widened pattern.
+
+@case("module-qualified rows parse and match a module-qualified pin", [])
+def _():
+    names = ["Mod.test_alpha", "Mod.test_beta", "test_bare"]
+    lines = ["=" * 78, "RESULTS", "%-37s %s" % ("Test:", "Status:")]
+    for n in names:
+        lines.append("%-37s %s" % (n, "PASS"))
+    lines.append("Ran %d tests" % len(names))
+    lines.append("")
+    lines.append("PASSED (passed=%d, failed=0, errors=0)" % len(names))
+    return ("\n".join(lines) + "\n", "", names)
+
+
+@case("a malformed dotted token is still not a row",
+      ["missing", "passed_count", "ran_mismatch"],
+      mentions=["Mod.test_beta"])
+def _():
+    # The widened pattern admits dot-SEPARATED identifiers and nothing looser.
+    # A leading dot, a trailing dot and a doubled dot must all still be
+    # unparseable, or the anchor that rejects `WARNING: gc-pressure` has been
+    # traded away for the convenience of module names.
+    names = ["Mod.test_alpha", "Mod.test_beta"]
+    lines = ["=" * 78, "RESULTS", "%-37s %s" % ("Test:", "Status:")]
+    lines.append("%-37s %s" % ("Mod.test_alpha", "PASS"))
+    lines.append("%-37s %s" % (".test_beta", "PASS"))       # leading dot
+    lines.append("%-37s %s" % ("Mod..test_beta", "PASS"))   # doubled dot
+    lines.append("%-37s %s" % ("Mod.test_beta.", "PASS"))   # trailing dot
+    lines.append("Ran 1 tests")
+    lines.append("")
+    lines.append("PASSED (passed=1, failed=0, errors=0)")
+    return ("\n".join(lines) + "\n", "", names)
 
 
 def main():

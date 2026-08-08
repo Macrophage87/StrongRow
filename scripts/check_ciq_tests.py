@@ -70,7 +70,25 @@ RESULTS_HEADER_RE = re.compile(r'^Test:[ \t]+Status:[ \t]*\r?$', re.M)
 # before each \n), a row line can never end in \r and the anchor would be dead
 # code (proven: deleting it changed nothing while the other two anchors are
 # each pinned by the CRLF case).
-RESULTS_ROW_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)[ \t]+([A-Z][A-Z0-9_]*)[ \t]*$')
+#
+# THE NAME MAY BE DOTTED, and that is not a relaxation of the anchor above. A
+# (:test) declared inside `module M { ... }` is run exactly like a file-scope
+# one, and MEASURED on fr965 / SDK 9.2.0 the simulator prints its row as
+#
+#     M.test_foo                                           PASS
+#
+# The previous pattern could not match that line at all, so the row was silently
+# DROPPED -- and dropping a row does not produce a clear error, it produces the
+# "executed but mis-tallied" complaint below, which names the wrong cause.
+# Module scope is what lets this repository keep adding tests for the fenix6
+# family at all (see the globals-limit note in list_tests.py), so the parser has
+# to be able to read the rows those tests print.
+#
+# Still narrow: dot-SEPARATED identifiers only. `WARNING: gc-pressure` is
+# rejected by the colon exactly as before, and a leading or trailing dot, a
+# doubled dot or a digit-initial segment all fail to match.
+RESULTS_ROW_RE = re.compile(
+    r'^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)[ \t]+([A-Z][A-Z0-9_]*)[ \t]*$')
 # Terminal colour, if the simulator ever emits it, must not turn `PASS` into an
 # unparseable token (which would red a green run). Stripped on read.
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')

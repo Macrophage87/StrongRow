@@ -25,36 +25,47 @@ using Toybox.Lang;
 // measured result and not a preference; the negative result that rules out
 // filtering the number is recorded at the CUE_* constants in StrongRowView.mc.
 //
-// -- WHY THE CASES BELOW ARE SO FEW, AND SO SECTIONED ------------------------
+// -- WHY EVERYTHING LIVES IN ONE MODULE, AND WHY THE CASES ARE SO SECTIONED ---
 // MEASURED, and it is a hard ceiling rather than a style choice. The fenix6
 // family caps a module at 253 members, and the --unit-test build of main at
-// 920d4e1 already sits at 246 members of `globals`:
+// 920d4e1 already sat at 246 members of `globals`:
 //
 //     monkeyc -d fenix6 --unit-test, main + 14 (:test) functions
 //       -> ERROR: fenix6: Found 260 members in module 'globals',
 //          exceeding the limit of 253.
 //
-// So 246, and SEVEN free for this whole change. What counts is a module-scope
-// FUNCTION or CLASS, one member each. A module-scope `const` is inlined and
-// costs nothing (measured: 14 unreferenced consts compiled clean, 14 (:test)
-// functions did not). A `module` block costs ONE member and takes everything
-// inside it out of `globals` (measured: 14 tests + 2 classes + 2 functions
-// inside one module compiled clean).
+// So 246, and SEVEN free. What counts is a module-scope FUNCTION or CLASS, one
+// member each. A module-scope `const` is inlined and costs nothing (measured:
+// 14 unreferenced consts compiled clean, 14 (:test) functions did not). A
+// `module` block costs ONE member and takes everything inside it out of
+// `globals` (measured: 14 tests + 2 classes + 2 functions inside one module
+// compiled clean).
 //
-// Hence the shape of this file: every helper, fixture and probe lives inside
-// the single `CueFix` module -- one member -- and there are SIX (:test)
-// functions, each carrying several sections with its own error message per
-// section. The first CI run of this branch is the evidence for all of the
-// above; it red compile-unit-test on fenix6/6pro/6spro/6xpro at 270 members
-// while fr965 compiled clean locally, which is exactly the class of defect a
-// local run cannot see.
+// The first CI run of this branch is the evidence: it red compile-unit-test on
+// fenix6/6pro/6spro/6xpro at 270 members while fr965 compiled clean locally --
+// exactly the class of defect a local run cannot see.
 //
-// A (:test) function inside a `module` is RUN, but the simulator reports it as
-// `Module.name` while scripts/list_tests.py extracts the bare name -- so
-// pinning module-scoped tests would deadlock check_expected_tests.sh against
-// check_ciq_tests.py. Making the extractor module-aware would lift the ceiling
-// for the whole repository; it is a tooling change with its own differentials to
-// prove, so it is FILED rather than folded in here.
+// So EVERYTHING in this file, fixtures and (:test) functions alike, is inside
+// `module CueFix`: one member for the lot. The simulator prints a module-scoped
+// test as `CueFix.test_...` and scripts/list_tests.py extracts that qualified
+// name (3460b27, which landed on main independently while this branch was in
+// flight and measured the same 246/253 ceiling), so the pin carries the
+// qualified names.
+//
+// RETRACTION, kept rather than edited away because the claim was load-bearing
+// for a whole commit: an earlier revision of this header said pinning
+// module-scoped tests "would deadlock check_expected_tests.sh against
+// check_ciq_tests.py" and that making the extractor module-aware was filed
+// rather than done. That was TRUE against 920d4e1 and is FALSE against the
+// merged main. The commit that consolidated fifteen (:test) functions into six
+// (c1b) was forced by the ceiling as it stood when it was written.
+//
+// The six are KEPT rather than split back apart, and the reason is evidence, not
+// inertia: each was shown RED at c2 before the fix landed (CI run 31255063213).
+// Splitting one into three would create three names that were never shown
+// failing. That split is worth doing and needs its own red step, so it is filed
+// rather than done here. Each case therefore carries several sections, each with
+// its own error message, so a failure still names what broke.
 //
 // -- WHAT THIS FILE CAN SEE --------------------------------------------------
 // CueFix.Dc records every drawText the shipping draw path issues together with
@@ -69,9 +80,10 @@ using Toybox.Lang;
 // -- COMMIT PARTITION --------------------------------------------------------
 //   c0   characterization pins on existing symbols only, no source change
 //   c1   the cue seam, wired behaviour-preservingly
-//   c1b  this consolidation, to fit the ceiling measured above
+//   c1b  the consolidation, to fit the ceiling measured above
 //   c2   the differentials -- RED against c1b, by design
 //   c3   the fix; touches no test file, no pin, no scripts/, no .github/
+//   c4   merge main, and move the (:test) functions inside the module
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator on
 // fr965. Test names are pinned in scripts/expected_tests.txt -- update that file
@@ -124,6 +136,14 @@ module CueFix {
         function clear()        { }
         function drawArc(x, y, r, attr, degStart, degEnd) { }
         function drawLine(x1, y1, x2, y2) { }
+        // #80's heat-strain mark, added when main's status row grew it. Not
+        // recorded -- no case here asserts about it -- but a duck-typed Dc that
+        // is MISSING a method the shipping path calls fails as a runtime ERROR
+        // rather than a readable assertion, and the two REST/free-row cases
+        // below did exactly that when main merged in. Present so this fixture
+        // keeps failing on its assertions.
+        function drawCircle(x, y, r) { }
+        function fillCircle(x, y, r) { }
 
         function drawText(x, y, font, s, just) {
             strings.add(s);
@@ -245,10 +265,16 @@ module CueFix {
         p.setDist(0.0);
         return p;
     }
-}
 
 // -- c0: characterization pins ------------------------------------------------
 // Green before the cue layer exists and green after it.
+//
+// THE (:test) FUNCTIONS FROM HERE TO THE END OF THE FILE ARE INSIDE `module
+// CueFix` TOO, and the helpers above are still referenced through the module
+// name so that a case reads the same whether or not it is ever moved back out.
+// The module is what makes the suite affordable at all: see the ceiling note at
+// the top of this file. Every name below is therefore pinned as
+// `CueFix.test_...`, which is what the simulator prints.
 
 // THE MEASUREMENT SURVIVES THE CUE. Three sections, all about the two things the
 // maintainer's instruction protects: the file and the number.
@@ -794,4 +820,7 @@ module CueFix {
         return false;
     }
     return true;
+}
+
+// ---- end of `module CueFix` ----------------------------------------------
 }
