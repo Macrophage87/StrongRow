@@ -856,6 +856,53 @@ class StrongRowView extends Ui.View {
                 if (ct > mMaxCore) { mMaxCore = ct; }
             }
             if (mFitSkin != null) { mFitSkin.setData(mCoreSensor.skinTemp()); }
+            // #80: the heat strain index. WRITTEN ONLY WHEN THERE IS ONE, which
+            // is the opposite of the core/skin lines above it, and the asymmetry
+            // is forced rather than stylistic.
+            //
+            // coreTemp()/skinTemp() return 0.0 when nothing is current, and 0.0
+            // is outside the accepted 25-45 C band by construction, so a reader
+            // can recognise it. THE STRAIN SCALE HAS NO SUCH VALUE: 0.0 a.u.
+            // means "no thermal strain", an ordinary reading, so writing it on
+            // a dropout would fabricate a measurement that no downstream
+            // consumer could tell from a real one. hsiWritable is the one line
+            // that decides this, and it exists so a later "why is this not
+            // guarded like max_core_temperature" edit has to red a test first.
+            //
+            // WHAT SKIPPING ACTUALLY PRODUCES, stated at the strength the
+            // evidence supports and no further. Record-scope developer fields
+            // LATCH -- #36 measured, byte level on fr965 / SDK 9.2.0, that a
+            // skipped setData re-emits the previous value on the next record
+            // rather than leaving a gap. So:
+            //
+            //   * before the first write the records carry the type's never-set
+            //     invalid pattern (#48 measured 0xFFFFFFFF). THIS is what a
+            //     podless row, or a pod that withholds byte 1 for the whole
+            //     session, produces: the field exists and is never populated.
+            //     That is the fail-safe outcome #80 asks for, and it was
+            //     MEASURED for this field rather than inferred (SIMULATOR,
+            //     fr965 / SDK 9.2.0): a session that declared
+            //     heat_strain_index and never called setData on it saved
+            //     normally, kept its field_description, and its record carried
+            //     the slot as ABSENT rather than as a number. The companion run
+            //     that did write carried every value including a leading real
+            //     0.0. Hardware is unmeasured, and what Garmin Connect RENDERS
+            //     for the absent case is still untested (#53's territory).
+            //   * after a value HAS been written, a dropout leaves the trace
+            //     carrying the last pre-dropout value. For a strain index that
+            //     reads as SUSTAINED STRAIN, which is a specific and misleading
+            //     failure, and NO Monkey C call does better: setData(NaN) lands
+            //     as 0xFFC00000, which a decoder reads as a datum (#48), and
+            //     setData(null) is an uncatchable native error that kills the
+            //     app. There is no per-record gap to be had.
+            //
+            // Do not restate this as "the field is gapped during a dropout".
+            // The byte patterns above are measured; what a DECODER renders for
+            // either of them is not, and no [Local] issue covers this field yet.
+            if (mFitHsi != null) {
+                var hs = mCoreSensor.heatIndex();
+                if (hsiWritable(hs)) { mFitHsi.setData(hs); }
+            }
         }
         if (mWorkoutEnabled && mStarted && !mPaused) {
             var st = mSteps[mStepIdx];
@@ -2525,6 +2572,51 @@ class StrongRowView extends Ui.View {
                     } catch (e) {
                         mFitCtDiag = null;
                     }
+                    // #80: the heat strain index, record scope, developer field
+                    // id 11.
+                    //
+                    // ITS OWN try/catch, per #74 and for the reason the two
+                    // groups above give for theirs: a throw here must not null
+                    // handles that were already created. This one is the newest
+                    // and therefore the likeliest to fail, and the three CORE
+                    // temperature fields it sits behind are already shipped.
+                    //
+                    // Name, units and type match the vendor's own FIT guidance
+                    // for this quantity (record scope, "a.u.", float, no native
+                    // field number -- so a developer field is the only option).
+                    //
+                    // Id 11 because 0-10 are taken and ct_diag holds 10. #77
+                    // measured eleven fields (ids 0-9 plus ct_diag) created and
+                    // saved in one session on fr965 / SDK 9.2.0, found no cap
+                    // below 256, and found that AT id 256 the SDK raises an
+                    // uncatchable System Error that escapes this try and aborts
+                    // the VM.
+                    //
+                    // Twelve fields is one more than #77 measured, so it was
+                    // MEASURED for this change rather than extrapolated
+                    // (SIMULATOR, fr965 / SDK 9.2.0; hardware unmeasured). A
+                    // session declaring exactly these twelve ids created every
+                    // one of them, wrote record- and session-scope values, and
+                    // saved without throwing; the resulting file decodes with
+                    // all twelve field_description messages present, this one
+                    // as id 11, name "heat_strain_index", units "a.u.",
+                    // fit_base_type float32.
+                    //
+                    // NO SESSION-SCOPE COMPANION. A max or mean heat strain is
+                    // worth having and is deliberately not in this change: it
+                    // needs an explicit seen-flag guard (never `> 0.0`, which
+                    // would suppress the field for any row whose true maximum
+                    // strain was zero and leave a reader unable to tell
+                    // suppression from absence), and #11's double-onLayout
+                    // hazard rules out any time-integrated form until that
+                    // lands. Filed rather than folded in.
+                    try {
+                        mFitHsi = mSession.createField(
+                            "heat_strain_index", 11, Fit.DATA_TYPE_FLOAT,
+                            { :mesgType => Fit.MESG_TYPE_RECORD, :units => "a.u." });
+                    } catch (e) {
+                        mFitHsi = null;
+                    }
                 }
             } catch (e) {
                 mSession = null;
@@ -2916,6 +3008,7 @@ class StrongRowView extends Ui.View {
             mFitSkin = null;
             mFitMaxCore = null;
             mFitCtDiag = null;
+            mFitHsi = null;
         }
         mStarted = false;
         // #74: the attempt is over either way, so the footer goes back to
@@ -3054,6 +3147,11 @@ class StrongRowView extends Ui.View {
         } finally {
             mFitCore = null;
             mFitSkin = null;
+            // #80: the same invariant, for the same reason, one field later.
+            // onTick dereferences mCoreSensor guarded only by a field handle,
+            // so every record-scope CORE handle has to be cleared in the SAME
+            // breath as the sensor -- see the rule stated on coreFieldsWanted.
+            mFitHsi = null;
             mCoreSensor = null;
         }
     }
@@ -3125,13 +3223,77 @@ class StrongRowView extends Ui.View {
         }
         dc.setColor(rcol, Gfx.COLOR_TRANSPARENT);
         dc.drawText(w * 0.52, h * 0.045, Gfx.FONT_XTINY, "RR", Gfx.TEXT_JUSTIFY_CENTER);
-        // CT: green while a CORE pod's data is fresh
+        // CT: green while a CORE pod's TEMPERATURE data is fresh.
+        //
+        // Moved left from the 0.66w it used to sit at, to make room for the
+        // heat-strain mark at the row's right end. It is not a free move and
+        // the numbers are on the PIP_* constants: the gap to the RR pip falls
+        // to 7.15-21.9 px from 15.6-25.0, while this label's own clearance to
+        // the display edge IMPROVES, from 0.7-2.4 px to 4.06-7.04. GPS and RR
+        // do not move at all.
         var ccol = Gfx.COLOR_DK_GRAY;
         if (mCoreSensor != null && mCoreSensor.isFresh()) {
             ccol = Gfx.COLOR_GREEN;
         }
         dc.setColor(ccol, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(w * 0.66, h * 0.045, Gfx.FONT_XTINY, "CT", Gfx.TEXT_JUSTIFY_CENTER);
+        dc.drawText(pipCtCx(w, h), h * $.PIP_ROW_Y_FRAC, Gfx.FONT_XTINY, "CT",
+                    Gfx.TEXT_JUSTIFY_CENTER);
+
+        // #80: the heat-strain mark, immediately right of CT so it reads as
+        // part of the same CORE group rather than as a fourth unrelated
+        // indicator.
+        //
+        // A MARK, NOT A LABEL, and that is measured rather than preferred. Four
+        // text pips do not fit this row on any of the twelve devices: laid out
+        // with equal gaps across the chord, "GPS RR CT HS" leaves 2.5 px between
+        // labels on fenix843mm against 21.6 px today, and even a
+        // one-character label reaches only 8.2 px. The full measurement is on
+        // the PIP_* constants.
+        //
+        // TWO CHANNELS, deliberately, because colour alone is the weaker half:
+        //   * SHAPE -- outline for no reading, filled for a current one;
+        //   * COLOUR -- the same dark-grey / green vocabulary the RR and CT pips
+        //     already use, so a reader learns one rule rather than three.
+        // On the two smallest displays the mark is 3 px in radius, so the
+        // shape channel there is a handful of pixels and colour carries most of
+        // the load. Stated rather than dressed up.
+        //
+        // THE MARK IS DRAWN IN BOTH STATES -- hollow for no reading, solid for
+        // a current one -- and that is the point rather than a detail. A marker
+        // that disappears with its data cannot be read against, which is the
+        // same rule the distance-per-stroke arc's benchmark tick states; here
+        // it also means "this watch is looking for a heat index" stays legible
+        // on a row where no pod has ever been heard.
+        //
+        // ONE primitive either way, never an outline with a fill inside it.
+        // Two circle calls for one mark would make "exactly one mark on the
+        // status row" unassertable, and that count is what stops a second mark
+        // appearing somewhere the status row's own suppression cannot reach.
+        //
+        // A REAL 0.0 RENDERS AS PRESENT. hsiFresh() is asked, not the value:
+        // 0.0 a.u. is an ordinary reading and must not fall into the no-data
+        // state. This is the same trap as the FIT write, reached by a different
+        // path, and both are pinned.
+        //
+        // NO NUMBER. There is no row to put one in: h*0.70 is the pace row or
+        // #108's work-left caption, h*0.78 is the sub row or #109's grid,
+        // h*0.87 is the footer, and this row is at its chord limit. A readout
+        // on the pace row would also be invisible during WORK, which is where
+        // heat strain is worth reading, so it would be the wrong trade even if
+        // it fitted.
+        var hsOn = (mCoreSensor != null && mCoreSensor.hsiFresh());
+        var hsR  = pipDotR(w);
+        var hsX  = pipDotCx(w, h);
+        var hsY  = pipDotCy(h, dc.getFontHeight(Gfx.FONT_XTINY));
+        dc.setColor(hsOn ? Gfx.COLOR_GREEN : Gfx.COLOR_DK_GRAY, Gfx.COLOR_TRANSPARENT);
+        // Pen width set explicitly: this function runs before the arcs on every
+        // frame that reaches it, but nothing guarantees the Dc arrives at 1.
+        dc.setPenWidth(1);
+        if (hsOn) {
+            dc.fillCircle(hsX, hsY, hsR);
+        } else {
+            dc.drawCircle(hsX, hsY, hsR);
+        }
     }
 
     hidden function drawRate(dc, w, h, col) {

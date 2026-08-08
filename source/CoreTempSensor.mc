@@ -708,6 +708,44 @@ class CoreTempSensor {
         } else {
             mDiagSkinClamp++;
         }
+
+        // #80: the heat strain index, on its own stamp for the reason the
+        // core/skin split above states -- warm-up is exactly when a pod is
+        // most likely to withhold a core temperature and exactly when a strain
+        // index is most interesting, so coupling the two would lose the field
+        // where it matters most.
+        //
+        // TWO THINGS IT DELIBERATELY DOES NOT DO, both scope boundaries rather
+        // than omissions:
+        //
+        //   * it does not set mEverSeen. That flag gates the ANT search
+        //     period's alternation in onChannelClosed, and widening it would
+        //     change radio behaviour on a path nothing in this repository can
+        //     measure. It costs nothing here: the FIT field is created behind
+        //     coreFieldsWanted, which does not consult everSeen (#75).
+        //   * it does not touch mLastMs, which no code reads -- it has been
+        //     write-only since #17 split the stamps. A fourth writer to a dead
+        //     field would be noise, and the two that exist are left alone
+        //     rather than tidied as a side effect of this feature.
+        //
+        // The rejection branch stamps NOTHING, which is what keeps "no heat
+        // index yet" distinct from "the last one, republished as current".
+        var hs = decodeHsi(p);
+        if (hs != null) {
+            mDiagHsiOk++;
+            // Running maximum of the ACCEPTED raw, so the invalid marker can
+            // never be counted as an observation. The CT_DIAG_NONE test comes
+            // first because that marker (0xFFFF) is numerically above every
+            // reachable raw, so a bare `>` would never replace it.
+            var raw = hsiRaw8(p);
+            if (mDiagHsiMaxRaw == $.CT_DIAG_NONE || raw > mDiagHsiMaxRaw) {
+                mDiagHsiMaxRaw = raw;
+            }
+            mHsi   = hs;
+            mHsiMs = now;
+        } else {
+            mDiagHsiInvalid++;
+        }
     }
 
     // Search timed out or the pod dropped.
