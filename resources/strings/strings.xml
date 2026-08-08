@@ -9,5 +9,6 @@
     <string id="setHrLo">HR target low (bpm)</string>
     <string id="setHrHi">HR target high (bpm)</string>
     <string id="setPressToContinue">Press START after rest</string>
+    <string id="setDpsBenchmark">Distance per stroke benchmark (m)</string>
     <string id="setWarmupCooldown">Warmup and cooldown steps</string>
 </strings>

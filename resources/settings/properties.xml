@@ -8,5 +8,6 @@
     <property id="hrLo" type="number">116</property>
     <property id="hrHi" type="number">130</property>
     <property id="pressToContinue" type="boolean">true</property>
+    <property id="dpsBenchmark" type="float">6.0</property>
     <property id="warmupCooldown" type="boolean">true</property>
 </properties>

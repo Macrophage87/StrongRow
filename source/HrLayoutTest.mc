@@ -125,11 +125,20 @@ class HrGeoDc {
 
     // Normalised to [lo, hi] regardless of the direction flag: the swept set of
     // pixels is the same either way, and a bound only cares about the set.
+    // RECORDS THE DIRECTION, and that is not a refinement -- it is required for
+    // correctness the moment an arc WRAPS through 0.
+    //
+    // An earlier version normalised by swapping so that lo < hi, then walked
+    // lo -> hi. That is right for the left-edge arc, which never wraps
+    // (152..208). It is exactly wrong for the mirrored right-edge arc of #123,
+    // whose sweep is 28 down to 332: swapped and walked ascending, it traces
+    // the 304 degrees that were NOT drawn -- the complement of the real arc --
+    // and reports a radius-sized excursion the code never made.
+    //
+    // So keep degStart, degEnd and attr verbatim and let the walker follow the
+    // path drawArc actually takes.
     function drawArc(x, y, r, attr, degStart, degEnd) {
-        var lo = degStart;
-        var hi = degEnd;
-        if (lo > hi) { var t = lo; lo = hi; hi = t; }
-        arcs.add([x, y, r, pen, lo, hi]);
+        arcs.add([x, y, r, pen, degStart, degEnd, attr]);
     }
 
     function drawLine(x0, y0, x1, y1) { lines.add([x0, y0, x1, y1, pen]); }
@@ -141,27 +150,68 @@ class HrGeoDc {
 // along their path and lines at their endpoints, and every sample is widened by
 // half its pen: the OUTERMOST PIXEL, not the centreline, which is the reading
 // the original derivation got wrong.
+// The degrees an arc ACTUALLY covers, walking the direction drawArc was given
+// and wrapping through 0 or 360 as it does.
+//
+// Returns a list of sample degrees at HL_ARC_STEP_DEG, always including both
+// endpoints, so a caller can take a max or a min over the real path rather than
+// over a normalised interval that may be the arc's complement.
+function hlArcSweep(arc) {
+    var a0 = arc[4] * 1.0;
+    var a1 = arc[5] * 1.0;
+    var cw = (arc.size() > 6) && (arc[6] == Gfx.ARC_CLOCKWISE);
+    // Signed span in the drawn direction, always in (0, 360].
+    var span;
+    if (cw) {
+        span = a0 - a1;
+        if (span <= 0.0) { span += 360.0; }
+    } else {
+        span = a1 - a0;
+        if (span <= 0.0) { span += 360.0; }
+    }
+    var out = [];
+    var t = 0.0;
+    while (t < span) {
+        var d = cw ? (a0 - t) : (a0 + t);
+        while (d < 0.0)    { d += 360.0; }
+        while (d >= 360.0) { d -= 360.0; }
+        out.add(d);
+        t += $.HL_ARC_STEP_DEG;
+    }
+    var e = a1;
+    while (e < 0.0)    { e += 360.0; }
+    while (e >= 360.0) { e -= 360.0; }
+    out.add(e);
+    return out;
+}
+
 function hlMaxDrawnX(geo) {
     var maxX = -9999.0;
 
+    // LEFT LANE ONLY. #123 puts a second arc on the RIGHT edge, so a plain
+    // max-x over every primitive would report that arc's outermost pixel --
+    // 433.5 on a 454-wide display -- and red a guard that is about the left
+    // arc's lane. Points are classified by the side of centre they fall on;
+    // hlMinDrawnX below is the mirror, and between them nothing may enter the
+    // middle band.
+    var mid = geo.w / 2.0;
     for (var a = 0; a < geo.arcs.size(); a++) {
         var arc = geo.arcs[a];
         var cx = arc[0]; var r = arc[2];
         var half = arc[3] / 2.0;
-        var deg = arc[4];
-        var end = arc[5];
-        while (true) {
-            var x = cx + r * Math.cos(deg * Math.PI / 180.0) + half;
+        var sweep = hlArcSweep(arc);
+        for (var i = 0; i < sweep.size(); i++) {
+            var xc = cx + r * Math.cos(sweep[i] * Math.PI / 180.0);
+            if (xc > mid) { continue; }
+            var x = xc + half;
             if (x > maxX) { maxX = x; }
-            if (deg >= end) { break; }
-            deg += $.HL_ARC_STEP_DEG;
-            if (deg > end) { deg = end; }
         }
     }
 
     for (var l = 0; l < geo.lines.size(); l++) {
         var ln = geo.lines[l];
         var half2 = ln[4] / 2.0;
+        if (ln[0] > mid && ln[2] > mid) { continue; }
         var xa = ln[0] + half2;
         var xb = ln[2] + half2;
         if (xa > maxX) { maxX = xa; }
@@ -175,6 +225,42 @@ function hlMaxDrawnX(geo) {
 // this render occupies. Same expansion rule as hlMaxDrawnX: arcs are sampled
 // along their path, lines at their endpoints, and every sample is widened by
 // half its pen -- the OUTERMOST PIXEL, not the centreline.
+// The mirror of hlMaxDrawnX: the INNERMOST pixel any right-of-centre primitive
+// reaches. #123's arc must stay in its own lane exactly as #110's does, and the
+// two guards together are what keeps the middle band -- where every numeral
+// lives -- clear.
+//
+// Returns a large number when nothing is drawn on the right, so a screen with
+// no right-edge arc passes trivially rather than failing on an empty minimum.
+function hlMinDrawnX(geo) {
+    var minX = 99999.0;
+    var mid = geo.w / 2.0;
+
+    for (var a = 0; a < geo.arcs.size(); a++) {
+        var arc = geo.arcs[a];
+        var cx = arc[0]; var r = arc[2];
+        var half = arc[3] / 2.0;
+        var sweep = hlArcSweep(arc);
+        for (var i = 0; i < sweep.size(); i++) {
+            var xc = cx + r * Math.cos(sweep[i] * Math.PI / 180.0);
+            if (xc < mid) { continue; }
+            var x = xc - half;
+            if (x < minX) { minX = x; }
+        }
+    }
+
+    for (var l = 0; l < geo.lines.size(); l++) {
+        var ln = geo.lines[l];
+        var half2 = ln[4] / 2.0;
+        if (ln[0] < mid && ln[2] < mid) { continue; }
+        var xa = ln[0] - half2;
+        var xb = ln[2] - half2;
+        if (xa < minX) { minX = xa; }
+        if (xb < minX) { minX = xb; }
+    }
+    return minX;
+}
+
 function hlMaxDrawnDy(geo) {
     var cy = geo.h / 2.0;
     var maxDy = -9999.0;
@@ -183,17 +269,13 @@ function hlMaxDrawnDy(geo) {
         var arc = geo.arcs[a];
         var cyA = arc[1]; var r = arc[2];
         var half = arc[3] / 2.0;
-        var deg = arc[4];
-        var end = arc[5];
-        while (true) {
-            var y = cyA - r * Math.sin(deg * Math.PI / 180.0);
+        var sweep = hlArcSweep(arc);
+        for (var i = 0; i < sweep.size(); i++) {
+            var y = cyA - r * Math.sin(sweep[i] * Math.PI / 180.0);
             var dy = y - cy;
             if (dy < 0.0) { dy = -dy; }
             dy += half;
             if (dy > maxDy) { maxDy = dy; }
-            if (deg >= end) { break; }
-            deg += $.HL_ARC_STEP_DEG;
-            if (deg > end) { deg = end; }
         }
     }
 
@@ -368,12 +450,20 @@ function hlRender(p, cfg) {
                                                bands[bi][0], bands[bi][1],
                                                hrs[hi][0], hrs[hi][1],
                                                accelOk, wi == 1]);
-                        if (geo.arcs.size() == 0 && geo.lines.size() == 0) {
-                            logger.error(names[ki] + " drew no arc geometry at " +
-                                         "all; the bound below would be vacuous");
+                        // NON-VACUITY, ON THE LANE UNDER TEST. An earlier
+                        // version asked only whether the SCREEN drew anything,
+                        // which stopped proving anything the moment #123 added
+                        // a second arc: a render with the heart-rate arc
+                        // entirely missing still satisfies it, and
+                        // hlMaxDrawnX's empty-lane sentinel (-9999) then
+                        // passes the limit. The case about the left arc would
+                        // have gone green with the left arc absent.
+                        var mx = hlMaxDrawnX(geo);
+                        if (mx < -9000.0) {
+                            logger.error(names[ki] + " drew nothing in the LEFT " +
+                                         "lane; the bound below would be vacuous");
                             return false;
                         }
-                        var mx = hlMaxDrawnX(geo);
                         if (mx > worst) {
                             worst = mx;
                             where = names[ki] + (paused ? "/PAUSED" : "") +
@@ -426,6 +516,64 @@ function hlRender(p, cfg) {
 // reading is clamped off either end of the display range -- so the band and
 // heart-rate sweeps are what matter, and pause / accelerometer state cannot
 // move it (neither is read by drawHrArc).
+// #123: THE MIRROR OF THE X ENVELOPE. hlMinDrawnX existed with no caller
+// until this case, which made the "two-lane" claim false as shipped: the left
+// lane was bounded and the right one was bounded by nothing.
+//
+// The two guards together are the real invariant -- the middle band, where
+// every numeral lives, stays clear. Either one alone permits an arc to grow
+// straight through it.
+(:test) function test_dps_arcStaysWithinItsXEnvelope(logger) {
+    var ds = System.getDeviceSettings();
+    var k      = hlProbeFor(false);
+    var kinds  = [ k.kindWork(), k.kindRest() ];
+    var names  = [ "WORK", "REST" ];
+    var limit  = ds.screenWidth * (1.0 - $.HL_X_MAX_FRAC);
+    var worst  = 99999.0;
+    var where  = "";
+
+    for (var wi = 0; wi < 2; wi++) {
+        var p = hlProbeFor(wi == 1);
+        for (var ki = 0; ki < kinds.size(); ki++) {
+            for (var vi = 0; vi < 4; vi++) {
+                var paused  = (vi & 1) != 0;
+                var accelOk = (vi & 2) == 0;
+                var geo = hlRender(p, [kinds[ki], paused, 116, 130,
+                                       130, true, accelOk, wi == 1]);
+                var mn = hlMinDrawnX(geo);
+                if (mn > 9000.0) {
+                    logger.error(names[ki] + " drew nothing in the RIGHT lane; " +
+                                 "the bound below would be vacuous");
+                    return false;
+                }
+                if (mn < worst) {
+                    worst = mn;
+                    where = names[ki] + (paused ? "/PAUSED" : "") +
+                            (accelOk ? "" : "/NO-ACCEL") +
+                            (wi == 1 ? " wide" : " narrow");
+                }
+            }
+        }
+    }
+
+    logger.debug("HL right-lane " + ds.screenWidth + "x" + ds.screenHeight +
+                 ": innermost drawn x " + worst.format("%.1f") +
+                 " (" + (worst / ds.screenWidth).format("%.4f") + "w), limit " +
+                 limit.format("%.1f") + " @ " + where);
+
+    if (worst < limit) {
+        logger.error("#123: the distance-per-stroke arc has drifted out of its " +
+                     "lane. Innermost drawn pixel x=" + worst.format("%.1f") +
+                     " on a " + ds.screenWidth + "-wide display, limit " +
+                     limit.format("%.1f") + ", at " + where + ". Measured at " +
+                     "the PEN WIDTH, not the centreline. Every pixel left of " +
+                     "that lane is a pixel closer to the centred numerals both " +
+                     "arcs were placed to avoid.");
+        return false;
+    }
+    return true;
+}
+
 (:test) function test_hr_arcStaysWithinItsYEnvelope(logger) {
     var k = new HrProbe();
     var kinds = [ k.kindWork(), k.kindRest() ];
@@ -444,8 +592,18 @@ function hlRender(p, cfg) {
                 var geo = hlRender(p, [kinds[ki], false,
                                        bands[bi][0], bands[bi][1],
                                        hrs[hi][0], hrs[hi][1], true, true]);
-                if (geo.arcs.size() == 0 && geo.lines.size() == 0) {
-                    logger.error(names[ki] + " drew no arc geometry at all; " +
+                // NEAR NEIGHBOUR of the x-envelope fix, and it had to be made
+                // twice. Asking whether the SCREEN drew anything stopped
+                // proving anything once #123 added a mirrored arc: the two
+                // arcs have IDENTICAL |dy| by construction, and hlMaxDrawnDy
+                // has no lane filter, so with drawHrArc stubbed to nothing this
+                // case would measure the DPS arc, go green, and report it under
+                // a message about the heart-rate arc.
+                //
+                // Scoped through the x helper because that one IS lane-aware:
+                // an empty left lane returns its sentinel.
+                if (hlMaxDrawnX(geo) < -9000.0) {
+                    logger.error(names[ki] + " drew nothing in the LEFT lane; " +
                                  "the bound below would be vacuous");
                     return false;
                 }

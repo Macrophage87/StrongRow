@@ -26,6 +26,9 @@
     <setting propertyKey="@Properties.pressToContinue" title="@Strings.setPressToContinue">
         <settingConfig type="boolean"/>
     </setting>
+    <setting propertyKey="@Properties.dpsBenchmark" title="@Strings.setDpsBenchmark">
+        <settingConfig type="numeric" min="1" max="20"/>
+    </setting>
     <setting propertyKey="@Properties.warmupCooldown" title="@Strings.setWarmupCooldown">
         <settingConfig type="boolean"/>
     </setting>
