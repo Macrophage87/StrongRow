@@ -117,6 +117,18 @@ jobs:
         # against the Monkey C, and re-derives every published figure from
         # scripts/fixtures/cue_work_laps.txt. Pure Python: no container, no SDK.
         run: python3 scripts/test_cue_replay.py
+      - name: Speed-witness self-test (runner-free RED/GREEN)
+        # scripts/speed_witness.py re-derives the INDEPENDENT-WITNESS figure the
+        # output-stage comment block rests its recorded-value change on -- the
+        # hull's speed across the seconds that read too high. That figure had no
+        # committed witness at all until this landed, which is the same trap
+        # cue_work_laps.txt was created to close one level up: the earlier pair
+        # (0.851 / 0.916) turned out not to be reproducible from the recordings
+        # and is retracted in both files. This suite re-derives every published
+        # number from the two committed fixtures, and drives the harness's
+        # refusal to publish anything when the rate and speed fixtures have
+        # drifted out of alignment. Pure Python: no container, no SDK.
+        run: python3 scripts/test_speed_witness.py
       - name: Ceiling-note checker self-test (runner-free RED/GREEN)
         # Hermetic scratch trees only, same shape as the two suites above.
         run: python3 scripts/test_check_ceiling_notes.py

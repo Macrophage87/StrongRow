@@ -71,8 +71,16 @@ const FOOT_REC      = 3;
 const FOOT_IDLE     = 4;   // not started yet
 
 // ============ the STROKE-RATE OUTPUT STAGE (#149) =========================
-// These five were class `hidden const`s and are now module (global) consts, for
-// the reason the R-R and FOOT_* blocks above give: a Monkey C class `const` is
+// FOUR consts moved out of the class here -- MIN_RATE, MAX_RATE, LOCK_SNAP_K
+// and FAST_NEEDS_LOCK, i.e. exactly the four declared immediately below and
+// exactly the four the companion note at updateAutocorr's caller names. Written
+// as an inventory rather than as a bare count because the bare count was wrong
+// ("five") from the commit that introduced it, and a reader who trusts it goes
+// hunting for a fifth relocated const that never existed. The #149 constants
+// under the next header down are NET-NEW and were never class members.
+//
+// They are module (global) consts now for the reason the R-R and FOOT_* blocks
+// above give: a Monkey C class `const` is
 // an INSTANCE member, unreachable from a static method, and #149 requires the
 // output stage's whole decision to be a pure static so a (:test) can reach it
 // with plain numbers instead of through a built view and an event loop. A
@@ -3022,12 +3030,29 @@ class StrongRowView extends Ui.View {
     //   the cue keeps no rate at all: it produces a ZONE, and the number on
     //   screen and the number in the file both come straight from here.
     //
-    //   CORRECTING A DETECTOR ERROR -- required. #149 measured the over-reads
-    //   against an INDEPENDENT witness: across seconds reading above 1.25x the
-    //   lap baseline the hull sits at 0.851x (calm row) and 0.916x (choppy row)
-    //   of its own speed baseline, and enhanced_speed is recorded independently
-    //   of this detector. A genuine rate rise pushes speed UP. So these are
-    //   wrong readings, and leaving a wrong reading in the file is not fidelity.
+    //   CORRECTING A DETECTOR ERROR -- required. The over-reads are measured
+    //   against an INDEPENDENT witness: across the seconds reading above 1.25x
+    //   their own lap's median rate, the hull sits at 0.814x (calm row) and
+    //   0.692x (choppy row) of that lap's median speed, while the seconds that
+    //   are NOT over-reads sit at 0.989x and 0.997x. enhanced_speed is recorded
+    //   independently of this detector and a genuine rate rise pushes speed UP,
+    //   so these are wrong readings -- and leaving a wrong reading in the file
+    //   is not fidelity. Every figure in this paragraph is printed by
+    //   `python3 scripts/speed_witness.py` from two committed fixtures and
+    //   pinned by scripts/test_speed_witness.py; the control in the second
+    //   clause is what separates "the hull is slower HERE" from an artefact of
+    //   the statistic.
+    //
+    //   RETRACTION. This paragraph previously read "0.851x (calm) and 0.916x
+    //   (choppy)", with no committed witness of any kind -- the repository's
+    //   only extract of these two rows carries stroke rate and nothing else,
+    //   and says so in its own header. Those two figures are WITHDRAWN: the
+    //   harness sweeps 48 definitions per row and gets 0.7890-0.8666 for the
+    //   calm row, which brackets 0.851, and 0.5630-0.7866 for the choppy row,
+    //   which never reaches 0.916. So the published pair cannot have come from
+    //   one consistent definition and 0.916 is unsupported by anything these
+    //   recordings contain. What survives is the direction, and it survives
+    //   with room to spare: all 96 sweep values are well under 1.0.
     //
     // Nothing here consults the display, the cue, or any zone. It consults the
     // detector's own two witnesses -- the autocorrelation lock and the rate the
@@ -3060,23 +3085,39 @@ class StrongRowView extends Ui.View {
     //                       return more than what shipped, so no reading that
     //                       used to be zeroed can now pass.
     //
-    //   base <= 0.0         is "nothing established yet" -- session start, or
-    //                       after the stroke ring timed out. It is NOT "no
-    //                       guard": it falls back to exactly the rule that
-    //                       shipped. Null is handled for the same reason every
-    //                       other predicate in this file handles it: an absent
-    //                       value must not be arithmetic.
+    //   base <= 0.0         is "nothing established yet" -- APP LAUNCH, or
+    //                       after the stroke ring timed out. NOT session start,
+    //                       and the difference is reachable rather than
+    //                       pedantic: mRateBase is zeroed in exactly two places,
+    //                       resetDetector (whose ONLY caller is initialize --
+    //                       the file states that at resetDetector itself) and
+    //                       the ring timeout. onLayout registers the
+    //                       accelerometer listener, registerStroke has no
+    //                       mStarted gate, and neither startSession nor
+    //                       beginSessionAccum touches detector state -- so a
+    //                       warm-up or a paddle to the start ESTABLISHES the
+    //                       baseline before START is pressed, and a session
+    //                       reaches this state only if the ring has timed out
+    //                       first (mLastPeriod * 2.2, clamped to 4-12 s, of
+    //                       quiet). That is deliberate, not a defect: the note
+    //                       at the ring timeout argues it, and the outer min
+    //                       keeps the gate never looser than what shipped
+    //                       either way. It is NOT "no guard": it falls back to
+    //                       exactly the rule that shipped. Null is handled for
+    //                       the same reason every other predicate in this file
+    //                       handles it: an absent value must not be arithmetic.
     //
-    // WHAT THIS IS NOT. It is not validated on the water. #149 established that
-    // the over-reads are real detector errors (the hull sits at 0.851x / 0.916x
-    // of its own speed baseline across them, and speed is recorded
-    // independently of this detector), and that the absolute gate is
-    // relative-blind. It did NOT establish that the gate is what lets them
-    // through -- whether the autocorrelation lock was even up during those
-    // excursions is unanswerable from any recording that exists, which is what
-    // the lock_* diagnostic fields are for. This ships as a reasoned correction
-    // to a guard that is wrong on its own terms, not as a measured fix for the
-    // reported symptom.
+    // WHAT THIS IS NOT. It is not validated on the water. What is established is
+    // that the over-reads are real detector errors -- the hull sits at 0.814x /
+    // 0.692x of its own lap's median speed across them against 0.989x / 0.997x
+    // across every other second, and speed is recorded independently of this
+    // detector (regenerate with scripts/speed_witness.py) -- and that the
+    // absolute gate is relative-blind. It is NOT established that the gate is
+    // what lets them through: whether the autocorrelation lock was even up
+    // during those excursions is unanswerable from any recording that exists,
+    // which is what the lock_* diagnostic fields are for. This ships as a
+    // reasoned correction to a guard that is wrong on its own terms, not as a
+    // measured fix for the reported symptom.
     static function fastGate(base) {
         if (base == null || base <= 0.0) { return $.FAST_NEEDS_LOCK; }
         var g = $.LOCK_REL_K * base;
