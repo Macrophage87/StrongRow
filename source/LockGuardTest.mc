@@ -114,6 +114,29 @@ module Lock {
             }
         }
 
+        // -- #149's lock-state diagnostics --------------------------------
+        // The three estimator fields the diagnostic write reports, driven
+        // directly so a case can visit lock states the estimator cannot be
+        // steered to on demand -- "locked at exactly 20.0 spm with a
+        // confidence of 0.42" is not a state a synthetic signal produces.
+        function setLockState(acPeriod, conf, lowConf) {
+            mAcPeriod  = acPeriod;
+            mAcConf    = conf;
+            mAcLowConf = lowConf;
+        }
+
+        function lockConfState() { return mAcConf; }
+
+        // Recording stand-ins for the three record-scope handles.
+        function installLockFields(rateF, confF, lowF) {
+            mFitLockRate = rateF;
+            mFitLockConf = confF;
+            mFitLockLow  = lowF;
+        }
+
+        // The real 250 ms tick, called directly.
+        function runTick() { onTick(); }
+
         // Real strokes at a chosen cadence, through the SHIPPING
         // registerStroke() / recomputeRate() path, so whatever the detector
         // establishes from a steady row is established by the shipping code
@@ -130,6 +153,38 @@ module Lock {
                 t += per;
             }
         }
+    }
+
+    // A probe in a live, unpaused WORK step with the three diagnostic fields
+    // installed, which is the state onTick's FIT writes are gated on
+    // (mStarted && !mPaused).
+    //
+    // enterStepLive (not enterStep) leaves the step clock running, so
+    // stepRemaining() is the full interval and onTick's advanceStep() is not
+    // triggered -- these cases must not advance the workout underneath
+    // themselves.
+    function tickProbe(fields) {
+        var p = new Probe();
+        p.enterStepLive(p.kindWork(), false);
+        p.setSpeed(0.0);
+        p.setDist(0.0);
+        p.installLockFields(fields[0], fields[1], fields[2]);
+        return p;
+    }
+
+    // Three recording fields, in the order installLockFields takes them.
+    //
+    // CueFix.Field (CueZoneTest.mc) is REUSED rather than copied: a second
+    // stand-in for the same platform type is a second thing that can drift from
+    // it, which is the same argument Lock.Probe makes for extending HrProbe and
+    // feedQuiet makes for reusing FakeSensorData.
+    //
+    // SCOPE, stated because it is precisely the claim this repository keeps
+    // overreaching on: a Field observes the ARGUMENT of an in-app call. It says
+    // nothing about what lands in the file's bytes and nothing about what a
+    // decoder renders. Those need a simulator session and a decode.
+    function fields() {
+        return [new CueFix.Field(), new CueFix.Field(), new CueFix.Field()];
     }
 
     // A probe with the detector at (spm, lock period) and nothing else
@@ -638,6 +693,188 @@ module Lock {
         logger.error("(c) a rower established at " + $.LOCK_REF_RATE + " spm " +
                      "is gated exactly where the shipped absolute put them, " +
                      "so 29.0 must still pass; got " + r.out());
+        return false;
+    }
+    return true;
+}
+
+// -- c4: the lock-state diagnostic symbols ------------------------------------
+//
+// #149's own words: "whether the lock was even up during these excursions is
+// exactly what I cannot tell from the recordings". Three record-scope fields
+// answer it from one more row. c4 lands the ENCODINGS and the estimator's
+// confidence member; c5's differentials are RED against it because nothing
+// writes the fields yet; c6 creates them and writes them.
+//
+// The cases below are green at c4 and stay green at c6.
+
+// THE NO-DATA ENCODINGS CANNOT BE MISTAKEN FOR DATA.
+//
+// This is the #86 / #107 defect class -- absence rendered as a legal value --
+// and the two fields need OPPOSITE answers, which is the whole reason they get
+// separate encodings instead of a shared convention.
+(:test) function test_lock_theDiagnosticEncodingsCannotBeMistakenForData(logger) {
+    // (a) NO LOCK is 0.0 spm, and 0.0 is out of band BY CONSTRUCTION rather
+    // than by convention: updateAutocorr searches only lags in
+    // [60/MAX_RATE, 60/MIN_RATE], so a lock IS a rate in [MIN_RATE, MAX_RATE].
+    // The inequality is asserted, not described, so a future MIN_RATE of zero
+    // reds here instead of silently making the sentinel ambiguous.
+    if (!Lock.near(StrongRowView.lockRateOf(0.0), $.LOCK_RATE_NONE)) {
+        logger.error("(a) a zero period is NO LOCK and must encode as " +
+                     $.LOCK_RATE_NONE + "; got " +
+                     StrongRowView.lockRateOf(0.0));
+        return false;
+    }
+    if (!($.LOCK_RATE_NONE < $.MIN_RATE)) {
+        logger.error("(a) LOCK_RATE_NONE (" + $.LOCK_RATE_NONE + ") must lie " +
+                     "OUTSIDE the band a lock can occupy (" + $.MIN_RATE +
+                     ".." + $.MAX_RATE + " spm) or 'no lock' is " +
+                     "indistinguishable from a slow one -- the #86 / #107 " +
+                     "defect class");
+        return false;
+    }
+    var absent = [null, -1.0];
+    for (var i = 0; i < absent.size(); i++) {
+        if (!Lock.near(StrongRowView.lockRateOf(absent[i]),
+                       $.LOCK_RATE_NONE)) {
+            logger.error("(a) an absent or negative period must encode as " +
+                         $.LOCK_RATE_NONE + "; " + absent[i] + " gave " +
+                         StrongRowView.lockRateOf(absent[i]));
+            return false;
+        }
+    }
+
+    // (b) and a REAL lock is the rate, at both ends of the band the estimator
+    // can produce -- so the field is a rate and not a period, which is the one
+    // thing a reader of the FIT cannot check for themselves.
+    var pairs = [[3.0, 20.0], [1.5, $.MAX_RATE], [10.0, $.MIN_RATE],
+                 [4.0, 15.0]];
+    for (var j = 0; j < pairs.size(); j++) {
+        var got = StrongRowView.lockRateOf(pairs[j][0]);
+        if (!Lock.near(got, pairs[j][1])) {
+            logger.error("(b) a lock period of " + pairs[j][0] + " s is " +
+                         pairs[j][1] + " spm; got " + got);
+            return false;
+        }
+    }
+
+    // (c) THE CONFIDENCE IS THE OPPOSITE CASE, and this is why it gets a
+    // negative sentinel instead of the same 0.0. A confidence of zero is an
+    // ORDINARY READING -- an uncorrelated signal -- so 0.0 cannot also mean
+    // "no estimate was computed".
+    if (!Lock.near(StrongRowView.lockConf(0.5, 0.0), $.LOCK_CONF_NONE)) {
+        logger.error("(c) a zero-energy window admits no confidence and must " +
+                     "encode as " + $.LOCK_CONF_NONE + "; got " +
+                     StrongRowView.lockConf(0.5, 0.0));
+        return false;
+    }
+    if (!($.LOCK_CONF_NONE < 0.0)) {
+        logger.error("(c) LOCK_CONF_NONE (" + $.LOCK_CONF_NONE + ") must be " +
+                     "negative. A computed confidence is a correlation over " +
+                     "an energy and is never negative, so that is the only " +
+                     "value that cannot collide with a real one -- and 0.0 " +
+                     "emphatically can");
+        return false;
+    }
+
+    // (d) a computed confidence survives verbatim, including the zero that the
+    // sentinel exists to be distinguishable FROM, and including the 0.35 the
+    // detector's own unlock gate is keyed on.
+    var cc = [[0.0, 1.0, 0.0], [0.35, 1.0, 0.35], [0.9, 2.0, 0.45],
+              [2.0, 1.0, 2.0]];
+    for (var k = 0; k < cc.size(); k++) {
+        var gc = StrongRowView.lockConf(cc[k][0], cc[k][1]);
+        if (!Lock.near(gc, cc[k][2])) {
+            logger.error("(d) lockConf(" + cc[k][0] + ", " + cc[k][1] +
+                         ") must be " + cc[k][2] + "; got " + gc);
+            return false;
+        }
+    }
+    if (Lock.near(StrongRowView.lockConf(0.0, 1.0), $.LOCK_CONF_NONE)) {
+        logger.error("(d) a COMPUTED confidence of zero must not collapse " +
+                     "onto the not-computed sentinel -- telling those two " +
+                     "apart is the entire reason this field is worth logging");
+        return false;
+    }
+    return true;
+}
+
+// THE RUN COUNTER SATURATES BELOW THE UINT16 INVALID PATTERN.
+//
+// mAcLowConf counts consecutive low-confidence estimates and is reset only by a
+// confident one, so it grows without bound on a long unlocked row -- past what
+// a UINT16 field can carry. Where it saturates is not a detail: 0xFFFF is the
+// UINT16 "no data" pattern (the fact RR_INVALID records), so saturating ONTO it
+// would turn the longest unlocked rows -- exactly the ones this field exists to
+// show -- into an apparent absence.
+(:test) function test_lock_theRunCounterSaturatesShortOfTheInvalidPattern(logger) {
+    // (a) ordinary values pass through, including the 3 the unlock fires at.
+    var pass = [0, 1, 3, 100, $.LOCK_LOW_MAX];
+    for (var i = 0; i < pass.size(); i++) {
+        if (StrongRowView.lockLowClamp(pass[i]) != pass[i]) {
+            logger.error("(a) " + pass[i] + " is inside the field's range and " +
+                         "must pass through; got " +
+                         StrongRowView.lockLowClamp(pass[i]));
+            return false;
+        }
+    }
+
+    // (b) and anything beyond it saturates.
+    if (StrongRowView.lockLowClamp(999999) != $.LOCK_LOW_MAX) {
+        logger.error("(b) a run past the field's range must saturate at " +
+                     $.LOCK_LOW_MAX + "; got " +
+                     StrongRowView.lockLowClamp(999999));
+        return false;
+    }
+
+    // (c) WHERE it saturates. 0xFFFF is the UINT16 no-data pattern; the
+    // saturating value has to stay under it.
+    if (!($.LOCK_LOW_MAX < 0xFFFF)) {
+        logger.error("(c) LOCK_LOW_MAX is " + $.LOCK_LOW_MAX + ", which " +
+                     "reaches the UINT16 invalid pattern 0xFFFF (" + 0xFFFF +
+                     "). A row unlocked long enough would then be recorded as " +
+                     "NO DATA rather than as a very long unlocked run -- the " +
+                     "opposite of what this field is for");
+        return false;
+    }
+
+    // (d) an impossible negative is not arithmetic. Unreachable from
+    // mAcLowConf, which only ever increments from zero; here so the contract
+    // belongs to the function and not to its one caller.
+    if (StrongRowView.lockLowClamp(-5) != 0) {
+        logger.error("(d) a negative run must clamp to 0; got " +
+                     StrongRowView.lockLowClamp(-5));
+        return false;
+    }
+    return true;
+}
+
+// THE SENTINEL IS REACHED BY THE SHIPPING ESTIMATOR, not only by the static.
+//
+// A pin on lockConf alone would say nothing about whether updateAutocorr ever
+// puts the sentinel back once a real confidence has been recorded. Driven as a
+// DIFFERENTIAL -- a confidence is planted, then quiet samples are fed through
+// the shipping onSensorData -- so a wiring that simply never wrote the member
+// would red here.
+(:test) function test_lock_theConfidenceSentinelIsRestoredByTheEstimator(logger) {
+    var p = new Lock.Probe();
+    p.setLockState(3.0, 0.9, 0);
+    if (!Lock.near(p.lockConfState(), 0.9)) {
+        logger.error("setup: the planted confidence did not take; got " +
+                     p.lockConfState());
+        return false;
+    }
+    // 30 batches of 25 zero samples is 750 samples: past AC_MIN_N (40 decimated
+    // samples = 200 raw) with margin, so updateAutocorr genuinely runs and
+    // finds a window with no energy at all. The clock here is the detector's
+    // own sample counter, never System.getTimer().
+    p.feedQuiet(30, 25);
+    if (!Lock.near(p.lockConfState(), $.LOCK_CONF_NONE)) {
+        logger.error("a window with no energy admits no confidence, so the " +
+                     "estimator must put the sentinel (" + $.LOCK_CONF_NONE +
+                     ") back rather than leave the last real number standing " +
+                     "-- a stale confidence is exactly the fabrication these " +
+                     "fields exist to prevent. Got " + p.lockConfState());
         return false;
     }
     return true;

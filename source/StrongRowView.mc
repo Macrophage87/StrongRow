@@ -148,6 +148,47 @@ const LOCK_GATE_FLOOR = 20.0;
 const LOCK_BASE_A_OK  = 0.25;
 const LOCK_BASE_A_REJ = 0.02;
 
+// ---- the LOCK-STATE DIAGNOSTICS (#149) -----------------------------------
+// #149's own words: "whether the lock was even up during these excursions is
+// exactly what I cannot tell from the recordings", and every account of the
+// over-reads -- including the one the change above rests on -- is inference
+// until it can be. Three record-scope fields answer it from one more row.
+//
+// WHAT "NO LOCK" IS WRITTEN AS, decided deliberately rather than by omission,
+// because RECORD-SCOPE FIELDS LATCH: once setData has been called even once, a
+// record committing without a new setData RE-EMITS the last value (#36,
+// byte-level, fr965 / SDK 9.2.0; reconfirmed by #48's probe_skip). So
+// WITHHOLDING A WRITE DOES NOT PRODUCE A GAP -- it fabricates a lock that was
+// not there, which is the exact opposite of what these fields are for. All
+// three are therefore written on EVERY tick under the mStarted && !mPaused
+// gate, and "no lock" gets an encoding instead of a silence.
+//
+//   LOCK_RATE_NONE   0.0 spm. This is NOT the #86 / #107 trap of rendering
+//                    absence as a legal value: updateAutocorr searches lags in
+//                    [60/MAX_RATE, 60/MIN_RATE] only, so a lock IS a rate in
+//                    [6.0, 40.0] spm by construction and 0.0 lies outside it.
+//                    Same argument the core/skin 0.0 lines already make, and it
+//                    is pinned (LOCK_RATE_NONE < MIN_RATE) rather than asserted
+//                    in prose.
+//
+//   LOCK_CONF_NONE   -1.0. Here 0.0 WOULD be the trap: a confidence of zero is
+//                    an ordinary reading (an uncorrelated signal), so it cannot
+//                    also mean "no estimate was computed". The computed value
+//                    is a ratio of a correlation to an energy and is
+//                    non-negative by construction, so a negative sentinel
+//                    cannot collide with one.
+//
+//   the run counter  written verbatim, SATURATED. mAcLowConf counts consecutive
+//                    low-confidence estimates and is never reset except by a
+//                    confident one, so it grows without bound on a long
+//                    unlocked row. LOCK_LOW_MAX is one below 0xFFFF because
+//                    0xFFFF is the UINT16 "no data" pattern (the same fact
+//                    RR_INVALID records) -- saturating ONTO it would turn a
+//                    long unlocked row into an apparent absence.
+const LOCK_RATE_NONE = 0.0;
+const LOCK_CONF_NONE = -1.0;
+const LOCK_LOW_MAX   = 65534;
+
 // #110 -- left-edge heart-rate arc. At module (global) scope for exactly the
 // reason the R-R constants above are: a Monkey C class `const` is an instance
 // member, unreachable from a static method, and every decision this feature
@@ -643,6 +684,16 @@ class StrongRowView extends Ui.View {
     hidden var mAcBatch;
     hidden var mAcPeriod;
     hidden var mAcLowConf;
+    // #149: the LAST COMPUTED autocorrelation confidence, or LOCK_CONF_NONE
+    // when none has been computed (before the first estimate, and whenever the
+    // signal window carries no energy at all). Written by updateAutocorr, read
+    // only by the diagnostic write in onTick -- it gates nothing.
+    //
+    // "LAST COMPUTED", precisely: updateAutocorr returns early when there is
+    // not yet enough history, when the lag range collapses, or when the window
+    // is too short. Those rounds compute nothing and leave this standing, which
+    // is what makes the field's name honest.
+    hidden var mAcConf;
 
     // #110 heart-rate state. THREE fields, and the split is the whole point:
     //   mHrBpm     the last VALID reading. Never consulted for presence.
@@ -708,6 +759,10 @@ class StrongRowView extends Ui.View {
     hidden var mFitMaxCore;
     hidden var mFitCtDiag;
     hidden var mFitHsi;
+    // #149's lock-state diagnostics, record scope, ids 20-22.
+    hidden var mFitLockRate;
+    hidden var mFitLockConf;
+    hidden var mFitLockLow;
     hidden var mMaxCore;
     hidden var mStartMs;
 
@@ -753,6 +808,9 @@ class StrongRowView extends Ui.View {
         mFitMaxCore = null;
         mFitCtDiag  = null;
         mFitHsi     = null;
+        mFitLockRate = null;
+        mFitLockConf = null;
+        mFitLockLow  = null;
         mMaxCore    = 0.0;
         mHrBpm      = 0;
         mLastHrMs   = 0;
@@ -899,6 +957,7 @@ class StrongRowView extends Ui.View {
         mAcBatch     = 0;
         mAcPeriod    = 0.0;
         mAcLowConf   = 0;
+        mAcConf      = $.LOCK_CONF_NONE;   // #149: nothing computed yet
     }
 
     // Allocation seams for the two app-lifetime resources onLayout owns. Split
@@ -1396,7 +1455,11 @@ class StrongRowView extends Ui.View {
 
         var e = 0.0;
         for (var k = n - w; k < n; k++) { e += buf[k] * buf[k]; }
-        if (e <= 0.0) { mAcPeriod = 0.0; return; }
+        // #149: a window with no energy admits no confidence at all, so the
+        // sentinel goes in rather than the previous round's number. That is a
+        // DIFFERENT state from "computed, and it was zero", and the two must
+        // not be written the same way.
+        if (e <= 0.0) { mAcPeriod = 0.0; mAcConf = $.LOCK_CONF_NONE; return; }
 
         var rr = new [maxLag + 1];
         var best = 0.0;
@@ -1408,9 +1471,15 @@ class StrongRowView extends Ui.View {
             if (s > best) { best = s; bestL = lag; }
         }
 
+        // #149: record the confidence the gate below is about to be taken on.
+        // e > 0.0 is established above and `best` starts at 0.0 and only grows,
+        // so lockConf here is exactly `best / e` -- the substitution in the
+        // condition below is an equality, not a re-tuning.
+        mAcConf = lockConf(best, e);
+
         // three consecutive low-confidence evaluations to unlock, so a brief
         // lull mid-piece can't drop the period gate and let artifacts through
-        if (bestL == 0 || best / e < AC_MIN_CONF) {
+        if (bestL == 0 || mAcConf < AC_MIN_CONF) {
             mAcLowConf++;
             if (mAcLowConf >= 3) { mAcPeriod = 0.0; }
             return;
@@ -2882,6 +2951,49 @@ class StrongRowView extends Ui.View {
     // more than 30% snaps to it (kills residual half/double readings)
     hidden function outputRate() {
         return gatedRate(mRate, mAcPeriod, mRateBase);
+    }
+
+    // ---- the lock-state diagnostic encodings (#149) ----------------------
+    // Three pure statics, one per field, so what each field CARRIES is a
+    // reviewable decision with a name rather than an expression buried in a
+    // setData argument -- and so the no-lock encodings can be pinned without a
+    // Session, which no (:test) in this repository can obtain.
+
+    // Pure: the LOCKED stroke rate in spm, or LOCK_RATE_NONE when no lock is
+    // up. See the LOCK_RATE_NONE note at the top of this file for why 0.0 is
+    // not an in-band value here: updateAutocorr searches only lags in
+    // [60/MAX_RATE, 60/MIN_RATE], so a lock is a rate in [MIN_RATE, MAX_RATE].
+    static function lockRateOf(acPeriod) {
+        if (acPeriod == null || acPeriod <= 0.0) { return $.LOCK_RATE_NONE; }
+        return 60.0 / acPeriod;
+    }
+
+    // Pure: the autocorrelation confidence -- the best lag's correlation as a
+    // fraction of the window's energy -- or LOCK_CONF_NONE when the window
+    // carries no energy and no confidence exists to report.
+    //
+    // The clamp at zero is defensive and not reachable from updateAutocorr
+    // (`best` starts at 0.0 and only grows), and it is here so the field's
+    // contract -- "a real confidence is never negative, so a negative value is
+    // the sentinel" -- is a property of THIS function rather than of its one
+    // caller.
+    static function lockConf(best, e) {
+        if (best == null || e == null || e <= 0.0) { return $.LOCK_CONF_NONE; }
+        var c = best / e;
+        return (c < 0.0) ? 0.0 : c;
+    }
+
+    // Pure: the consecutive low-confidence run, saturated for a UINT16 field.
+    //
+    // mAcLowConf is never reset except by a confident estimate, so it grows
+    // without bound on a long unlocked row. SATURATING ONE BELOW 0xFFFF is the
+    // point: 0xFFFF is the UINT16 "no data" pattern (the same fact RR_INVALID
+    // records), so saturating onto it would turn the longest unlocked rows --
+    // the ones this field exists to show -- into an apparent absence.
+    static function lockLowClamp(n) {
+        if (n == null || n < 0) { return 0; }
+        if (n > $.LOCK_LOW_MAX) { return $.LOCK_LOW_MAX; }
+        return n;
     }
 
     // Advance the baseline. Called from recomputeRate() and nowhere else.
