@@ -61,17 +61,58 @@ DECL_RE = re.compile(_DECL_SRC)
 # missing" AND "unexpected" for the same test. That is the same unfixable
 # deadlock the module docstring above describes, reached from a new direction.
 #
+# DEPTH IS MEASURED, not extrapolated. The dotted path was first confirmed at
+# ONE level only, and the two-level expectation was then asserted from it. On
+# fr965 / SDK 9.2.0 a throwaway probe carrying one (:test) at file scope and one
+# at each of three depths printed
+#
+#     test_zzp_atFileScope                                 PASS
+#     ZzpA.test_zzp_oneDeep                                PASS
+#     ZzpA.ZzpB.test_zzp_twoDeep                           PASS
+#     ZzpA.ZzpB.ZzpC.test_zzp_threeDeep                    PASS
+#
+# so the FULL path, every segment, at every depth, is what the runner prints --
+# which is what the brace walk below builds. Pinned in test_list_tests.py by
+# "three module levels qualify with the whole path".
+#
 # WHY ANY OF THIS MATTERS RATHER THAN BEING A STYLE OPTION. MEASURED, SDK 9.2.0:
 # a --unit-test build of this repository for the fenix6 family (fenix6, 6pro,
 # 6spro, 6xpro) fails with
 #
 #     Found N members in module 'globals', exceeding the limit of 253
 #
-# and on the commit this was written against N was already 246. Every file-scope
-# (:test), helper function and test class costs one. SEVEN slots remained for
-# the whole repository, and a suite of 26 new cases needs 26 of them. Tests
-# inside a module cost ONE member between them, which is what makes further
-# testing possible on those four devices at all.
+# Every file-scope (:test), helper function and test class costs one member; a
+# module-scope const costs none (it is inlined); a `module { }` block costs one,
+# and everything declared inside it leaves 'globals' entirely.
+#
+# The count is only printed once it is ALREADY over, so it has to be probed:
+# drop N throwaway file-scope (:test) functions into source/, compile for
+# fenix6 --unit-test, and read N back out of the reported total. Measured that
+# way, and both figures are of the whole repository, not of one file. The two
+# lines below are the machine-readable form scripts/check_ceiling_notes.py
+# checks -- its arithmetic, and that source/FootStateTest.mc's copies of them
+# are identical, so the two records can no longer drift apart:
+#
+#     CEILING 2b23b03 fenix6-family: 252 used of 253, 1 free -- the 2nd file-scope (:test) added reds
+#     CEILING post-move fenix6-family: 238 used of 253, 15 free -- the 16th file-scope (:test) added reds
+#
+# (`2b23b03` is main before this work; `post-move` is this branch with
+# FootStateTest inside `module Foot`.)
+#
+# THE LIMIT IS INCLUSIVE, and an earlier version of this comment got the
+# consequence wrong in the sentence directly under the correct count -- it said
+# the NEXT file-scope (:test) red the check. RETRACTED: 253 members BUILDS.
+# Bisected against every device the claim names, base 2b23b03, SDK 9.2.0:
+#
+#     N=1  fenix6 / fenix6pro / fenix6spro / fenix6xpro   BUILD SUCCESSFUL
+#     N=2  all four   Found 254 members in module 'globals', exceeding 253
+#
+# So one slot was genuinely spendable and it is the SECOND added test that reds
+# the required compile-unit-test check on those four devices, with an error
+# naming neither the test nor the file, while fr965 (which run-tests uses) and
+# release-build stay green -- so a green local run proves nothing. Tests inside
+# a module cost ONE member between them, which is what makes further testing
+# possible on those four devices at all.
 #
 # The scanner is deliberately crude: a balanced-brace walk over the
 # comment-stripped, literal-blanked text. `module NAME {` pushes NAME, any other

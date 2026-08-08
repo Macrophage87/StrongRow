@@ -157,22 +157,27 @@ test_rate_belowDiffersFromAbove
 test_rate_justBelowLoIsBlue
 test_rate_justAboveHiIsRed
 
-# source/FootStateTest.mc
-test_foot_failedRecordingNeverRendersAsRecording
-test_foot_failedIsDistinctFromIdle
-test_foot_noAccelOutranksAllOtherStates
-test_foot_failedOutranksStalePaused
-test_foot_recordingWhenStartedAndHealthy
-test_foot_pausedWhenStartedAndPaused
-test_foot_idleBeforeStart
-test_foot_theFiveStatesAreDistinct
-test_pause_unconfirmedResumeStillOpensTheWriteGate
-test_pause_confirmedResumeClearsBothFlags
-test_pause_refusedStopClearsAStaleFailure
-test_pause_takenPausePreservesAnExistingFailure
-test_pause_healthyPauseRaisesNoFailure
-test_pause_pausedNeverFailsClosed
-test_pause_failureClearedOnlyOnPositiveEvidence
+# source/FootStateTest.mc -- inside `module Foot`, so the names carry the module.
+# NOT a rename of the tests: the simulator prints `Foot.test_foot_...` for a
+# (:test) declared inside a module block, and this pin has to carry the name the
+# RUNNER prints or check_ciq_tests.py reports every one of them as both missing
+# and unexpected. The move exists to buy fenix6 headroom -- fifteen file-scope
+# members became one; see the ceiling note at the top of FootStateTest.mc.
+Foot.test_foot_failedRecordingNeverRendersAsRecording
+Foot.test_foot_failedIsDistinctFromIdle
+Foot.test_foot_noAccelOutranksAllOtherStates
+Foot.test_foot_failedOutranksStalePaused
+Foot.test_foot_recordingWhenStartedAndHealthy
+Foot.test_foot_pausedWhenStartedAndPaused
+Foot.test_foot_idleBeforeStart
+Foot.test_foot_theFiveStatesAreDistinct
+Foot.test_pause_unconfirmedResumeStillOpensTheWriteGate
+Foot.test_pause_confirmedResumeClearsBothFlags
+Foot.test_pause_refusedStopClearsAStaleFailure
+Foot.test_pause_takenPausePreservesAnExistingFailure
+Foot.test_pause_healthyPauseRaisesNoFailure
+Foot.test_pause_pausedNeverFailsClosed
+Foot.test_pause_failureClearedOnlyOnPositiveEvidence
 
 # source/SetSummaryTest.mc
 test_set_noStrokesIsNullNotZero

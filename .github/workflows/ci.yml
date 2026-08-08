@@ -117,6 +117,23 @@ jobs:
         # against the Monkey C, and re-derives every published figure from
         # scripts/fixtures/cue_work_laps.txt. Pure Python: no container, no SDK.
         run: python3 scripts/test_cue_replay.py
+      - name: Ceiling-note checker self-test (runner-free RED/GREEN)
+        # Hermetic scratch trees only, same shape as the two suites above.
+        run: python3 scripts/test_check_ceiling_notes.py
+      - name: Check the globals CEILING notes against the real tree
+        # The fenix6 family caps module `globals` at 253 members, the compiler
+        # prints the count only once already over, and the repository keeps the
+        # measurement in two files. Both copies shipped the correct count and
+        # then drew the wrong consequence from it in the next clause ("the NEXT
+        # file-scope (:test) reds" -- the limit is inclusive, so it is the
+        # second). This step re-derives that consequence arithmetically and
+        # fails if the copies disagree.
+        #
+        # It lives in test-tooling rather than in a job of its own ON PURPOSE:
+        # `ci-required` gates on a fixed `needs:` list, so a new job would be
+        # unrequired and could red for months without blocking anything -- the
+        # exact failure mode this check exists to prevent, one level up.
+        run: python3 scripts/check_ceiling_notes.py
 
   # 3) Compile the unit-test build for EVERY manifest device in ONE job, so the
   #    SDK image is pulled once (not once per device via a matrix). A per-device
