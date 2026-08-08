@@ -484,5 +484,164 @@ module Lock {
     return true;
 }
 
+// -- c2: the differentials ----------------------------------------------------
+//
+// THE THREE CASES BELOW ARE RED AGAINST c1 AND GREEN ONLY AT c3. That is the
+// whole job of this commit: fastGate() still returns the absolute constant, so
+// each fails first and is then made to pass by a commit that touches no test
+// file.
+//
+// THE RULE THEY PIN, stated once:
+//
+//     gate(base) = min( FAST_NEEDS_LOCK,
+//                       max( LOCK_GATE_FLOOR, LOCK_REL_K * base ) )
+//     gate(none) = FAST_NEEDS_LOCK
+//
+// which is #149's three bars in one line: never looser than the absolute
+// (the outer min, pinned by theGuardIsNeverLoosenedAtAnyRate at c1), the same
+// MULTIPLE for every athlete (the LOCK_REL_K term), and a fallback that still
+// guards (gate(none)).
+//
+// WHY A FLOOR AT ALL, since #149 does not ask for one. The gate ZEROES a
+// reading, and a zeroed reading does not establish the baseline, so a baseline
+// that has drifted well under the rate the athlete is about to row at could
+// otherwise reject the whole of the next interval. The recorded workout is
+// 8 x 3' with 2' rests and the rests ARE rowed, so a rest-cadence baseline
+// meeting a work interval is the ordinary case. LOCK_GATE_FLOOR is
+// LOCK_REF_RATE: at or below the rate the absolute constant was calibrated at
+// the gate stops tracking down and holds where a 20 spm rower's guard has
+// always been. It binds only under 13.33 spm and does not touch #149's worked
+// example.
+
+// THE GATE TRACKS THE ROWER. #149's second acceptance bar, stated three ways so
+// a partial implementation cannot satisfy it.
+(:test) function test_lock_theGateTracksTheRowerNotAFixedThirty(logger) {
+    // (a) the worked example from #149, as a number.
+    var g15 = StrongRowView.fastGate(15.0);
+    if (!Lock.near(g15, $.LOCK_REL_K * 15.0)) {
+        logger.error("(a) a rower who has established 15.0 spm must be gated " +
+                     "at " + ($.LOCK_REL_K * 15.0) + " spm; got " + g15 +
+                     ". An absolute gate here is 1.98x this athlete's own " +
+                     "rate -- the defect #149 measured");
+        return false;
+    }
+
+    // (b) THE BAR ITSELF: the 15 spm rower gets the SAME MULTIPLE the 20 spm
+    // rower already had. Stated as a ratio rather than as two numbers, so it
+    // keeps holding if the constants are ever retuned together.
+    var r15 = StrongRowView.fastGate(15.0) / 15.0;
+    var r20 = StrongRowView.fastGate($.LOCK_REF_RATE) / $.LOCK_REF_RATE;
+    if (!Lock.near(r15, r20)) {
+        logger.error("(b) the guard must be the same MULTIPLE of every " +
+                     "athlete's own rate: a 15.0 spm rower gets " + r15 +
+                     "x and a " + $.LOCK_REF_RATE + " spm rower gets " + r20 +
+                     "x. The whole finding in #149 is that these two differ");
+        return false;
+    }
+
+    // (c) AND IT FIRES BELOW A FULL DOUBLING, which is the practical
+    // consequence and the thing an athlete would notice. A doubled stroke
+    // period is what the guard defends against; a guard that only fires PAST
+    // the doubling catches it barely or not at all.
+    if (!(g15 < 2.0 * 15.0)) {
+        logger.error("(c) the guard on a 15.0 spm rower must fire below a full " +
+                     "doubling (30.0 spm); it sits at " + g15 +
+                     ", i.e. at or past the very error it exists to catch");
+        return false;
+    }
+    return true;
+}
+
+// THE FLOOR AND THE CEILING, and the band between them where the rule is purely
+// relative.
+(:test) function test_lock_theGateHasAFloorAndKeepsTheAbsoluteCeiling(logger) {
+    // (a) below LOCK_GATE_FLOOR / LOCK_REL_K the floor binds. 8.0 spm is a rest
+    // paddle, and gating a work interval at 12.0 spm because the athlete was
+    // resting is a worse failure than the one being fixed.
+    var g8 = StrongRowView.fastGate(8.0);
+    if (!Lock.near(g8, $.LOCK_GATE_FLOOR)) {
+        logger.error("(a) an 8.0 spm baseline is under the floor, so the gate " +
+                     "must hold at LOCK_GATE_FLOOR (" + $.LOCK_GATE_FLOOR +
+                     "); got " + g8);
+        return false;
+    }
+
+    // (b) just above the knee the rule is purely relative again, so the floor
+    // is a floor and not a second regime. 14.0 x 1.5 = 21.0, over the floor.
+    var g14 = StrongRowView.fastGate(14.0);
+    if (!Lock.near(g14, $.LOCK_REL_K * 14.0)) {
+        logger.error("(b) 14.0 spm is above the floor's knee (" +
+                     ($.LOCK_GATE_FLOOR / $.LOCK_REL_K) + " spm), so the gate " +
+                     "must be the relative " + ($.LOCK_REL_K * 14.0) +
+                     "; got " + g14);
+        return false;
+    }
+
+    // (c) the absolute ceiling survives. A fast rower's relative gate would
+    // exceed the shipped constant, and #149's first bar forbids that.
+    var g40 = StrongRowView.fastGate(40.0);
+    if (!Lock.near(g40, $.FAST_NEEDS_LOCK)) {
+        logger.error("(c) 1.5 x 40.0 is 60.0, above the shipped absolute, so " +
+                     "the gate must clamp to FAST_NEEDS_LOCK (" +
+                     $.FAST_NEEDS_LOCK + "); got " + g40);
+        return false;
+    }
+    return true;
+}
+
+// END TO END ON THE SHIPPING PATH, which is what separates "the arithmetic is
+// right" from "the app does this".
+//
+// The baseline is established by driving REAL STROKES through registerStroke()
+// / recomputeRate(), never assigned; the verdict is read back through
+// outputRate(). Both bands are exercised, so the case cannot be satisfied by
+// something that simply zeroes more.
+(:test) function test_lock_aLowRateRowerIsGuardedThroughTheShippingPath(logger) {
+    // (a) THE DIFFERENTIAL. A 15.0 spm rower, then a reading at 25.0 spm with
+    // no lock to corroborate it. The shipped rule passes that straight through
+    // to row_stroke_rate, dist_per_stroke, corrective_rate and the numeral,
+    // because 25 is under 30.
+    var p = new Lock.Probe();
+    p.rowAt(15.0, 8);
+    p.setDetector(25.0, 0.0);
+    if (!Lock.near(p.out(), 0.0)) {
+        logger.error("(a) a rower established at 15.0 spm, reading 25.0 with " +
+                     "NO autocorrelation lock, must be gated: 25.0 is 1.67x " +
+                     "this athlete's own rate and nothing independent " +
+                     "corroborates it. Got " + p.out() + " -- which is what " +
+                     "reaches row_stroke_rate, dist_per_stroke and the numeral");
+        return false;
+    }
+
+    // (b) AND THE GUARD IS NOT MERELY 'ZERO MORE'. Just under the gate, the
+    // same rower's reading still passes untouched. Without this section an
+    // implementation that zeroed everything would satisfy (a).
+    var q = new Lock.Probe();
+    q.rowAt(15.0, 8);
+    q.setDetector(22.0, 0.0);
+    if (!Lock.near(q.out(), 22.0)) {
+        logger.error("(b) 22.0 spm is under the 15.0 spm rower's gate of " +
+                     ($.LOCK_REL_K * 15.0) + " and must pass through " +
+                     "untouched; got " + q.out());
+        return false;
+    }
+
+    // (c) THE 20 SPM ROWER IS NOT PUNISHED FOR THE FIX. #149's calm row sat at
+    // 20.3 spm and was already guarded at 1.48x; the change must leave that
+    // athlete exactly where they were. Green in both epochs on purpose -- it is
+    // the "never looser AND never gratuitously tighter" half of the bar, at the
+    // one rate where the two rules coincide.
+    var r = new Lock.Probe();
+    r.rowAt(20.0, 8);
+    r.setDetector(29.0, 0.0);
+    if (!Lock.near(r.out(), 29.0)) {
+        logger.error("(c) a rower established at " + $.LOCK_REF_RATE + " spm " +
+                     "is gated exactly where the shipped absolute put them, " +
+                     "so 29.0 must still pass; got " + r.out());
+        return false;
+    }
+    return true;
+}
+
 // ---- end of `module Lock` -------------------------------------------------
 }
