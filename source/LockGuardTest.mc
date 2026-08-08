@@ -1110,6 +1110,77 @@ module Lock {
     return true;
 }
 
+// AND THE RESUME IS NOT GUARDED BY THE PAUSE'S CADENCE.
+//
+// THE SECOND HALF OF THE SAME DEFECT, and it needs its own case because the
+// pause flag alone does not close it. mPeriods survives the pause, so the first
+// medians AFTER the resume are still the pause's; the baseline takes them at
+// LOCK_BASE_A_OK and can only creep back at LOCK_BASE_A_REJ, because the guard
+// never rejects a reading for being too SLOW. Measured through this very path
+// with the pause flag and nothing else: a 20 spm rower whose pause was gestured
+// at 8 spm and who resumed at 24 spm lost 15 strokes of row_stroke_rate to 0.0,
+// and 24 strokes when the resume was 26 spm.
+//
+// WHAT THIS CASE ASSERTS IS THE OUTCOME, not the mechanism: across a whole
+// row / pause / resume timeline driven through registerStroke(), no stroke of
+// the resumed piece may come out of the shipping outputRate() as 0.0. An
+// implementation that reaches that by any other means passes, and should.
+(:test) function test_lock_theResumeIsNotGuardedByThePausesCadence(logger) {
+    // Four timelines. The pause cadences are inside registerStroke's accepted
+    // band (6..40 spm), which is what makes them reach the ring at all; the
+    // resume rates are the band where the relative gate can bite, since the gate
+    // never falls below LOCK_GATE_FLOOR.
+    var cases = [[20.0, 8.0, 24.0], [20.0, 8.0, 22.0],
+                 [15.0, 8.0, 22.0], [20.0, 6.0, 26.0]];
+    for (var i = 0; i < cases.size(); i++) {
+        var row = cases[i][0];
+        var gest = cases[i][1];
+        var back = cases[i][2];
+
+        var p = new Lock.Probe();
+        p.enterStepLive(p.kindWork(), false);
+        var t = p.rowFrom(row, 8, 0.0);
+        if (!Lock.near(p.rateBase(), row)) {
+            logger.error("setup: eight strokes at " + row + " spm must " +
+                         "establish " + row + "; got " + p.rateBase());
+            return false;
+        }
+
+        // The pause: sustained non-rowing motion, no ring timeout (nothing
+        // drives onSensorData here, and the cadences are inside the band).
+        p.enterStepLive(p.kindWork(), true);
+        t = p.rowFrom(gest, 10, t);
+
+        // The resume. NO autocorrelation lock -- the state the whole relative
+        // gate is about, and the one the lock_* diagnostics exist because no
+        // recording can rule out.
+        p.enterStepLive(p.kindWork(), false);
+        for (var k = 0; k < 24; k++) {
+            t = p.rowFrom(back, 1, t);
+            var o = p.out();
+            // The first strokes after a resume still carry the pause's median,
+            // which is PRE-EXISTING and deliberate (the numeral must not blank
+            // for NPER strokes) -- so a slow reading here is expected. What is
+            // forbidden is a ZERO, which means the guard rejected the athlete's
+            // own rate.
+            if (o <= 0.0) {
+                logger.error("a rower established at " + row + " spm paused, " +
+                             "gestured at " + gest + " spm and resumed at " +
+                             back + " spm: stroke " + k + " of the resumed " +
+                             "piece came out of outputRate() as " + o +
+                             ", with the baseline at " + p.rateBase() +
+                             " and the gate at " +
+                             StrongRowView.fastGate(p.rateBase()) +
+                             ". That 0.0 is what row_stroke_rate and " +
+                             "dist_per_stroke carry for real rowing, and " +
+                             "drawRate renders it '--.-'");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // A SNAPPED READING MUST NOT FEED THE MEDIAN IT CORRECTED.
 //
 // gatedRate returns a NON-ZERO value in two quite different situations: the
