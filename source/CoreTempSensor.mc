@@ -667,14 +667,22 @@ class CoreTempSensor {
             // app that does not crash comes first.
             //
             // AND IT IS NOT SILENT. CT_DIAG_F_RETRY_LOST is set here and nowhere
-            // else, and read out in slot CT_DIAG_I_FLAGS -- so the file says
-            // "the ladder stopped for want of a timer" rather than leaving a
-            // reader to infer it from an openAttempt that never came. Read it
-            // with the neighbouring counters: with openOk == 0 the channel never
-            // opened at all, and with openOk > 0 and chanClosed > 0 the pod was
-            // being searched for and the search was not re-armed. A bit, not a
-            // new slot, so the array length -- and the createField `:count` that
-            // must match it -- does not move.
+            // else, and diagSnapshot() ORs it into slot CT_DIAG_I_FLAGS -- so a
+            // reader gets "the ladder stopped for want of a timer" as positive
+            // evidence instead of inferring it from an openAttempt that never
+            // came. Read it with the neighbouring counters: with openOk == 0 the
+            // channel never opened at all, and with openOk > 0 and
+            // chanClosed > 0 the pod was being searched for and the search was
+            // not re-armed. A bit, not a new slot, so the array length -- and
+            // the createField `:count` that must match it -- does not move.
+            //
+            // Scope of that claim, because this file is strict about it: what is
+            // asserted here is what the CODE WRITES. That slot 17 reaches a
+            // saved file at all is the simulator measurement recorded in the
+            // CT_DIAG_* block above (fr965 / SDK 9.2.0, decoded with fitparse);
+            // this particular bit has never been seen in a decoded file, and
+            // whether a real watch agrees is #77's question, not an assumption
+            // made here.
             //
             // NOT MEASURED, and not claimed: whether Timer.start() ever fails
             // here on a watch. The one real-row ct_diag readout available (#122)
