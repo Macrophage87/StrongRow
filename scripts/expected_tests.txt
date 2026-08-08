@@ -19,6 +19,24 @@
 # NOTE: it does NOT prove the tests are meaningful. Shared-helper rot (rrArrEq is
 # the entire assertion for 11 of the 14 RR tests) leaves this list unchanged.
 
+# source/CoreDropoutTest.mc -- inside `module CoreDrop`, so the names carry the
+# module: the simulator prints `CoreDrop.test_ctw_...` for a (:test) declared
+# inside a module block, and this pin has to carry the name the RUNNER prints.
+# The module exists to spend ONE fenix6 globals member instead of one per test;
+# see the ceiling note at the top of scripts/list_tests.py.
+CoreDrop.test_ctw_c0_noAcceptedCoreIsZeroOrBelow
+CoreDrop.test_ctw_c0_noAcceptedSkinIsZeroOrBelow
+CoreDrop.test_ctw_c1_aCurrentReadingIsAlwaysWritable
+CoreDrop.test_ctw_c1_theDropoutMarkerSurvivesTheLatchTrap
+CoreDrop.test_ctw_c1_theMaximumIsARunningMaximum
+CoreDrop.test_ctw_c1_aDropoutNeitherRaisesNorLowersTheMaximum
+CoreDrop.test_ctw_c1_everLatchesOnlyOnARealReading
+CoreDrop.test_ctw_c1_everNeverRunsAheadOfAWrite
+CoreDrop.test_ctw_c2_theSilentPrefixWritesNothing
+CoreDrop.test_ctw_c2_aPodlessRowWritesNothingAtAll
+CoreDrop.test_ctw_c2_theFirstValueEverWrittenIsARealReading
+CoreDrop.test_ctw_c2_nullIsNeverHandedToSetData
+
 # source/CoreFieldGateTest.mc
 test_core_gateFalseWhenSensorNull
 test_core_gateTrueWhenPodSeen
