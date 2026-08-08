@@ -644,6 +644,11 @@ class StrongRowView extends Ui.View {
     // when the stroke ring times out, so a long gap degrades to the absolute
     // gate rather than to a stale baseline from a previous piece.
     hidden var mRateBase;
+    // #149 round 2: strokes still to be withheld from the baseline. Set to NPER
+    // whenever a stroke registers DURING A PAUSE and counted down after the
+    // resume, because mPeriods survives the pause and the first medians after it
+    // are still the pause's. See updateRateBase for the measurement.
+    hidden var mBaseHold;
     hidden var mStrokeCount;
 
     // ---- per-work-interval accumulators (#109) --------------------------
@@ -940,6 +945,7 @@ class StrongRowView extends Ui.View {
         mPCount      = 0;
         mRate        = 0.0;
         mRateBase    = 0.0;
+        mBaseHold    = 0;
         // #126: mStrokeCount is deliberately NOT reset here. resetDetector runs
         // ONCE PER APP LAUNCH -- initialize() is its only caller -- and owns DSP
         // state; the stroke count is session-scoped and is reset by
@@ -2792,14 +2798,34 @@ class StrongRowView extends Ui.View {
                 // THAT IS A TRADE, NOT A CLEAN WIN, and the cost follows from
                 // the same premise as the paragraph above: sustained motion at
                 // a 1.5-10 s cadence during a pause holds the median at a rate
-                // no COUNTED stroke produced, and it survives the first two
-                // strokes after the resume because NPER is 5. It reaches more
-                // than the numeral -- outputRate feeds distPerStroke (and so
-                // mFitDps), rateColour's band, and correctiveRate's
-                // session-scope mCorrAccum. A quiet pause is safe: the ring
-                // times out after 4-12 s. Pre-existing behaviour, unchanged
-                // here; recorded so the next reader does not take it for
-                // deliberate correctness.
+                // no COUNTED stroke produced, and it survives the first strokes
+                // after the resume because NPER is 5. It reaches FOUR things,
+                // and they do NOT share a bound:
+                //
+                //   THE THREE THAT ARE BOUNDED. outputRate feeds the numeral,
+                //   distPerStroke (and so mFitDps), rateColour's band and
+                //   correctiveRate's session-scope mCorrAccum -- all under
+                //   onTick's mStarted && !mPaused gate, so they take the
+                //   contamination only AFTER the resume and only until the
+                //   median clears, which is a couple of strokes because NPER
+                //   is 5. Pre-existing behaviour, unchanged here.
+                //
+                //   mRateBase (#149) IS NOT ONE OF THEM, and that is why
+                //   updateRateBase carries a pause gate and a post-resume hold
+                //   of its own -- see its note. The baseline is an EMA, so it
+                //   does not "clear" when the median does; and it sets the
+                //   NO-LOCK GATE, so a baseline dragged down by a phantom
+                //   cadence ZEROES the athlete's own rate rather than merely
+                //   misreporting it, in the FILE. Left ungated it cost tens of
+                //   strokes of row_stroke_rate and dist_per_stroke reading 0.0
+                //   over real rowing (measured; the figures are in
+                //   updateRateBase's note). The gate and the hold are NEW in
+                //   #149, not pre-existing, and they close the whole of that
+                //   fourth cost -- not the three above it.
+                //
+                // A quiet pause is safe for all four: the ring times out after
+                // 4-12 s and takes the baseline with it. Recorded so the next
+                // reader does not take any of this for deliberate correctness.
                 if (!mPaused) { mStrokeCount++; }
                 recomputeRate();
             }
@@ -2939,35 +2965,59 @@ class StrongRowView extends Ui.View {
     // Pure: the established-rate baseline after one stroke.
     //
     //   base       the baseline before this stroke, 0.0 for NONE YET
-    //   guarded    what the guard returned for this stroke (0.0 = REJECTED)
+    //   guarded    what the OUTPUT STAGE PUBLISHED for this stroke, i.e. what
+    //              gatedRate returned. 0.0 means it published nothing.
     //   raw        the detector's median for this stroke
     //
-    // THE FIRST ACCEPTED READING ESTABLISHES THE BASELINE OUTRIGHT rather than
+    // THE BASELINE FOLDS IN WHAT THE APP BELIEVED, NOT WHAT THE DETECTOR SAID.
+    // That distinction is the whole of this function and it was got wrong once
+    // (round 2, finding 5/6), so it is written out. gatedRate has THREE
+    // outcomes, not two:
+    //
+    //   PASSED THROUGH   guarded == raw. The ordinary case.
+    //   ZEROED           guarded == 0.0. No lock corroborated a reading above
+    //                    fastGate(base), so nothing was published.
+    //   CORRECTED        guarded > 0.0 AND guarded != raw -- the lock SNAP
+    //                    (gatedRate, the LOCK_SNAP_K branch), and the MAX_RATE
+    //                    clamp. The output stage has just declared `raw` wrong
+    //                    and substituted its own answer.
+    //
+    // The earlier revision tested only `guarded > 0.0` and then folded in `raw`,
+    // so a CORRECTED reading counted as corroboration and the discarded median
+    // set the bar. Measured, on this tree: a first-stroke median of 38.0 spm
+    // against a 20.0 spm lock snapped to 20.0 and still established a baseline
+    // of 38.0, which fastGate maps to FAST_NEEDS_LOCK exactly -- the relative
+    // gate collapsing to the absolute constant it exists to replace, disarmed
+    // by the very readings the snap flagged as errors.
+    //
+    // THE FIRST PUBLISHED READING ESTABLISHES THE BASELINE OUTRIGHT rather than
     // easing a zero toward it, because an EMA started from 0.0 would spend its
     // first strokes claiming the athlete rows at 4 spm and would gate them at
     // the floor for no reason.
     //
-    // A REJECTED READING STILL MOVES THE BASELINE, slowly, and that clause is
-    // the escape hatch rather than an oversight: see the LOCK_BASE_A_REJ note
-    // at the top of this file. Without it the guard can deadlock -- reject, so
-    // the baseline never moves, so reject -- and the deadlock is permanent
-    // because a rejected reading is exactly the one that would have lifted the
-    // bar. With it, a sustained genuine step up wins after some tens of strokes
-    // and a burst does not last long enough to.
+    // A ZEROED READING STILL MOVES THE BASELINE, slowly, and that clause is the
+    // escape hatch rather than an oversight: see the LOCK_BASE_A_REJ note at the
+    // top of this file. Without it the guard can deadlock -- reject, so the
+    // baseline never moves, so reject -- and the deadlock is permanent because a
+    // rejected reading is exactly the one that would have lifted the bar. With
+    // it, a sustained genuine step up wins after some tens of strokes and a
+    // burst does not last long enough to. It is the ONE path that still reads
+    // `raw`, and it must: nothing was published, so there is no other number.
     //
     // A ZERO RAW IS NOT A READING. mRate is 0.0 when the stroke ring has timed
     // out or nothing has been measured, and folding that in would drag the
     // baseline toward a rate nobody rowed.
     static function nextRateBase(base, guarded, raw) {
         if (raw == null || raw <= 0.0) { return base; }
-        if (base == null || base <= 0.0) {
-            // Establish only from an ACCEPTED reading. Establishing from a
-            // rejected one would let the first phantom burst of a session set
-            // the bar it is then measured against.
-            return (guarded > 0.0) ? raw : base;
+        if (guarded > 0.0) {
+            if (base == null || base <= 0.0) { return guarded; }
+            return base + $.LOCK_BASE_A_OK * (guarded - base);
         }
-        var a = (guarded > 0.0) ? $.LOCK_BASE_A_OK : $.LOCK_BASE_A_REJ;
-        return base + a * (raw - base);
+        // Nothing was published. Establishing here would let the first phantom
+        // burst of a session set the bar it is then measured against, so a
+        // zeroed reading may creep an EXISTING baseline and may not create one.
+        if (base == null || base <= 0.0) { return base; }
+        return base + $.LOCK_BASE_A_REJ * (raw - base);
     }
 
     // final cleaned rate for display and FIT: fast readings need the
@@ -3024,9 +3074,48 @@ class StrongRowView extends Ui.View {
     // Advance the baseline. Called from recomputeRate() and nowhere else.
     //
     // Reads the guard's answer through the SHIPPING outputRate(), computed
-    // against the OLD baseline, so a reading the guard rejected can never be
-    // the thing that raises the bar it failed.
+    // against the OLD baseline, so what the output stage PUBLISHED for this
+    // stroke -- not the median it may have corrected or discarded -- is what
+    // moves the bar. nextRateBase owns that distinction; see its note.
+    //
+    // FROZEN WHILE PAUSED, AND FOR NPER STROKES AFTER THE RESUME. That is
+    // #109's rule -- an athlete-state accumulator does not advance while the
+    // athlete is not rowing -- applied to the one such accumulator this change
+    // adds. registerStroke gates only the stroke COUNTER on !mPaused and calls
+    // recomputeRate() unconditionally, on purpose (the numeral must not blank
+    // for NPER strokes after every resume), so nothing else stops pause-time
+    // motion from setting the guard's reference.
+    //
+    // WHY THE PAUSE FLAG ALONE IS NOT ENOUGH, and this is measured rather than
+    // argued. mPeriods survives the pause too, so the first medians AFTER the
+    // resume are still the pause's, and the baseline is an EMA: it takes them at
+    // LOCK_BASE_A_OK (a quarter of the gap per stroke) and can only creep back
+    // at LOCK_BASE_A_REJ (a fiftieth), because the guard never REJECTS a reading
+    // for being too slow. Driven through the shipping
+    // registerStroke/recomputeRate/outputRate path on fr965 (SDK 9.2.0), a 20
+    // spm rower whose pause was gestured at 8 spm and who resumed at 24 spm with
+    // no lock lost 15 strokes of row_stroke_rate and dist_per_stroke to 0.0 with
+    // the pause flag alone -- three post-resume medians still reading 8.0 pulled
+    // the baseline 20.0 -> 17.0 -> 14.75 -> 13.06, and 0.02-of-the-gap steps
+    // needed twelve more strokes to reopen the gate. At a 26 spm resume it was
+    // 24 strokes. Holding for NPER strokes -- the ring length that causes it --
+    // makes both zero, and costs nothing: what the baseline holds during the
+    // hold is the rate the athlete rowed BEFORE the pause, which is the right
+    // reference for the interval about to start.
+    //
+    // Pinned end to end by test_lock_theBaselineFreezesWhileTheSessionIsPaused
+    // (the freeze) and test_lock_theResumeIsNotGuardedByThePausesCadence (the
+    // hold, over four row/pause/resume timelines, asserting the OUTCOME -- that
+    // no stroke of the resumed piece comes out as 0.0 -- rather than this
+    // mechanism, so a better implementation is free to replace it).
+    //
+    // The long-gap clear at the stroke-ring timeout is NOT affected: a quiet
+    // pause still times the ring out and takes the baseline with it, which is
+    // the intended "nothing established yet" degrade. A quiet pause also sets no
+    // hold, because no stroke registers to set one.
     hidden function updateRateBase() {
+        if (mPaused) { mBaseHold = NPER; return; }
+        if (mBaseHold > 0) { mBaseHold--; return; }
         mRateBase = nextRateBase(mRateBase, outputRate(), mRate);
     }
 
