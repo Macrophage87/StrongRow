@@ -145,13 +145,24 @@ module Lock {
         // `spm` must lie inside registerStroke's accepted period band
         // [60/MAX_RATE, 60/MIN_RATE] = [1.5 s, 10 s], i.e. 6..40 spm, or the
         // periods are rejected and nothing is established at all.
-        function rowAt(spm, strokes) {
+        function rowAt(spm, strokes) { rowFrom(spm, strokes, 0.0); }
+
+        // The same, on a CONTINUING clock, returning the time one period past
+        // the last stroke so the next leg can start there.
+        //
+        // rowAt() restarts at t = 0.0, and a second rowAt() on the same probe
+        // therefore hands registerStroke a NEGATIVE period, which it drops --
+        // so a case that drives a row, a pause and a resume as three rowAt()
+        // calls silently loses the first stroke of each later leg. Every case
+        // with more than one leg uses this instead.
+        function rowFrom(spm, strokes, t0) {
             var per = 60.0 / spm;
-            var t = 0.0;
+            var t = t0;
             for (var i = 0; i < strokes; i++) {
                 registerStroke(t);
                 t += per;
             }
+            return t;
         }
     }
 
@@ -423,8 +434,16 @@ module Lock {
 
 // WHAT THE BASELINE FOLDS IN, AND WHAT IT REFUSES TO.
 //
-// nextRateBase is introduced at c1 in its FINAL form and c3 does not touch it,
-// so these are invariants of the whole change rather than a way-station.
+// nextRateBase is introduced at c1 and reworked at c8; the cases below are the
+// ones that hold across both, so they are invariants of the whole change rather
+// than a way-station.
+//
+// WHAT THIS CASE DOES NOT COVER, stated here because the gap was real and shipped
+// through review: every call below has `guarded == raw` or `guarded == 0.0`, so
+// the third state -- guarded > 0 AND guarded != raw, which is what a lock SNAP
+// produces -- is invisible to it. That state is
+// test_lock_aSnappedReadingDoesNotFeedTheMedianItCorrected's, at the bottom of
+// this file. Do not add a snap case here; keep the two readable apart.
 (:test) function test_lock_theBaselineIsBuiltFromAcceptedReadingsOnly(logger) {
     // (a) the first ACCEPTED reading establishes it outright. An EMA eased up
     // from 0.0 would spend its first strokes claiming a rate nobody rowed.
@@ -989,6 +1008,197 @@ module Lock {
         logger.error("lock_lowconf_run must carry the consecutive " +
                      "low-confidence count (3, the run length updateAutocorr " +
                      "unlocks at); got " + f[2].last());
+        return false;
+    }
+    return true;
+}
+
+// -- c7: the round-2 differentials --------------------------------------------
+//
+// BOTH CASES BELOW ARE RED AGAINST c6 AND GREEN ONLY AT c8. They are the two
+// review findings that are behaviour defects rather than comment defects, and
+// each one is a way the baseline this change introduced can be set from
+// something the athlete did not row.
+//
+//   * PAUSE-TIME MOTION. registerStroke gates only the stroke COUNTER on
+//     !mPaused (#109); recomputeRate() runs unconditionally, and c1 hung
+//     updateRateBase() off recomputeRate(). So drinking, wiping down or
+//     gesturing during a pause -- the exact list #109 records -- established
+//     "the rate this athlete holds".
+//
+//   * A SNAPPED READING. gatedRate has TWO ways of not passing the median
+//     through: it ZEROES a reading no lock corroborates, and it SNAPS a locked
+//     reading that disagrees with the lock. nextRateBase tested only the first,
+//     so a median the lock had just declared wrong was folded in as though the
+//     guard had accepted it.
+//
+// Both defects run the SAME direction in the end: the gate reverts to the
+// shipped absolute constant, or below it, for reasons that are not the
+// athlete's rate. Neither can make the guard LOOSER than what shipped (the
+// outer min in fastGate holds unconditionally and is pinned separately by
+// theGuardIsNeverLoosenedAtAnyRate), so what they cost is this change's
+// benefit, plus -- for the pause case -- a window of ZEROED row_stroke_rate
+// over genuine rowing.
+
+// THE BASELINE FREEZES WHILE THE SESSION IS PAUSED.
+//
+// #109's rule, applied to the one accumulator c1 added: an athlete-state
+// accumulator does not advance while the athlete is not rowing. mRate and the
+// DSP ring keep running, deliberately (see the note above the !mPaused counter
+// gate in registerStroke) -- only the guard's REFERENCE freezes.
+(:test) function test_lock_theBaselineFreezesWhileTheSessionIsPaused(logger) {
+    // (a) A PAUSE ESTABLISHES NOTHING. Eight strokes of 8 spm non-rowing
+    // motion during a pause must not become an established rate.
+    var p = new Lock.Probe();
+    p.enterStepLive(p.kindWork(), true);
+    p.rowAt(8.0, 8);
+    if (!Lock.near(p.rateBase(), 0.0)) {
+        logger.error("(a) motion during a PAUSE must not establish the rate " +
+                     "this athlete holds -- registerStroke already refuses to " +
+                     "count it as a stroke (#109) and it is the same motion. " +
+                     "The baseline reads " + p.rateBase());
+        return false;
+    }
+
+    // (b) AND THE COST OF GETTING THIS WRONG LANDS IN THE FILE. With the
+    // baseline set from the phantom cadence the gate drops to its floor, and a
+    // genuine reading after the resume is ZEROED -- so row_stroke_rate and
+    // dist_per_stroke carry 0.0 for real rowing, which is the #86 / #107 defect
+    // class moved from the screen into the recording. main records 24.0 here.
+    p.setDetector(24.0, 0.0);
+    if (!Lock.near(p.out(), 24.0)) {
+        logger.error("(b) a genuine 24.0 spm median after the resume must " +
+                     "reach the file. The shipped absolute rule records 24.0; " +
+                     "this returned " + p.out() + ", which is what " +
+                     "row_stroke_rate and dist_per_stroke would carry");
+        return false;
+    }
+
+    // (c) MID-SESSION, which is the case a fresh probe cannot show: the rate
+    // the athlete ROWED must survive the pause and still be the reference when
+    // they resume. 15.0 spm established, then a pause gestured at 8 spm.
+    var q = new Lock.Probe();
+    q.enterStepLive(q.kindWork(), false);
+    var t = q.rowFrom(15.0, 8, 0.0);
+    if (!Lock.near(q.rateBase(), 15.0)) {
+        logger.error("setup: eight strokes at 15.0 spm must establish 15.0; " +
+                     "got " + q.rateBase());
+        return false;
+    }
+    q.enterStepLive(q.kindWork(), true);
+    q.rowFrom(8.0, 8, t);
+    if (!Lock.near(q.rateBase(), 15.0)) {
+        logger.error("(c) the baseline must still be the 15.0 spm the athlete " +
+                     "ROWED after a pause spent gesturing at 8 spm; it reads " +
+                     q.rateBase() + ". A pause is not a piece and must not " +
+                     "retune the guard for the piece that follows it");
+        return false;
+    }
+
+    // (d) and the consequence, read back through the shipping decision: after
+    // the resume a 22.0 spm reading is under the 15.0 spm rower's gate of 22.5
+    // and must pass. Dragged down by the pause, the gate sits at its floor and
+    // zeroes it.
+    q.enterStepLive(q.kindWork(), false);
+    q.setDetector(22.0, 0.0);
+    if (!Lock.near(q.out(), 22.0)) {
+        logger.error("(d) 22.0 spm is under the established 15.0 spm rower's " +
+                     "gate of " + ($.LOCK_REL_K * 15.0) + " and must pass " +
+                     "after the resume; got " + q.out());
+        return false;
+    }
+    return true;
+}
+
+// A SNAPPED READING MUST NOT FEED THE MEDIAN IT CORRECTED.
+//
+// gatedRate returns a NON-ZERO value in two quite different situations: the
+// median was corroborated and passed through, or the lock disagreed with it and
+// SNAPPED it. nextRateBase used `guarded` only as an accept/reject flag and
+// always folded in `raw`, so the second situation fed the baseline the very
+// number the lock had just declared wrong.
+//
+// Sections (a) and (b) are the arithmetic; (c) and (d) hold the two paths that
+// must NOT move; (e) is the whole loop through the shipping detector, which is
+// what separates "the static is right" from "the app does this".
+(:test) function test_lock_aSnappedReadingDoesNotFeedTheMedianItCorrected(logger) {
+    // (a) an established baseline, a 20.0 spm lock, a doubled 38.0 median. The
+    // output stage publishes 20.0, so 20.0 is what the athlete is held to have
+    // rowed and the baseline must not move at all.
+    var snap = StrongRowView.nextRateBase(20.0, 20.0, 38.0);
+    if (!Lock.near(snap, 20.0)) {
+        logger.error("(a) the lock SNAPPED a 38.0 spm median to 20.0, i.e. the " +
+                     "output stage declared 38.0 wrong. Folding 38.0 into the " +
+                     "baseline lets the error the snap caught raise the bar " +
+                     "the NO-LOCK gate is set from; got " + snap +
+                     " where 20.0 was published");
+        return false;
+    }
+
+    // (b) and it must not ESTABLISH from one either -- the same argument case
+    // (b) of theBaselineIsBuiltFromAcceptedReadingsOnly makes for a rejected
+    // reading. A first-stroke doubled median otherwise sets the bar outright:
+    // fastGate(38.0) is FAST_NEEDS_LOCK, i.e. this change becomes a no-op for
+    // that athlete from their first stroke.
+    var est = StrongRowView.nextRateBase(0.0, 20.0, 38.0);
+    if (!Lock.near(est, 20.0)) {
+        logger.error("(b) with nothing established, a snapped reading must " +
+                     "establish what the output stage PUBLISHED (20.0), not " +
+                     "the median it discarded; got " + est);
+        return false;
+    }
+
+    // (c) AN ORDINARY ACCEPTED READING IS UNTOUCHED. Without this, an
+    // implementation that simply stopped folding anything in would satisfy (a)
+    // and (b). guarded == raw here, so this is the no-op case.
+    var acc = StrongRowView.nextRateBase(16.0, 20.0, 20.0);
+    if (!Lock.near(acc, 16.0 + $.LOCK_BASE_A_OK * 4.0)) {
+        logger.error("(c) an uncorrected accepted reading must still move the " +
+                     "baseline by " + $.LOCK_BASE_A_OK + " of the gap: " +
+                     (16.0 + $.LOCK_BASE_A_OK * 4.0) + "; got " + acc);
+        return false;
+    }
+
+    // (d) AND THE REJECT PATH IS UNTOUCHED. A zeroed reading published nothing,
+    // so the creep that stops rejection from being permanent must keep using
+    // the raw median -- that clause is the deadlock escape hatch.
+    var rej = StrongRowView.nextRateBase(16.0, 0.0, 20.0);
+    if (!Lock.near(rej, 16.0 + $.LOCK_BASE_A_REJ * 4.0)) {
+        logger.error("(d) a REJECTED reading must still creep the baseline by " +
+                     $.LOCK_BASE_A_REJ + " of the gap toward the raw median (" +
+                     (16.0 + $.LOCK_BASE_A_REJ * 4.0) + ") -- without it the " +
+                     "guard deadlocks; got " + rej);
+        return false;
+    }
+
+    // (e) END TO END. A 15.0 spm rower, then a burst of doubled 37.5 spm
+    // medians while the lock holds the TRUE 4.0 s period. Every one of those is
+    // snapped to 15.0, so the baseline must not move a step.
+    var p = new Lock.Probe();
+    var t = p.rowFrom(15.0, 8, 0.0);
+    p.setLockState(4.0, 0.6, 0);
+    p.rowFrom(37.5, 8, t);
+    if (!Lock.near(p.rateBase(), 15.0)) {
+        logger.error("(e) eight snapped 37.5 spm medians against a 15.0 spm " +
+                     "lock must leave the 15.0 spm baseline where it is; it " +
+                     "reads " + p.rateBase() + ". Every one of those readings " +
+                     "came out of the output stage as 15.0");
+        return false;
+    }
+
+    // (f) and the point of (e): the phantom the relative gate exists to reject
+    // is still rejected afterwards. With the baseline inflated by the burst,
+    // fastGate returns the shipped absolute and 28.0 spm with no lock walks
+    // into row_stroke_rate.
+    if (!Lock.near(StrongRowView.gatedRate(28.0, 0.0, p.rateBase()), 0.0)) {
+        logger.error("(f) after the burst, 28.0 spm with NO lock must still be " +
+                     "rejected by the 15.0 spm rower's gate of " +
+                     ($.LOCK_REL_K * 15.0) + "; gatedRate returned " +
+                     StrongRowView.gatedRate(28.0, 0.0, p.rateBase()) +
+                     " against a baseline of " + p.rateBase() +
+                     ". A guard disarmed by the readings the snap flagged as " +
+                     "errors is this change reverting to the constant it " +
+                     "replaces");
         return false;
     }
     return true;
