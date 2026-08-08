@@ -145,6 +145,15 @@ CueFix.test_cue_theDeadbandIsPaidOnExitOnly
 CueFix.test_cue_theWindowsAreFourSecondsAndOneOnAClock
 CueFix.test_cue_theScreenLagsTheColourNotTheNumber
 
+# source/LockGuardTest.mc
+#
+# Names are MODULE-QUALIFIED: every (:test) lives inside `module Lock`, for the
+# fenix6 253-member `globals` ceiling recorded at the top of that file. The
+# simulator prints the qualified name and scripts/list_tests.py extracts it.
+Lock.test_lock_c0_theAbsoluteGateIsThirtyWithNoRateEstablished
+Lock.test_lock_c0_aLockedReadingSnapsOnlyWhenItDisagrees
+Lock.test_lock_c0_theSurvivingRateIsClampedToFortySpm
+
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork
 test_rate_whiteWhenNoData
