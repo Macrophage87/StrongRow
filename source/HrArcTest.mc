@@ -305,6 +305,11 @@ class HrProbe extends StrongRowView {
     hidden var mFakeSpeed;
     hidden var mFakeDist;
     function setSpeed(v) { mFakeSpeed = v; }
+
+    // #80. The CORE sensor handle, so a render case can drive the status row's
+    // indicators without an ANT channel. onLayout is the only other writer, and
+    // these cases never call it.
+    function setCoreSensor(s) { mCoreSensor = s; }
     function setDist(v)  { mFakeDist = v; }
     hidden function currentSpeed() {
         return (mFakeSpeed == null) ? 0.0 : mFakeSpeed;

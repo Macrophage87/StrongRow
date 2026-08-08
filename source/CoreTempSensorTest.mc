@@ -1489,3 +1489,253 @@ function ctPayloadHsi(hsiRaw, skinRaw12, reserved12, coreRaw) {
 }
 
 }
+
+module Hsi {
+// ============================================================================
+// #80 -- Heat Strain Index. c2 red differentials.
+// ============================================================================
+// Every case below FAILS on the commit that precedes it -- decodeHsi exists but
+// onBroadcast never calls it -- and passes once the wiring lands. Assertions
+// are null-safe so a wrong result reports as FAIL rather than ERROR.
+
+// A page-1 frame carrying a heat index must reach the getter.
+(:test) function test_ct_hsiFedFrameBecomesTheReading(logger) {
+    var p = ctFreshProbe(false);
+    p.feed(ctPayloadHsi(0x27, 660, 0x0C8, 3742));
+    var ok = true;
+    if (!p.hsiFresh()) {
+        logger.error("a decoded heat index must be current immediately after " +
+                     "the frame that carried it");
+        ok = false;
+    }
+    if (!ctAlmostEq(p.heatIndex(), 3.9)) {
+        logger.error("heatIndex = " + p.heatIndex() + " after a byte-1 of 0x27, " +
+                     "expected 3.9");
+        ok = false;
+    }
+    return ok;
+}
+
+// A frame whose byte 1 is 0x00 is a MEASUREMENT of no thermal strain, and must
+// be recorded as one.
+//
+// This is the case a zero-default would silently pass and a "value > 0" gate
+// would silently drop. Both have shipped in this repository before, on other
+// fields, which is why it is pinned on its own rather than folded into the
+// table above.
+(:test) function test_ct_hsiZeroFrameIsARealReading(logger) {
+    var p = ctFreshProbe(false);
+    p.feed(ctPayloadHsi(0x00, 660, 0x0C8, 3742));
+    var ok = true;
+    if (!p.hsiFresh()) {
+        logger.error("a heat index of 0.0 is a reading and must be current");
+        ok = false;
+    }
+    if (p.heatIndex() == null) {
+        logger.error("heatIndex is null after a frame carrying 0.0; absence and " +
+                     "zero strain are different answers");
+        ok = false;
+    } else if (!ctAlmostEq(p.heatIndex(), 0.0)) {
+        logger.error("heatIndex = " + p.heatIndex() + ", expected 0.0");
+        ok = false;
+    }
+    return ok;
+}
+
+// A withheld heat index must leave the previous reading AND its stamp
+// untouched, exactly as a rejected core or skin field does.
+//
+// The alternative -- clearing on rejection -- would make a single dropped frame
+// indistinguishable from a pod that never sent one, and the alternative after
+// that -- re-stamping on rejection -- would republish a stale value as current.
+// Neither is what "not fresh" means.
+(:test) function test_ct_hsiWithheldFrameChangesNothing(logger) {
+    var p = ctFreshProbe(false);
+    p.feed(ctPayloadHsi(0x27, 660, 0x0C8, 3742));
+    var before = p.heatIndex();
+    p.feed(ctPayloadHsi(0xFF, 660, 0x0C8, 3742));
+    var ok = true;
+    if (!ctAlmostEq(p.heatIndex(), 3.9)) {
+        logger.error("heatIndex = " + p.heatIndex() + " after an invalid frame " +
+                     "followed a valid one (was " + before + "); a rejection " +
+                     "must not clear the last reading");
+        ok = false;
+    }
+    if (!p.hsiFresh()) {
+        logger.error("a rejected frame must not expire the previous reading");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE FAIL-SAFE CASE. A pod that puts the invalid marker in byte 1 on every
+// frame it sends -- which is the outcome #81 might report -- must leave the
+// heat index absent and must not disturb anything else.
+//
+// Core and skin here are the SAME payload the shipped cases use, so their
+// decoded values are known independently of this branch.
+(:test) function test_ct_hsiAlwaysInvalidHarmsNothingElse(logger) {
+    var p = ctFreshProbe(false);
+    for (var i = 0; i < 8; i++) {
+        p.feed(ctPayloadHsi(0xFF, 660, 0x0C8, 3742));
+    }
+    var ok = true;
+    if (p.heatIndex() != null) {
+        logger.error("heatIndex = " + p.heatIndex() + "; a pod withholding byte " +
+                     "1 must leave it absent, never populated");
+        ok = false;
+    }
+    if (p.hsiFresh() != false) {
+        logger.error("hsiFresh must stay false when byte 1 is never valid");
+        ok = false;
+    }
+    if (!ctAlmostEq(p.coreTemp(), 37.42)) {
+        logger.error("core temperature moved to " + p.coreTemp() +
+                     " -- the heat-strain path must not touch it");
+        ok = false;
+    }
+    if (!ctAlmostEq(p.skinTemp(), 33.00)) {
+        logger.error("skin temperature moved to " + p.skinTemp() +
+                     " -- the heat-strain path must not touch it");
+        ok = false;
+    }
+    if (ctSlot(p, $.CT_DIAG_I_HSI_INVALID) != 8) {
+        logger.error("hsiInvalid = " + ctSlot(p, $.CT_DIAG_I_HSI_INVALID) +
+                     ", expected 8; the file has to be able to say that the pod " +
+                     "withheld the field rather than that nothing was fresh");
+        ok = false;
+    }
+    if (ctSlot(p, $.CT_DIAG_I_HSI_MAX_RAW) != $.CT_DIAG_NONE) {
+        logger.error("hsiMaxRaw = " + ctSlot(p, $.CT_DIAG_I_HSI_MAX_RAW) +
+                     ", expected CT_DIAG_NONE; the invalid marker must never be " +
+                     "counted as an observed maximum");
+        ok = false;
+    }
+    return ok;
+}
+
+// The mirror of the case above: a heat index must reach the getter even on a
+// frame whose temperature fields are both unusable.
+//
+// This is the state a pod is in during warm-up, which is precisely when a
+// strain index is interesting -- and it is the coupling #17 had to break for
+// skin temperature. It also pins the scope boundary: mEverSeen is NOT widened
+// by this branch, because it gates ANT search pacing and nothing here can
+// measure the consequence.
+(:test) function test_ct_hsiSurvivesUnusableTemperatures(logger) {
+    var p = ctFreshProbe(false);
+    // Core 0x8000 is 327.68 C, which the clamp rejects; skin 0x800 is the
+    // 12-bit invalid marker.
+    p.feed(ctPayloadHsi(0x46, 0x800, 0x0C8, 0x8000));
+    var ok = true;
+    if (!ctAlmostEq(p.heatIndex(), 7.0)) {
+        logger.error("heatIndex = " + p.heatIndex() + " on a frame with no usable " +
+                     "temperature, expected 7.0");
+        ok = false;
+    }
+    if (p.everSeen() != false) {
+        logger.error("everSeen latched on a heat-strain-only frame; this branch " +
+                     "deliberately does not widen it -- it gates the ANT search " +
+                     "period, and that consequence is unmeasured");
+        ok = false;
+    }
+    if (!ctAlmostEq(p.coreTemp(), 0.0) || !ctAlmostEq(p.skinTemp(), 0.0)) {
+        logger.error("temperatures must stay absent: core = " + p.coreTemp() +
+                     ", skin = " + p.skinTemp());
+        ok = false;
+    }
+    return ok;
+}
+
+// The diagnostic counters, which are what make the wire question answerable
+// from a saved activity rather than only from a sniffer.
+(:test) function test_ct_diagCountsHeatStrainFrames(logger) {
+    var p = ctFreshProbe(false);
+    p.feed(ctPayloadHsi(0x27, 660, 0x0C8, 3742));   // 3.9
+    p.feed(ctPayloadHsi(0xFF, 660, 0x0C8, 3742));   // withheld
+    p.feed(ctPayloadHsi(0x46, 660, 0x0C8, 3742));   // 7.0
+    p.feed(ctPayloadHsi(0x0A, 660, 0x0C8, 3742));   // 1.0
+    p.feed(ctPayloadHsi(0xFF, 660, 0x0C8, 3742));   // withheld
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_HSI_OK) != 3) {
+        logger.error("hsiOk = " + ctSlot(p, $.CT_DIAG_I_HSI_OK) + ", expected 3");
+        ok = false;
+    }
+    if (ctSlot(p, $.CT_DIAG_I_HSI_INVALID) != 2) {
+        logger.error("hsiInvalid = " + ctSlot(p, $.CT_DIAG_I_HSI_INVALID) + ", expected 2");
+        ok = false;
+    }
+    // The HIGHEST accepted raw, not the last one: 0x46 arrived before 0x0A.
+    if (ctSlot(p, $.CT_DIAG_I_HSI_MAX_RAW) != 0x46) {
+        logger.error("hsiMaxRaw = " + ctSlot(p, $.CT_DIAG_I_HSI_MAX_RAW) +
+                     ", expected 0x46 (70); this slot is a running maximum, and " +
+                     "a value above 0x7F is the only thing that could settle the " +
+                     "vendor table's signedness contradiction");
+        ok = false;
+    }
+    return ok;
+}
+
+// A raw above 0x7F must be recorded verbatim rather than folded, clamped or
+// sign-extended away. The whole value of the maximum slot is that it can carry
+// the one observation nobody has made yet.
+(:test) function test_ct_diagHsiMaxCarriesTheHighHalf(logger) {
+    var p = ctFreshProbe(false);
+    p.feed(ctPayloadHsi(0x80, 660, 0x0C8, 3742));
+    p.feed(ctPayloadHsi(0xFE, 660, 0x0C8, 3742));
+    p.feed(ctPayloadHsi(0x10, 660, 0x0C8, 3742));
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_HSI_MAX_RAW) != 0xFE) {
+        logger.error("hsiMaxRaw = " + ctSlot(p, $.CT_DIAG_I_HSI_MAX_RAW) +
+                     ", expected 254");
+        ok = false;
+    }
+    if (!ctAlmostEq(p.heatIndex(), 1.6)) {
+        logger.error("heatIndex = " + p.heatIndex() + " after a final 0x10, " +
+                     "expected 1.6");
+        ok = false;
+    }
+    return ok;
+}
+
+// A frame that never reaches the decoder must not reach the heat-strain
+// counters either: a short payload and a page-0 frame are different failures
+// from a withheld byte 1, and conflating them would put a number in the slot
+// whose whole job is to say "the pod sent no heat index".
+// CARRIES ITS OWN POSITIVE CONTROL, and that is not decoration. Asserted as a
+// bare negative it is vacuously true before the counters exist -- everything is
+// zero because nothing counts anything -- so it would have been green in both
+// epochs and evidence of nothing. The valid frame at the end is what makes the
+// zeros mean "these frames were skipped" rather than "nothing is wired up".
+(:test) function test_ct_diagHsiIgnoresRejectedFrames(logger) {
+    var p = ctFreshProbe(false);
+    p.feed([0x01, 0x27, 0x64]);                       // short
+    p.feed([0x00, 0x27, 0x64, 0, 0, 0, 0, 0]);        // page 0
+    var ok = true;
+    if (ctSlot(p, $.CT_DIAG_I_HSI_OK) != 0 ||
+        ctSlot(p, $.CT_DIAG_I_HSI_INVALID) != 0 ||
+        ctSlot(p, $.CT_DIAG_I_HSI_MAX_RAW) != $.CT_DIAG_NONE) {
+        logger.error("a short payload and a page-0 frame must leave the " +
+                     "heat-strain slots untouched, got ok = " +
+                     ctSlot(p, $.CT_DIAG_I_HSI_OK) + ", invalid = " +
+                     ctSlot(p, $.CT_DIAG_I_HSI_INVALID) + ", maxRaw = " +
+                     ctSlot(p, $.CT_DIAG_I_HSI_MAX_RAW));
+        ok = false;
+    }
+    if (p.heatIndex() != null) {
+        logger.error("heatIndex = " + p.heatIndex() + " after two rejected frames");
+        ok = false;
+    }
+    // The control: one frame that IS a page-1 heat index must move the counter,
+    // so the zeros above are a skip rather than a dead path.
+    p.feed(ctPayloadHsi(0x27, 660, 0x0C8, 3742));
+    if (ctSlot(p, $.CT_DIAG_I_HSI_OK) != 1) {
+        logger.error("hsiOk = " + ctSlot(p, $.CT_DIAG_I_HSI_OK) + " after a valid " +
+                     "page-1 frame, expected 1 -- without this the zeros above " +
+                     "prove nothing");
+        ok = false;
+    }
+    return ok;
+}
+
+}

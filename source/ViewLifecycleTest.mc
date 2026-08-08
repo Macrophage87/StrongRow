@@ -925,3 +925,45 @@ class LifeThrowingStartProbe extends LifeProbe {
     }
     return ok;
 }
+
+module Hsi {
+
+// #80 c2. The same invariant, for the heat-strain field handle.
+//
+// RED before the wiring lands: mFitHsi exists but shutdown's finally does not
+// clear it. Written as its own case rather than folded into
+// test_life_shutdownKeepsCoreFieldInvariantOnThrow, because that case arms
+// mFitCore and mFitSkin together and a third handle added to it would pass the
+// moment either of the first two was cleared. Armed alone, this can only pass
+// if the finally names it.
+//
+// The stake is the same and is worth restating: onTick dereferences mCoreSensor
+// guarded ONLY by a field handle, so `mFitHsi != null && mCoreSensor == null` is
+// an uncatchable fault on the next tick, not an exception.
+(:test) function test_life_shutdownKeepsHeatFieldInvariantOnThrow(logger) {
+    var p = new LifeThrowingSaveProbe();
+    p.onLayout(null as Gfx.Dc);
+    p.armHsiField();      // mFitHsi alone; mSession left null
+
+    try {
+        p.shutdown();
+    } catch (e) {
+        // expected: this probe's stopAndSave throws
+    }
+
+    var ok = true;
+    if (p.sensorHandle() != null) {
+        logger.error("the sensor handle should have been cleared by the finally");
+        ok = false;
+    }
+    if (p.hsiFieldHandle() != null) {
+        logger.error("mFitHsi outlived mCoreSensor: onTick dereferences " +
+                     "mCoreSensor guarded only by the field handle, so the next " +
+                     "tick is a HARD FAULT rather than a catchable throw. Clear " +
+                     "it in the same finally as mFitCore and mFitSkin.");
+        ok = false;
+    }
+    return ok;
+}
+
+}

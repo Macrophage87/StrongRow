@@ -280,3 +280,126 @@ function pipRadius(w, h) { return ((w < h) ? w : h) / 2.0; }
 }
 
 }
+
+module Hsi {
+
+// -- c2 red differentials -----------------------------------------------------
+// Both cases below FAIL on the commit that precedes them -- the geometry exists
+// but drawGps draws no mark -- and pass once the indicator lands.
+
+// A stand-in CORE sensor, so a render case can put the view in "heat index
+// present" and "heat index absent" with no ANT channel.
+//
+// heatIndex() returns NULL for absent, matching the shipping sensor. A
+// stand-in returning 0.0 would let these cases pass against a view that
+// rendered absence as a reading, which is the one thing the indicator exists to
+// avoid.
+class PipCore {
+    var hsiOn; var hsiVal; var tempOn;
+    function initialize(on, v, t) { hsiOn = on; hsiVal = v; tempOn = t; }
+    function isFresh()   { return tempOn; }
+    function everSeen()  { return true; }
+    function coreTemp()  { return 0.0; }
+    function skinTemp()  { return 0.0; }
+    function hsiFresh()  { return hsiOn; }
+    function heatIndex() { return hsiVal; }
+}
+
+function pipRender(kind, core) {
+    var p = new HrProbe();
+    p.driveStrokes();
+    p.setSensorOk(true);
+    p.setHrState(128, System.getTimer(), true);
+    p.enterStep(kind, false);
+    p.setNarrowSession();
+    p.setSpeed(4.0);
+    p.setCoreSensor(core);
+    var ds = System.getDeviceSettings();
+    var d = new HrDc(ds.screenWidth, ds.screenHeight);
+    p.runUpdate(d);
+    return d;
+}
+
+// The indicator is drawn on the status row, once, at the geometry the pure
+// functions computed -- and NOT on the work screen, which #108 stripped to
+// three text elements and two arcs.
+//
+// Both halves are one case on purpose. Separated, the negative half is green in
+// every epoch and would pass while the indicator did not exist at all; joined,
+// it is what stops the mark being added somewhere outside drawGps, where the
+// status row's own suppression could not reach it.
+(:test) function test_pip_markRidesTheStatusRowOnly(logger) {
+    var k = new HrProbe();
+    var rest = pipRender(k.kindWarm(), new PipCore(true, 3.9, true));
+    var work = pipRender(k.kindWork(), new PipCore(true, 3.9, true));
+    var ok = true;
+    if (rest.circleCount() != 1) {
+        logger.error("the status row must draw exactly one heat-strain mark, " +
+                     "counted " + rest.circleCount());
+        return false;
+    }
+    if (work.circleCount() != 0) {
+        logger.error("the work screen drops the status row, so it must draw no " +
+                     "heat-strain mark; counted " + work.circleCount() +
+                     ". A mark added outside drawGps would appear here.");
+        ok = false;
+    }
+    var w = rest.getWidth();
+    var h = rest.getHeight();
+    var c = rest.circleAt(0);
+    var wantX = StrongRowView.pipDotCx(w, h);
+    var wantR = StrongRowView.pipDotR(w);
+    if (c[0] < wantX - 0.01 || c[0] > wantX + 0.01) {
+        logger.error("mark drawn at x = " + c[0] + ", expected " + wantX +
+                     " -- the draw call must use the pinned geometry, not a " +
+                     "second copy of it");
+        ok = false;
+    }
+    if (c[2] != wantR) {
+        logger.error("mark radius " + c[2] + ", expected " + wantR);
+        ok = false;
+    }
+    return ok;
+}
+
+// Present and absent must differ in SHAPE as well as colour.
+//
+// The mark is small -- 3 px radius on the two smallest displays -- so the
+// filled/outline distinction there is a handful of pixels and colour carries
+// most of the load. That is stated rather than dressed up. The outline is drawn
+// in BOTH states deliberately: a marker that vanishes with its data cannot be
+// read against, which is the same rule the distance-per-stroke arc's benchmark
+// tick states.
+(:test) function test_pip_absentStrainIsHollowAndPresentIsFilled(logger) {
+    var k = new HrProbe();
+    var on  = pipRender(k.kindWarm(), new PipCore(true, 3.9, true));
+    var off = pipRender(k.kindWarm(), new PipCore(false, null, true));
+    var ok = true;
+    if (off.circleCount() != 1) {
+        logger.error("the mark must be drawn even with no reading; counted " +
+                     off.circleCount());
+        return false;
+    }
+    if (off.filledCircleCount() != 0) {
+        logger.error("no reading must render as an OUTLINE, but " +
+                     off.filledCircleCount() + " of " + off.circleCount() +
+                     " circles were filled");
+        ok = false;
+    }
+    if (on.filledCircleCount() < 1) {
+        logger.error("a current reading must render as a FILLED mark; none of " +
+                     on.circleCount() + " circles was filled");
+        ok = false;
+    }
+    // A zero reading is a reading. This is the same trap as the FIT write, and
+    // it reaches the screen by a different path, so it is pinned on both.
+    var zero = pipRender(k.kindWarm(), new PipCore(true, 0.0, true));
+    if (zero.filledCircleCount() < 1) {
+        logger.error("a heat index of 0.0 is a current reading and must render " +
+                     "as present, not as no-data");
+        ok = false;
+    }
+    return ok;
+}
+
+}
