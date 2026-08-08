@@ -70,6 +70,84 @@ const FOOT_PAUSED   = 2;
 const FOOT_REC      = 3;
 const FOOT_IDLE     = 4;   // not started yet
 
+// ============ the STROKE-RATE OUTPUT STAGE (#149) =========================
+// These five were class `hidden const`s and are now module (global) consts, for
+// the reason the R-R and FOOT_* blocks above give: a Monkey C class `const` is
+// an INSTANCE member, unreachable from a static method, and #149 requires the
+// output stage's whole decision to be a pure static so a (:test) can reach it
+// with plain numbers instead of through a built view and an event loop. A
+// module-scope const costs nothing in the fenix6 `globals` budget -- it is
+// inlined (measured; see the ceiling note at the top of scripts/list_tests.py).
+//
+// The VALUES are unchanged from the class consts they replace.
+const MIN_RATE = 6.0;             // slowest period the detector will accept
+const MAX_RATE = 40.0;            // hard ceiling on anything that reaches the file
+const LOCK_SNAP_K = 0.30;         // a locked rate deviating more snaps to the lock
+const FAST_NEEDS_LOCK = 30.0;     // the ABSOLUTE no-lock gate, in spm
+
+// ---- the RELATIVE no-lock gate (#149) ------------------------------------
+// THE DEFECT, as measured on the two decoded rows and recorded in #149:
+// FAST_NEEDS_LOCK is an absolute threshold guarding an error -- a doubled
+// stroke period -- that is RELATIVE to the athlete.
+//
+//     row            baseline    30.0 in units of this rower's own rate
+//     calm 4x15'     20.3 spm    1.48x
+//     choppy 8x3'    15.2 spm    1.98x
+//
+// A 20 spm rower was guarded at 1.5x; a 15 spm rower only past a full doubling.
+// The weakest guard went to the low-rate work this app exists for.
+//
+// LOCK_REF_RATE is the rate the absolute constant was IMPLICITLY calibrated at,
+// and LOCK_REL_K is the multiple that follows from it. Written as two constants
+// with the identity FAST_NEEDS_LOCK == LOCK_REL_K * LOCK_REF_RATE stated
+// (and pinned, in source/LockGuardTest.mc) rather than as a bare 1.5, so the
+// provenance of the number survives the next reader.
+const LOCK_REF_RATE = 20.0;
+const LOCK_REL_K    = 1.5;        // == FAST_NEEDS_LOCK / LOCK_REF_RATE
+
+// A FLOOR under the relative gate, and it is a safety device rather than a
+// tuning knob. The gate ZEROES a reading, and a zeroed reading does not feed
+// the baseline (see nextRateBase), so a baseline that has drifted far below the
+// rate the athlete is about to row at could otherwise reject every reading of
+// the next interval with nothing able to lift it back. The recorded workout is
+// 8 x 3' with 2' rests and the rests ARE rowed, so a baseline at rest cadence
+// meeting a work interval is the ordinary case, not an edge case.
+//
+// 20.0 spm is LOCK_REF_RATE: at or below the rate the absolute constant was
+// calibrated at, the gate stops tracking down and holds where a 20 spm rower's
+// guard has always been. It binds only for baselines under
+// LOCK_GATE_FLOOR / LOCK_REL_K = 13.33 spm; #149's worked example (a 15 spm
+// rower, gated at 22.5) is above it and is unaffected.
+const LOCK_GATE_FLOOR = 20.0;
+
+// THE ESTABLISHED-RATE BASELINE, in spm, updated once per REGISTERED STROKE --
+// never per call and never per tick. outputRate() is called several times a
+// frame (the FIT write, distPerStroke, correctiveRate, the numeral, the cue),
+// so a baseline advanced from there would have a time constant set by how many
+// consumers happened to read it. One update per stroke is a physical clock the
+// call graph cannot retune.
+//
+// TWO RATES, and the asymmetry is the whole design:
+//   * LOCK_BASE_A_OK  applies when the guard ACCEPTED the reading. Fast enough
+//     (a ~4-stroke time constant) that an ordinary ramp keeps its own gate
+//     ahead of it: the gate only fires when the reading jumps past
+//     LOCK_REL_K x baseline in a single step of a FIVE-PERIOD MEDIAN, which
+//     needs three of the last five periods to have halved -- the phantom-burst
+//     signature, not a ramp.
+//   * LOCK_BASE_A_REJ applies when the guard REJECTED it, and exists so
+//     rejection can never be permanent. A genuinely sustained step up (a racing
+//     start from a low paddle) lifts the baseline slowly until it is accepted;
+//     a 26 s burst -- the longest excursion #149 measured -- does not last long
+//     enough to. Without it the guard has a deadlock: reject, so the baseline
+//     never moves, so reject.
+//
+// NEITHER FIGURE IS MEASURED ON THE WATER. They are chosen so the two
+// behaviours above hold arithmetically, and #149 cannot validate them until the
+// lock-state diagnostics land and one more row is recorded. Do not quote them
+// as tuned.
+const LOCK_BASE_A_OK  = 0.25;
+const LOCK_BASE_A_REJ = 0.02;
+
 // #110 -- left-edge heart-rate arc. At module (global) scope for exactly the
 // reason the R-R constants above are: a Monkey C class `const` is an instance
 // member, unreachable from a static method, and every decision this feature
@@ -473,8 +551,10 @@ class StrongRowView extends Ui.View {
 
     // ================= stroke detector tunables =============================
     hidden const REQ_RATE = 25;
-    hidden const MIN_RATE = 6.0;
-    hidden const MAX_RATE = 40.0;
+    // MIN_RATE / MAX_RATE / FAST_NEEDS_LOCK / LOCK_SNAP_K moved to MODULE scope
+    // (top of this file, the #149 block) so the pure statics of the output
+    // stage can name them. A class `const` is an instance member and a static
+    // cannot resolve one. Values unchanged; the sites below now read `$.NAME`.
     hidden const FC_SLOW = 0.10;
     hidden const FC_FAST = 1.80;
     hidden const FC_ENV  = 0.30;
@@ -484,8 +564,6 @@ class StrongRowView extends Ui.View {
     hidden const MIN_THR  = 40.0;
     hidden const NPER = 5;
     hidden const QUIET_S = 5.0;       // no strokes while filters settle at boot
-    hidden const FAST_NEEDS_LOCK = 30.0; // rates above this need an autocorr lock
-    hidden const LOCK_SNAP_K = 0.30;  // locked rate deviating more snaps to lock
     // autocorrelation period gate
     hidden const AC_HZ       = 5.0;   // decimated sample rate
     hidden const AC_BUF      = 128;   // ~25 s of history
@@ -520,6 +598,11 @@ class StrongRowView extends Ui.View {
     hidden var mPIdx;
     hidden var mPCount;
     hidden var mRate;
+    // #149: the rate this athlete has ESTABLISHED, in spm, or 0.0 for "none
+    // yet". Advanced once per registered stroke (updateRateBase) and cleared
+    // when the stroke ring times out, so a long gap degrades to the absolute
+    // gate rather than to a stale baseline from a previous piece.
+    hidden var mRateBase;
     hidden var mStrokeCount;
 
     // ---- per-work-interval accumulators (#109) --------------------------
@@ -798,6 +881,7 @@ class StrongRowView extends Ui.View {
         mPIdx        = 0;
         mPCount      = 0;
         mRate        = 0.0;
+        mRateBase    = 0.0;
         // #126: mStrokeCount is deliberately NOT reset here. resetDetector runs
         // ONCE PER APP LAUNCH -- initialize() is its only caller -- and owns DSP
         // state; the stroke count is session-scoped and is reset by
@@ -1179,7 +1263,7 @@ class StrongRowView extends Ui.View {
         // dynamic refractory: once the autocorrelation has locked the cycle
         // period, a new peak within REFRACT_FRAC of it is the recovery surge
         // of the SAME stroke, not a new stroke.
-        var refract = 60.0 / MAX_RATE;
+        var refract = 60.0 / $.MAX_RATE;
         if (mAcPeriod > 0.0) {
             var r2 = mAcPeriod * REFRACT_FRAC;
             if (r2 > refract) { refract = r2; }
@@ -1274,6 +1358,13 @@ class StrongRowView extends Ui.View {
             mRate = 0.0;
             mPCount = 0;
             mPIdx = 0;
+            // #149: the ESTABLISHED rate goes with the ring it was built from.
+            // This is the "after a long gap" degrade: the next piece starts
+            // against the absolute gate -- never looser than what shipped
+            // before -- instead of against a baseline describing a piece that
+            // has ended. Keeping it would carry a warm-up cadence into a work
+            // interval, or a rest paddle into a sprint.
+            mRateBase = 0.0;
         }
     }
 
@@ -1293,8 +1384,8 @@ class StrongRowView extends Ui.View {
             buf[i] = mAcBuf[(start + i) % AC_BUF];
         }
 
-        var minLag = ((60.0 / MAX_RATE) / mAcDt + 0.5).toNumber();
-        var maxLag = ((60.0 / MIN_RATE) / mAcDt + 0.5).toNumber();
+        var minLag = ((60.0 / $.MAX_RATE) / mAcDt + 0.5).toNumber();
+        var maxLag = ((60.0 / $.MIN_RATE) / mAcDt + 0.5).toNumber();
         if (minLag < 2) { minLag = 2; }
         if (maxLag > n - 8) { maxLag = n - 8; }
         if (maxLag <= minLag) { return; }
@@ -2578,7 +2669,7 @@ class StrongRowView extends Ui.View {
     hidden function registerStroke(t) {
         if (mLastStrokeT > -50.0) {
             var p = t - mLastStrokeT;
-            if (p >= 60.0 / MAX_RATE && p <= 60.0 / MIN_RATE) {
+            if (p >= 60.0 / $.MAX_RATE && p <= 60.0 / $.MIN_RATE) {
                 mPeriods[mPIdx] = p;
                 mPIdx = (mPIdx + 1) % NPER;
                 if (mPCount < NPER) { mPCount++; }
@@ -2637,6 +2728,113 @@ class StrongRowView extends Ui.View {
         var med = tmp[mPCount / 2];
         if (mPCount % 2 == 0) { med = (med + tmp[mPCount / 2 - 1]) / 2.0; }
         if (med > 0.0) { mRate = 60.0 / med; }
+        // #149: one baseline update per REGISTERED STROKE. This is the ONLY
+        // caller, and registerStroke is the only caller of this -- so the
+        // baseline advances on a physical clock rather than on however many
+        // consumers happen to read outputRate() in a given frame.
+        updateRateBase();
+    }
+
+    // ================= the OUTPUT STAGE (#149) =============================
+    // THIS STAGE CHANGES A RECORDED VALUE, DELIBERATELY, AND THAT IS NOT THE
+    // THING THE MAINTAINER'S RULE FORBIDS. Read this before "restoring" it.
+    //
+    // outputRate() feeds three FIT writes -- row_stroke_rate (onTick),
+    // dist_per_stroke (via distPerStroke) and corrective_rate (via
+    // correctiveRate) -- so a change here moves what lands in the file. The rule
+    // is "the in-row measurement is a cue, but keep the ACTUAL measurement in
+    // the file", and the distinction it draws is between:
+    //
+    //   FILTERING THE FILE FOR DISPLAY -- forbidden. Smoothing, hysteresis or
+    //   any other treatment applied because it reads better on a wrist. That is
+    //   what the DISPLAY CUE (the CUE_* block below) exists to hold, and why
+    //   the cue keeps no rate at all: it produces a ZONE, and the number on
+    //   screen and the number in the file both come straight from here.
+    //
+    //   CORRECTING A DETECTOR ERROR -- required. #149 measured the over-reads
+    //   against an INDEPENDENT witness: across seconds reading above 1.25x the
+    //   lap baseline the hull sits at 0.851x (calm row) and 0.916x (choppy row)
+    //   of its own speed baseline, and enhanced_speed is recorded independently
+    //   of this detector. A genuine rate rise pushes speed UP. So these are
+    //   wrong readings, and leaving a wrong reading in the file is not fidelity.
+    //
+    // Nothing here consults the display, the cue, or any zone. It consults the
+    // detector's own two witnesses -- the autocorrelation lock and the rate the
+    // athlete has actually been holding -- and it is the same value that then
+    // reaches the screen and the file. If a future change makes this stage read
+    // anything a screen owns, that is the line being crossed.
+
+    // Pure: the spm above which a reading needs the autocorrelation lock to
+    // corroborate it, given the rate this athlete has established.
+    //
+    // c1 NOTE, and it is temporary by design: this body still returns the
+    // ABSOLUTE constant and ignores `base`. The seam exists here so the wiring,
+    // the baseline plumbing and the differentials can each land as their own
+    // commit; the relative rule is c3's, and c2's cases are RED against this.
+    static function fastGate(base) {
+        return $.FAST_NEEDS_LOCK;
+    }
+
+    // Pure: the whole output-stage decision, as a function of the three inputs
+    // it actually has.
+    //
+    //   raw        the detector's median rate, spm (mRate)
+    //   acPeriod   the autocorrelation lock period in seconds, 0.0 for NO LOCK
+    //   base       the established rate, spm, 0.0 for NONE YET
+    //
+    // A STATIC AND NOT A METHOD, so the decision is reachable from a (:test)
+    // with plain numbers -- the seam rateColour, cueStep, footState, hrZone and
+    // dpsZone all use. A (:test) never yields to the simulator event loop, so a
+    // decision reachable only through a built view and a Dc is a decision only
+    // a render case can see.
+    static function gatedRate(raw, acPeriod, base) {
+        var r = raw;
+        if (acPeriod > 0.0) {
+            var ac = 60.0 / acPeriod;
+            if (r > 0.0) {
+                var dev = r - ac;
+                if (dev < 0.0) { dev = -dev; }
+                if (dev > $.LOCK_SNAP_K * ac) { r = ac; }
+            }
+        } else if (r > fastGate(base)) {
+            r = 0.0;
+        }
+        if (r > $.MAX_RATE) { r = $.MAX_RATE; }
+        return r;
+    }
+
+    // Pure: the established-rate baseline after one stroke.
+    //
+    //   base       the baseline before this stroke, 0.0 for NONE YET
+    //   guarded    what the guard returned for this stroke (0.0 = REJECTED)
+    //   raw        the detector's median for this stroke
+    //
+    // THE FIRST ACCEPTED READING ESTABLISHES THE BASELINE OUTRIGHT rather than
+    // easing a zero toward it, because an EMA started from 0.0 would spend its
+    // first strokes claiming the athlete rows at 4 spm and would gate them at
+    // the floor for no reason.
+    //
+    // A REJECTED READING STILL MOVES THE BASELINE, slowly, and that clause is
+    // the escape hatch rather than an oversight: see the LOCK_BASE_A_REJ note
+    // at the top of this file. Without it the guard can deadlock -- reject, so
+    // the baseline never moves, so reject -- and the deadlock is permanent
+    // because a rejected reading is exactly the one that would have lifted the
+    // bar. With it, a sustained genuine step up wins after some tens of strokes
+    // and a burst does not last long enough to.
+    //
+    // A ZERO RAW IS NOT A READING. mRate is 0.0 when the stroke ring has timed
+    // out or nothing has been measured, and folding that in would drag the
+    // baseline toward a rate nobody rowed.
+    static function nextRateBase(base, guarded, raw) {
+        if (raw == null || raw <= 0.0) { return base; }
+        if (base == null || base <= 0.0) {
+            // Establish only from an ACCEPTED reading. Establishing from a
+            // rejected one would let the first phantom burst of a session set
+            // the bar it is then measured against.
+            return (guarded > 0.0) ? raw : base;
+        }
+        var a = (guarded > 0.0) ? $.LOCK_BASE_A_OK : $.LOCK_BASE_A_REJ;
+        return base + a * (raw - base);
     }
 
     // final cleaned rate for display and FIT: fast readings need the
@@ -2644,19 +2842,16 @@ class StrongRowView extends Ui.View {
     // hand motion), and a locked reading that disagrees with the lock by
     // more than 30% snaps to it (kills residual half/double readings)
     hidden function outputRate() {
-        var r = mRate;
-        if (mAcPeriod > 0.0) {
-            var ac = 60.0 / mAcPeriod;
-            if (r > 0.0) {
-                var dev = r - ac;
-                if (dev < 0.0) { dev = -dev; }
-                if (dev > LOCK_SNAP_K * ac) { r = ac; }
-            }
-        } else if (r > FAST_NEEDS_LOCK) {
-            r = 0.0;
-        }
-        if (r > MAX_RATE) { r = MAX_RATE; }
-        return r;
+        return gatedRate(mRate, mAcPeriod, mRateBase);
+    }
+
+    // Advance the baseline. Called from recomputeRate() and nowhere else.
+    //
+    // Reads the guard's answer through the SHIPPING outputRate(), computed
+    // against the OLD baseline, so a reading the guard rejected can never be
+    // the thing that raises the bar it failed.
+    hidden function updateRateBase() {
+        mRateBase = nextRateBase(mRateBase, outputRate(), mRate);
     }
 
     // ================= speed / distance helpers ============================

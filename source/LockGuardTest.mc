@@ -1,4 +1,5 @@
 using Toybox.Test;
+using Toybox.Sensor;
 using Toybox.Lang;
 
 // Suite for the STROKE-RATE LOCK GUARD -- the last decision the detector makes
@@ -88,8 +89,30 @@ module Lock {
             mAcPeriod = acPeriod;
         }
 
+        // The established-rate baseline. Written for the sweep that proves the
+        // static and the method agree; READ everywhere else, because the point
+        // of rowAt() below is that the shipping code establishes it.
+        function setRateBase(b) { mRateBase = b; }
+        function rateBase()     { return mRateBase; }
+
         // The shipping decision, called -- not transcribed.
         function out() { return outputRate(); }
+
+        // Quiet accelerometer batches through the SHIPPING onSensorData, which
+        // is the only place the stroke-ring timeout lives. Each batch is
+        // `n` samples of zero, so no stroke is detected and the synthetic clock
+        // `mSampleIdx * mDt` simply advances.
+        //
+        // FakeSensorData is DspTimeBaseTest.mc's stub, reused rather than
+        // copied: a second stand-in for the same platform type is a second
+        // thing that can drift from it. The cast is required -- monkeyc
+        // enforces onSensorData's declared parameter type with no -l level --
+        // and is erased at runtime, where only duck typing applies.
+        function feedQuiet(batches, n) {
+            for (var i = 0; i < batches; i++) {
+                onSensorData(new FakeSensorData(n) as Sensor.SensorData);
+            }
+        }
 
         // Real strokes at a chosen cadence, through the SHIPPING
         // registerStroke() / recomputeRate() path, so whatever the detector
@@ -209,6 +232,253 @@ module Lock {
     if (!Lock.near(q.out(), 39.0)) {
         logger.error("39.0 spm is under MAX_RATE and must pass through " +
                      "unchanged; got " + q.out());
+        return false;
+    }
+    return true;
+}
+
+// -- c1: the new symbols, pinned where they are epoch-invariant ---------------
+//
+// c1 introduces fastGate / gatedRate / nextRateBase and the mRateBase plumbing,
+// and wires outputRate() to the new static. That wiring is BEHAVIOUR-PRESERVING
+// by construction: fastGate still returns the absolute constant and ignores its
+// argument, so nothing the c0 cases assert moves.
+//
+// Every case below is GREEN at c1 and STAYS GREEN once the relative rule lands
+// at c3. They pin the parts that do not move: that the static IS the shipping
+// decision rather than a copy of it, that the guard is never LOOSENED at any
+// rate, that "no rate established" still means "guarded", and what the baseline
+// does and does not fold in.
+
+// THE SEAM IS THE SHIPPING DECISION, NOT A TRANSCRIPTION OF IT.
+//
+// This is the load-bearing case of the whole suite and it exists because of a
+// defect class this repository has shipped twice: a test that RE-IMPLEMENTS the
+// logic it is meant to guard pins nothing at all. Every other case here calls
+// the pure static, which is only worth doing while the static and the method
+// answer identically -- so that identity is swept rather than assumed.
+(:test) function test_lock_theSeamAnswersExactlyAsTheShippingMethod(logger) {
+    var raws  = [0.0, 6.0, 14.0, 17.0, 20.0, 25.0, 29.9, 30.0, 30.1, 45.0];
+    var locks = [0.0, 1.5, 3.0, 4.0];
+    var bases = [0.0, 8.0, 15.0, 20.0, 30.0];
+    for (var i = 0; i < raws.size(); i++) {
+        for (var j = 0; j < locks.size(); j++) {
+            for (var k = 0; k < bases.size(); k++) {
+                var p = new Lock.Probe();
+                p.setDetector(raws[i], locks[j]);
+                p.setRateBase(bases[k]);
+                var viaMethod = p.out();
+                var viaStatic = StrongRowView.gatedRate(raws[i], locks[j],
+                                                        bases[k]);
+                if (!Lock.near(viaMethod, viaStatic)) {
+                    logger.error("the pure seam and the shipping method have " +
+                                 "forked at raw " + raws[i] + ", lock period " +
+                                 locks[j] + ", baseline " + bases[k] +
+                                 ": outputRate() said " + viaMethod +
+                                 ", gatedRate() said " + viaStatic +
+                                 ". Every other case in this file reads the " +
+                                 "static and is worthless once these disagree");
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// NO ESTABLISHED RATE IS NOT NO GUARD.
+//
+// The state exists at every session start and after every long gap, and it is
+// the state in which a relative rule has nothing to be relative TO. The
+// fallback is the absolute constant that shipped -- so the worst this change
+// can do at that moment is exactly what the previous code did always.
+(:test) function test_lock_noEstablishedRateStillGuards(logger) {
+    // (a) the fallback IS the shipped constant, not merely "something large".
+    var bases = [0.0, -1.0, null];
+    for (var i = 0; i < bases.size(); i++) {
+        var g = StrongRowView.fastGate(bases[i]);
+        if (!Lock.near(g, $.FAST_NEEDS_LOCK)) {
+            logger.error("(a) with baseline " + bases[i] + " there is no " +
+                         "established rate, so the gate must fall back to " +
+                         "FAST_NEEDS_LOCK (" + $.FAST_NEEDS_LOCK + "); got " + g);
+            return false;
+        }
+    }
+
+    // (b) and it still BITES there -- a fallback that returned a number nothing
+    // could exceed would satisfy (a) and guard nothing.
+    if (!Lock.near(StrongRowView.gatedRate(30.1, 0.0, 0.0), 0.0)) {
+        logger.error("(b) 30.1 spm with no lock and no established rate must " +
+                     "still be zeroed; got " +
+                     StrongRowView.gatedRate(30.1, 0.0, 0.0));
+        return false;
+    }
+
+    // (c) THE PROVENANCE OF THE MULTIPLE. FAST_NEEDS_LOCK is 1.5x the rate it
+    // was implicitly calibrated at, and the relative rule arriving at c3 is
+    // that same multiple applied to the athlete instead of to 20 spm. Pinned so
+    // the pair can never be edited apart, leaving a bare 1.5 with no story.
+    if (!Lock.near($.LOCK_REL_K * $.LOCK_REF_RATE, $.FAST_NEEDS_LOCK)) {
+        logger.error("(c) LOCK_REL_K (" + $.LOCK_REL_K + ") x LOCK_REF_RATE (" +
+                     $.LOCK_REF_RATE + ") must reproduce FAST_NEEDS_LOCK (" +
+                     $.FAST_NEEDS_LOCK + ") -- the relative multiple is DERIVED " +
+                     "from the absolute constant, not chosen beside it");
+        return false;
+    }
+    return true;
+}
+
+// THE GUARD IS NEVER LOOSENED, AT ANY RATE.
+//
+// #149's first acceptance bar, and it is a claim about EVERY baseline rather
+// than about the two that were recorded -- so it is swept, not sampled. Green
+// at c1 (where the gate is the constant) and green at c3 (where it is the
+// constant's minimum with something smaller).
+(:test) function test_lock_theGuardIsNeverLoosenedAtAnyRate(logger) {
+    // (a) the gate itself never rises above the shipped absolute.
+    for (var b = 0.0; b <= 60.0; b += 0.5) {
+        var g = StrongRowView.fastGate(b);
+        if (g > $.FAST_NEEDS_LOCK + 0.0005) {
+            logger.error("(a) at baseline " + b + " the gate is " + g +
+                         ", above the shipped absolute " + $.FAST_NEEDS_LOCK +
+                         " -- that reading would now pass where it used to be " +
+                         "zeroed, which is the one direction this change is " +
+                         "not allowed to move");
+            return false;
+        }
+    }
+
+    // (b) stated as the OUTCOME rather than as the threshold, because the
+    // threshold is an implementation detail and the file is not: anything the
+    // shipped rule zeroed must still be zeroed, at every baseline.
+    var raws = [30.1, 31.0, 35.0, 45.0, 120.0];
+    for (var b2 = 0.0; b2 <= 60.0; b2 += 2.5) {
+        for (var i = 0; i < raws.size(); i++) {
+            var got = StrongRowView.gatedRate(raws[i], 0.0, b2);
+            if (!Lock.near(got, 0.0)) {
+                logger.error("(b) " + raws[i] + " spm with no lock was zeroed " +
+                             "by the shipped rule and must still be; at " +
+                             "baseline " + b2 + " it came out as " + got);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// WHAT THE BASELINE FOLDS IN, AND WHAT IT REFUSES TO.
+//
+// nextRateBase is introduced at c1 in its FINAL form and c3 does not touch it,
+// so these are invariants of the whole change rather than a way-station.
+(:test) function test_lock_theBaselineIsBuiltFromAcceptedReadingsOnly(logger) {
+    // (a) the first ACCEPTED reading establishes it outright. An EMA eased up
+    // from 0.0 would spend its first strokes claiming a rate nobody rowed.
+    if (!Lock.near(StrongRowView.nextRateBase(0.0, 18.0, 18.0), 18.0)) {
+        logger.error("(a) the first accepted reading must establish the " +
+                     "baseline outright; got " +
+                     StrongRowView.nextRateBase(0.0, 18.0, 18.0));
+        return false;
+    }
+
+    // (b) a REJECTED first reading establishes NOTHING. Otherwise the first
+    // phantom burst of a session sets the bar it is then measured against --
+    // which would make the guard weakest exactly when it is least corroborated.
+    if (!Lock.near(StrongRowView.nextRateBase(0.0, 0.0, 45.0), 0.0)) {
+        logger.error("(b) a reading the guard REJECTED must not establish the " +
+                     "baseline; got " +
+                     StrongRowView.nextRateBase(0.0, 0.0, 45.0));
+        return false;
+    }
+
+    // (c) a zero raw is the no-data state, not a rate of zero. Folding it in
+    // would drag the baseline toward a cadence nobody rowed and then gate the
+    // athlete against it.
+    if (!Lock.near(StrongRowView.nextRateBase(16.0, 0.0, 0.0), 16.0)) {
+        logger.error("(c) a zero median is 'nothing measured' and must leave " +
+                     "the baseline untouched; got " +
+                     StrongRowView.nextRateBase(16.0, 0.0, 0.0));
+        return false;
+    }
+
+    // (d) an ACCEPTED reading moves it by LOCK_BASE_A_OK of the gap.
+    var acc = StrongRowView.nextRateBase(16.0, 20.0, 20.0);
+    if (!Lock.near(acc, 16.0 + $.LOCK_BASE_A_OK * 4.0)) {
+        logger.error("(d) an accepted reading must move the baseline by " +
+                     $.LOCK_BASE_A_OK + " of the gap: 16.0 toward 20.0 is " +
+                     (16.0 + $.LOCK_BASE_A_OK * 4.0) + "; got " + acc);
+        return false;
+    }
+
+    // (e) a REJECTED reading still moves it, but far less -- the escape hatch
+    // that stops rejection from ever being permanent. Both halves are asserted:
+    // it must MOVE (or the guard can deadlock: reject, so the baseline never
+    // rises, so reject) and it must move STRICTLY LESS than an accepted one (or
+    // a burst lifts its own bar as fast as real rowing does).
+    var rej = StrongRowView.nextRateBase(16.0, 0.0, 20.0);
+    if (!(rej > 16.0)) {
+        logger.error("(e) a rejected reading must still creep the baseline " +
+                     "upward, or a guard that starts rejecting can never stop " +
+                     "-- the rejected reading is exactly the one that would " +
+                     "have raised the bar. Got " + rej + " from 16.0");
+        return false;
+    }
+    if (!(rej < acc)) {
+        logger.error("(e) a rejected reading must move the baseline STRICTLY " +
+                     "LESS than an accepted one (" + rej + " vs " + acc +
+                     "), or a sustained phantom burst lifts its own gate as " +
+                     "fast as real rowing does");
+        return false;
+    }
+    return true;
+}
+
+// THE BASELINE IS ESTABLISHED BY THE SHIPPING DETECTOR, not by this file.
+//
+// Sections (a) and (b) drive real strokes through registerStroke() /
+// recomputeRate() and read the baseline back, so the wiring -- one update per
+// REGISTERED STROKE, from recomputeRate and nowhere else -- is under test and
+// not merely reviewed. Section (c) drives the long-gap clear through the
+// shipping onSensorData.
+(:test) function test_lock_aSteadyRowEstablishesAndAGapClearsIt(logger) {
+    // (a) eight strokes at a steady 15.0 spm establish a 15.0 spm baseline.
+    // Steady, so the EMA has nothing to converge toward but the rate itself and
+    // the assertion does not depend on LOCK_BASE_A_OK's value.
+    var p = new Lock.Probe();
+    p.rowAt(15.0, 8);
+    if (!Lock.near(p.rateBase(), 15.0)) {
+        logger.error("(a) eight strokes at a steady 15.0 spm must establish a " +
+                     "15.0 spm baseline through the shipping detector; got " +
+                     p.rateBase());
+        return false;
+    }
+
+    // (b) a FRESH view has established nothing -- the state the fallback in
+    // test_lock_noEstablishedRateStillGuards exists for, reached through the
+    // real constructor rather than asserted about.
+    var fresh = new Lock.Probe();
+    if (!Lock.near(fresh.rateBase(), 0.0)) {
+        logger.error("(b) a freshly constructed view has measured nothing and " +
+                     "must hold no baseline; got " + fresh.rateBase());
+        return false;
+    }
+
+    // (c) THE LONG GAP. The stroke ring times out after mLastPeriod * 2.2
+    // (clamped to 4-12 s) of quiet, and the established rate must go with the
+    // ring it was built from -- otherwise a warm-up cadence gates a work
+    // interval, or a rest paddle gates a sprint.
+    //
+    // 4.0 s periods put the timeout at 8.8 s; the last stroke landed at
+    // t = 28.0 s on the detector's synthetic clock (mSampleIdx * mDt, mDt =
+    // 1/REQ_RATE = 0.04 s), so 1200 quiet samples take the clock to 48.0 s and
+    // clear it with margin. NOT System.getTimer(): the detector's clock counts
+    // samples this case feeds, so it reads the same on a seconds-old CI
+    // simulator and an hours-old desktop one.
+    p.feedQuiet(48, 25);
+    if (!Lock.near(p.rateBase(), 0.0)) {
+        logger.error("(c) 48 s of quiet must clear the established rate along " +
+                     "with the stroke ring, so the next piece is guarded by " +
+                     "the absolute fallback rather than by a baseline " +
+                     "describing a piece that has ended; got " + p.rateBase());
         return false;
     }
     return true;
