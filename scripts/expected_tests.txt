@@ -131,6 +131,20 @@ test_grid_restAndGateShowTheGridAndDropTheSubRow
 test_grid_coolAndDoneKeepTheLiveRowsAndTheSubRow
 test_grid_noLatchedSetMeansNoGridOnAnyScreen
 
+# source/CueZoneTest.mc
+#
+# Names are MODULE-QUALIFIED: every (:test) lives inside `module CueFix`, which
+# is what the simulator prints in the RESULTS table and what
+# scripts/list_tests.py now extracts (3460b27). The reason is the fenix6
+# family's 253-member cap on module 'globals' -- see the ceiling note at the top
+# of source/CueZoneTest.mc.
+CueFix.test_cue_c0_theMeasurementSurvivesTheCue
+CueFix.test_cue_c0_theSteadyAndTheWhiteStatesAreUnchanged
+CueFix.test_cue_theSeamAgreesWithRateColourAndStartsClean
+CueFix.test_cue_theDeadbandIsPaidOnExitOnly
+CueFix.test_cue_theWindowsAreFourSecondsAndOneOnAClock
+CueFix.test_cue_theScreenLagsTheColourNotTheNumber
+
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork
 test_rate_whiteWhenNoData

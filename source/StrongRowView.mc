@@ -221,6 +221,154 @@ const HRZ_BELOW = 0;
 const HRZ_IN    = 1;
 const HRZ_ABOVE = 2;
 
+// ============ the DISPLAY CUE's zone codes ==================================
+// The stroke-rate colour, treated as an INSTRUCTION rather than as a rendering
+// of the measurement. In the maintainer's words: "the in row measurement is
+// designed to just tell me whether I should increase or decrease my rate. Have
+// it keep the actual measurement in the file though."
+//
+// A CODE, never a colour, for the same reason HRZ_* is: "nothing to say" has to
+// be a different KIND of answer, or it collapses into "below band" one palette
+// edit later -- the #86 / #107 defect class.
+//
+// Module scope, like every constant a class-scope static must reach: a Monkey C
+// class `const` is an instance member and a static cannot resolve it.
+const CUEZ_NONE  = -1;   // no reading -- the numeral is "--.-"
+const CUEZ_BELOW = 0;    // row harder
+const CUEZ_IN    = 1;    // hold
+const CUEZ_ABOVE = 2;    // ease off
+
+// ============ the cue's three tunables ======================================
+// CHOSEN BY REPLAY AGAINST TWO RECORDED ROWS, not by feel -- and every figure
+// below is REGENERABLE IN ONE COMMAND:
+//
+//     python3 scripts/cue_replay.py
+//
+// That harness drives THE RULE BELOW (cueBandZone / cueTarget / cueStep,
+// transcribed into Python, with the transcription pinned against the same
+// numeric vectors source/CueZoneTest.mc asserts against this file) over the work
+// laps of both recordings, which are committed as
+// scripts/fixtures/cue_work_laps.txt. scripts/test_cue_replay.py re-derives
+// every number quoted here and reds if any of them moves, so this comment can no
+// longer drift away from the data.
+//
+// RETRACTION, kept rather than edited away because the retracted claims were
+// load-bearing for the whole design. An earlier revision of this block quoted
+// figures produced by a DIFFERENT machine from the one that shipped: a two-stage
+// replay whose deadband ran free on every sample, whose persistence window was
+// chosen by the zone being LEFT rather than by the candidate, and which counted
+// SAMPLES rather than milliseconds. Replaying the shipped rule instead retracts
+// four claims, each corrected in place below:
+//   * the choppy row's false-high improvement. Advertised 6.9% -> 4.5%. It is
+//     actually UNCHANGED. This is the sentence the design was sold on.
+//   * the flicker figures (2.88 -> 1.41 calm, 2.92 -> 1.94 choppy).
+//   * a lap-median "walk" of 16.5 -> 15.0 -> 14.2 -> 13.2, which was a selective
+//     subsequence of a series that is not monotone.
+//   * "the calm row never exceeds 1.5x", which it does.
+// No CODE was wrong; the evidence quoted for it was.
+//
+// THE TWO ROWS, work laps only, from the row_stroke_rate developer field. A zero
+// is the app's no-data sentinel (drawRate renders it "--.-"), so it is an
+// ABSENCE and not a slow stroke, and it is excluded from every figure here:
+//
+//   4x15' durability, calm water, target 18-20 spm
+//     laps over 600 s: 4 laps, 3522 recorded seconds, 3496 carrying a reading
+//   8x3'  strength-endurance, choppy water, target 16-18 spm
+//     laps within 5 s of 180: 8 laps, 1442 recorded seconds, 1436 with a reading
+//
+// THE FAILURE BEING FIXED IS TRANSIENT SPIKES, not a biased median. Against its
+// own row median the choppy row reads above 1.25x on 8.7% of its reading-seconds
+// and peaks at 37.5 spm (2.43x); the calm row reads above 1.25x on 4.0% and
+// peaks at 31.9 spm (1.60x). (Not "never exceeds 1.5x": the calm row does, on 2
+// of 3496 seconds. The earlier absolute claim is withdrawn -- the difference
+// between the rows is a factor of two on the 1.25x statistic, which is the real
+// point and does not need an absolute to stand on.)
+//
+// THE CHOPPY ROW'S EIGHT WORK-LAP MEDIANS, in full, against a 16-18 target:
+//
+//     16.5, 15.0, 14.2, 15.2, 13.2, 14.3, 16.1, 16.0
+//
+// FIVE of the eight sit below band and the middle of the session sags to 13.2 --
+// the athlete easing off against a cue that was lying -- before the last two
+// intervals recover into band. The series is NOT monotone and it DOES recover;
+// the retracted "16.5 -> 15.0 -> 14.2 -> 13.2" was laps 1, 2, 3 and 5 with lap 4
+// dropped from the middle and laps 6-8 dropped from the end.
+//
+// THE DRIVER IS WATER STATE RATHER THAN CADENCE, but the within-row evidence for
+// that is weaker than an earlier revision claimed, so it is restated rather than
+// quietly kept. Per calm work lap, the share of reading-seconds above 1.25x THAT
+// LAP's own median is 1.0%, 5.5%, 1.3%, 3.5%; the 3.5% lap is the one abandoned
+// early for chop. The earlier revision quoted "3.5% against 1.0% and 1.3%" and
+// left out the 5.5% lap -- which is spikier than the chop lap and breaks the
+// comparison. What the recordings do support is the BETWEEN-row difference:
+// 8.7% choppy against 4.0% calm, same statistic, same definition.
+//
+// SCORED BY DIRECTION OF ERROR, because the damaging error is FALSE-HIGH:
+// telling the athlete to ease off while they are actually in the band. TRUTH is
+// a 31 s CENTRED median of the measurement put through the plain band; a FLIP is
+// a zone change between consecutive SCORED seconds. Every definition and every
+// denominator is in scripts/cue_replay.py in code rather than in prose, because
+// their absence is precisely why the superseded figures could not be checked.
+//
+//   row     metric        raw (before)   shipped cueStep (after)
+//   calm    FALSE-HIGH        11.8%              2.6%
+//   calm    false-low          7.1%              1.8%
+//   calm    missed-HIGH        6.2%             15.3%
+//   calm    flips/min          2.87              1.10
+//   calm    lag                 0 s               1 s
+//   choppy  FALSE-HIGH         6.9%              6.9%
+//   choppy  false-low         18.1%              3.0%
+//   choppy  missed-HIGH        1.5%              2.5%
+//   choppy  flips/min          2.30              1.17
+//   choppy  lag                 0 s               5 s
+//
+// WHAT THAT TABLE SAYS, INCLUDING THE PART THAT WAS SOLD WRONG. On the CALM row
+// the cue does what it was chosen to do: FALSE-HIGH 11.8% -> 2.6%. On the CHOPPY
+// row it does not reduce false-high AT ALL -- 28 of 403 truth-in-band seconds
+// either way, and only 18 of those are the same seconds, so it relocates them
+// rather than removing them. The choppy row's real and reproducible gains are
+// FALSE-LOW 18.1% -> 3.0% and flicker 2.30 -> 1.17 flips/min. A later strategy
+// comparison should be scored against those, never against the 4.5% this block
+// used to advertise. Whether the choppy row's residual false-high wants a
+// further change is a live question and NOT settled here.
+//
+// FLICKER roughly halves on both rows, and by more than was advertised: 2.87 ->
+// 1.10 flips/min calm, 2.30 -> 1.17 choppy.
+//
+// THE COST, ACCEPTED DELIBERATELY: missed-HIGH rises from 6.2% to 15.3% of
+// scored seconds (calm) and 1.5% to 2.5% (choppy), and the median lag on a
+// genuine zone change goes from 0 s to 1 s (calm) and 5 s (choppy). A late
+// warning is far cheaper than a false one, and the deadband is only 1 spm, so a
+// genuine overshoot past +1 still arrives -- four seconds later.
+//
+// DO NOT "IMPROVE" THIS BY SMOOTHING THE NUMBER. Pre-smoothing the displayed
+// rate and taking the zone from the smoothed value makes BOTH rows worse on
+// FALSE-HIGH. Re-measured on the SHIPPED rule with CAUSAL (trailing) filters,
+// which is the only kind a live display could run:
+//
+//   pre-filter          calm false-high   choppy false-high
+//   none (shipped)            2.6%              6.9%
+//   median-5                  3.4%              9.7%
+//   median-9                  4.7%             13.2%
+//   Hampel (7, 3 MAD)         2.9%              6.9%
+//
+// The Hampel row is the instructive one: it moves the choppy figure not at all,
+// because it does not suppress the 37.5 spm spike. That spike is SIX CONSECUTIVE
+// SECONDS at the very first second of a work lap, so a trailing window has
+// nothing but the spike in it -- its own median is 37.5 and its MAD is zero, and
+// a trailing median-5 passes all six through unchanged. An outlier rejector
+// cannot reject what it has only ever seen. FILTER THE ZONE, NOT THE NUMBER: the
+// displayed number stays raw outputRate() because it is the measurement, and the
+// colour carries the instruction.
+//
+// WHAT NONE OF THIS MEASURES: how the result reads on a wrist mid-stroke. These
+// figures are a replay of two recordings against a decision function. They say
+// the cue would have lied less often on the calm row and flickered less on both;
+// they do not say the athlete would have rowed better.
+const CUE_DEADBAND = 1.0;         // spm, paid on EXIT from the band only
+const CUE_PERSIST_OUT_MS = 4000;  // ms a change to an out-of-band cue must hold
+const CUE_PERSIST_IN_MS  = 1000;  // ms a change back into the band must hold
+
 // ---- #80: the status row and the heat-strain pip ----------------------------
 //
 // MEASURED FIRST, because the design that #80's own text proposed does not
@@ -427,6 +575,25 @@ class StrongRowView extends Ui.View {
     hidden var mLastHrMs;
     hidden var mHrEver;
 
+    // ---- display-cue state ------------------------------------------------
+    // THREE fields, and none of them is a rate. The cue is a ZONE -- the
+    // instruction "row harder / hold / ease off" -- and the rate it was derived
+    // from is deliberately not kept, so nothing downstream can start reading a
+    // filtered NUMBER out of this layer. The number on screen and the number in
+    // the file both come straight from outputRate().
+    //
+    //   mCueZone   the zone currently DISPLAYED (a CUEZ_* code)
+    //   mCueCand   the zone the raw rate has been asking for
+    //   mCueSince  when it started asking, on the nowMs() clock (ms)
+    //
+    // Advanced ONLY from onUpdate. Nothing on the onTick path -- the path that
+    // writes row_stroke_rate, dist_per_stroke and corrective_rate -- reads or
+    // writes any of them, which is what makes "the file is unaffected" a
+    // structural property rather than a promise.
+    hidden var mCueZone;
+    hidden var mCueCand;
+    hidden var mCueSince;
+
     // R-R / HRV state
     hidden var mRrOk;
     hidden var mLastRrMs;     // last R-R BATCH arrival (display indicator)
@@ -507,6 +674,11 @@ class StrongRowView extends Ui.View {
         mHrBpm      = 0;
         mLastHrMs   = 0;
         mHrEver     = false;
+        // No cue until a work step has produced a reading. CUEZ_NONE is the
+        // "nothing to say" state, not a zone that happens to be off the band.
+        mCueZone    = $.CUEZ_NONE;
+        mCueCand    = $.CUEZ_NONE;
+        mCueSince   = 0;
         mRrOk       = false;
         mLastRrMs   = 0;
         mLastBeatMs = 0;
@@ -1447,6 +1619,162 @@ class StrongRowView extends Ui.View {
             return Gfx.COLOR_GREEN;                     // in band: hold
         }
         return Gfx.COLOR_WHITE;
+    }
+
+    // ============ the DISPLAY CUE ==========================================
+    // A layer that sits BETWEEN outputRate() and the colour, and reaches
+    // nothing else. It consumes the estimator's output and is read only by the
+    // draw path.
+    //
+    // WHAT IT MUST NOT TOUCH, listed because the whole instruction turns on it:
+    // outputRate(), recomputeRate(), registerStroke() and distPerStroke() are
+    // unchanged, so the three FIT writes computed from them --
+    // mFitRate.setData(outputRate()), mFitDps.setData(distPerStroke(...)) and
+    // correctiveRate()'s use of outputRate() -- record exactly what they
+    // recorded before. The displayed NUMBER is unchanged too: drawRate formats
+    // outputRate(). Only the COLOUR passes through here.
+    //
+    // rateColour above is left in place and unmodified. It is still the
+    // definition of "which colour does this rate deserve"; cueColour below
+    // agrees with it exactly on the memoryless mapping, and a (:test) sweeps
+    // the two against each other so the vocabulary cannot fork.
+
+    // Pure: the zone a rate falls in, with no memory at all. The band
+    // comparison and nothing else.
+    //
+    // Boundary inclusivity is rateColour's: `rate == lo` is neither `< lo` nor
+    // `> hi`, so it is IN, and likewise `rate == hi`.
+    //
+    // `rate <= 0.0` is CUEZ_NONE and not "very slow". outputRate() genuinely
+    // returns 0.0 when nothing has been measured and drawRate renders that as
+    // "--.-", so a zone here would be a colour on a dash.
+    static function cueBandZone(rate, lo, hi) {
+        if (rate <= 0.0) { return $.CUEZ_NONE; }
+        if (rate < lo)   { return $.CUEZ_BELOW; }
+        if (rate > hi)   { return $.CUEZ_ABOVE; }
+        return $.CUEZ_IN;
+    }
+
+    // Pure: the zone the raw rate is ASKING for, given the zone on screen.
+    //
+    // Separate from cueBandZone because the two answer different questions --
+    // "where is this rate" against "does this rate justify changing the
+    // instruction" -- and only the second one is allowed to depend on what is
+    // already displayed.
+    //
+    // THE DEADBAND IS PAID ON EXIT ONLY, and the asymmetry is the design rather
+    // than an oversight. Leaving the band means starting to shout at the
+    // athlete, so it costs CUE_DEADBAND; coming back means saying "you're fine",
+    // which the athlete can afford to hear early, so it costs nothing and the
+    // rate has only to REACH the edge. A deadband applied on re-entry would make
+    // the default 16-18 band effectively 17-17 to get back into, and an athlete
+    // who corrected exactly onto the edge would be told to keep correcting.
+    //
+    // Implemented as a WIDENED BAND while the display says IN, which is exactly
+    // "leaving requires rate > hi + DEADBAND or rate < lo - DEADBAND" and keeps
+    // the no-data and boundary rules in one place instead of two.
+    static function cueTarget(rate, lo, hi, cur) {
+        if (cur == $.CUEZ_IN) {
+            return cueBandZone(rate, lo - $.CUE_DEADBAND, hi + $.CUE_DEADBAND);
+        }
+        return cueBandZone(rate, lo, hi);
+    }
+
+    // Pure: one step of the cue's state machine.
+    //
+    //   rate   the raw estimator output (outputRate())
+    //   lo/hi  the target band, in spm
+    //   cur    the zone currently displayed
+    //   cand   the zone that has been asking to replace it
+    //   since  when it started asking, on the caller's clock (ms)
+    //   now    the caller's clock, in ms
+    //
+    // Returns [zone, candidate, since]. The caller stores all three and passes
+    // them back next frame; the function itself holds nothing.
+    //
+    // A STEP FUNCTION AND NOT A METHOD, so the whole decision is reachable from
+    // a (:test) with plain numbers -- the seam rateColour, pauseFlags,
+    // footState, hrZone and dpsZone all use. A (:test) never yields to the
+    // simulator event loop, so a decision buried in onUpdate is reachable only
+    // through a Dc and a fully-built view; this one is not.
+    //
+    // TIME IS A PARAMETER, not System.getTimer(). The caller passes nowMs(),
+    // which a probe overrides. A stamp synthesised from getTimer() inside a
+    // test would depend on how long the device has been up -- and CI's
+    // simulator is seconds old while a desktop one is hours old, so such a case
+    // passes where it is written and reds where it is judged.
+    //
+    // MEASURED IN MILLISECONDS, NEVER IN CALLS. onUpdate runs off a 250 ms tick,
+    // so a window counted in callbacks would make CUE_PERSIST_OUT_MS = 4 mean
+    // one second rather than four -- and it would silently retune itself if the
+    // tick period ever changed, or if the platform coalesced updates.
+    //
+    // WHICH WINDOW APPLIES IS DECIDED BY THE CANDIDATE, not by the zone being
+    // left, and that is the generalisation the measured result asks for: any
+    // out-of-band candidate is the EXPENSIVE claim ("ease off" / "row harder")
+    // and pays CUE_PERSIST_OUT_MS, whether it replaces IN or the other side of
+    // the band; a candidate of IN is the cheap claim and pays
+    // CUE_PERSIST_IN_MS.
+    static function cueStep(rate, lo, hi, cur, cand, since, now) {
+        var want = cueTarget(rate, lo, hi, cur);
+
+        // Already showing what the rate asks for: nothing is pending, and the
+        // candidate is reset so that persistence means CONTINUOUS. Without this
+        // an intermittent spike would bank credit across the gaps between its
+        // appearances, which is a total rather than a persistence test.
+        if (want == cur) { return [cur, cur, now]; }
+
+        // CUEZ_NONE IS ADOPTED WITHOUT DELAY, in both directions.
+        //   into NONE:  drawRate switches the numeral to "--.-" on this very
+        //               frame, and a colour outliving the number it described is
+        //               a claim with nothing behind it.
+        //   out of NONE: there is no displayed instruction to protect, so the
+        //               first reading is the best answer available and delaying
+        //               it buys nothing. This is also what makes a work interval
+        //               start clean -- see the parking branch in onUpdate.
+        if (want == $.CUEZ_NONE || cur == $.CUEZ_NONE) {
+            return [want, want, now];
+        }
+
+        // A DIFFERENT candidate from last frame starts its own clock.
+        if (want != cand) { return [cur, want, now]; }
+
+        // A CLOCK THAT WENT BACKWARDS restarts the timer instead of adopting or
+        // stalling. Compared directly rather than through the difference, so no
+        // subtraction can overflow on the way to the test.
+        //
+        // SCOPE, stated because the neighbouring hazard is an open question here:
+        // System.getTimer() is a 32-bit millisecond counter and WRAPS, but
+        // whether a wrap presents as a backwards step or as correct two's
+        // -complement arithmetic depends on Monkey C's overflow semantics, which
+        // nothing in this repository measures -- #70 owns that for the
+        // pre-existing rrIsFresh / hrHave pair and this does not add to it. The
+        // guard is written so either answer is safe: worst case one window's
+        // delay, once every 24.85 days.
+        if (now < since) { return [cur, want, now]; }
+
+        var need = (want == $.CUEZ_IN) ? $.CUE_PERSIST_IN_MS
+                                       : $.CUE_PERSIST_OUT_MS;
+        if ((now - since) >= need) { return [want, want, now]; }
+        return [cur, cand, since];
+    }
+
+    // Pure: the colour for a cue zone.
+    //
+    // The SAME three constants rateColour uses, and the identity is pinned by a
+    // (:test) that sweeps cueColour(isWork, cueBandZone(r, lo, hi)) against
+    // rateColour(isWork, r, lo, hi). Two vocabularies that merely happen to
+    // agree today would be one edit from disagreeing.
+    //
+    // `isWork` is a BOOLEAN for the reason rateColour states: STEP_WORK is a
+    // class `hidden const`, i.e. an instance member, so a static cannot resolve
+    // it.
+    static function cueColour(isWork, zone) {
+        if (!isWork) { return Gfx.COLOR_WHITE; }
+        if (zone == $.CUEZ_BELOW) { return Gfx.COLOR_BLUE; }   // row harder
+        if (zone == $.CUEZ_ABOVE) { return Gfx.COLOR_RED; }    // ease off
+        if (zone == $.CUEZ_IN)    { return Gfx.COLOR_GREEN; }  // hold
+        return Gfx.COLOR_WHITE;                                // CUEZ_NONE
     }
 
     // Pure: the [paused, recFailed] pair a toggle should leave behind, given
@@ -3957,8 +4285,28 @@ class StrongRowView extends Ui.View {
                         Gfx.TEXT_JUSTIFY_CENTER | Gfx.TEXT_JUSTIFY_VCENTER);
         }
 
+        // THE NUMBER AND THE INSTRUCTION, from here on, are two different
+        // things computed from one estimator reading:
+        //   dispRate  goes to drawRate untouched -- it is the measurement.
+        //   col       comes from the cue zone -- it is the instruction.
         var dispRate = outputRate();
-        var col = rateColour(type == STEP_WORK, dispRate, mTgtLo, mTgtHi);
+        var cue;
+        if (isWork) {
+            cue = cueStep(dispRate, mTgtLo, mTgtHi,
+                          mCueZone, mCueCand, mCueSince, nowMs());
+        } else {
+            // Off the WORK step nothing is being cued, so nothing is carried.
+            // Parking at CUEZ_NONE rather than leaving the machine running is
+            // what stops a zone derived from rest-cadence strokes appearing the
+            // instant the next work interval starts -- and it means the first
+            // work frame shows the true zone at once, with no cue in front of
+            // it to protect.
+            cue = [$.CUEZ_NONE, $.CUEZ_NONE, nowMs()];
+        }
+        mCueZone  = cue[0];
+        mCueCand  = cue[1];
+        mCueSince = cue[2];
+        var col = cueColour(isWork, mCueZone);
         // #109: on the RECOVERY screens the grid IS the screen -- there is no
         // stroke to correct, so the live numeral earns nothing, while the
         // interval just finished is the thing worth reading.

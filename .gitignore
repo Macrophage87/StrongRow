@@ -19,3 +19,9 @@ developer_key*
 
 # Temp
 *.tmp
+
+# Python bytecode. scripts/cue_replay.py is the first script here that another
+# script IMPORTS rather than shells out to, so a scripts/__pycache__/ appears
+# the moment scripts/test_cue_replay.py runs.
+__pycache__/
+*.pyc
