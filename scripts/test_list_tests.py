@@ -249,6 +249,73 @@ def _():
     return run_extractor({"A.mc": "// nothing here\n"}), (0, [])
 
 
+
+# ------------------------------------------------------- module scoping -----
+# A (:test) inside `module M { ... }` is compiled and run like any other, but
+# the simulator's RESULTS table names it `M.test_foo`. The pin must carry the
+# name the RUNNER prints, or check_ciq_tests.py reds with "missing" and
+# "unexpected" for the same test and no pin edit makes both green.
+
+@case("a declaration inside a module is qualified with the module name")
+def _():
+    src = "module Mod {\n" + decl("test_inside") + "}\n"
+    return run_extractor({"A.mc": src}), (0, ["Mod.test_inside"])
+
+
+@case("nested modules qualify with the whole path")
+def _():
+    src = "module Outer {\nmodule Inner {\n" + decl("test_deep") + "}\n}\n"
+    return run_extractor({"A.mc": src}), (0, ["Outer.Inner.test_deep"])
+
+
+@case("a module that has closed no longer qualifies what follows it")
+def _():
+    # The brace walk is the whole mechanism, so the CLOSE has to be pinned as
+    # well as the open: a scanner that pushed on `module` and never popped
+    # would qualify every later declaration in the file with a scope it is not
+    # in, and the module-open case above would stay green.
+    src = ("module Mod {\n" + decl("test_inside") + "}\n" + decl("test_after"))
+    return run_extractor({"A.mc": src}), (0, ["Mod.test_inside", "test_after"])
+
+
+@case("braces that are not scopes do not disturb qualification")
+def _():
+    # Function bodies and dictionary literals push and pop anonymous frames.
+    # If they were not balanced against each other, the declaration after them
+    # would be attributed to the wrong scope -- silently, and in whichever
+    # direction the imbalance ran.
+    src = ("module Mod {\n"
+           "function noise() { var d = { :a => 1, :b => { :c => 2 } }; }\n"
+           + decl("test_afterBraces") + "}\n")
+    return run_extractor({"A.mc": src}), (0, ["Mod.test_afterBraces"])
+
+
+@case("a module reopened twice in one file qualifies both halves")
+def _():
+    # This is the form the source actually uses: each commit appends its own
+    # `module Hsi { ... }` block rather than editing an earlier one.
+    src = ("module Mod {\n" + decl("test_first") + "}\n"
+           "module Mod {\n" + decl("test_second") + "}\n")
+    return run_extractor({"A.mc": src}), \
+        (0, ["Mod.test_first", "Mod.test_second"])
+
+
+@case("a class is NOT a qualifying scope")
+def _():
+    # Deliberate: a (:test) inside a class is not a form the runner supports,
+    # so guessing the name it would print would be inventing an answer. Left
+    # unqualified, such a declaration surfaces as ordinary pin drift.
+    src = "class Thing {\n" + decl("test_inAClass") + "}\n"
+    return run_extractor({"A.mc": src}), (0, ["test_inAClass"])
+
+
+@case("--where line numbers survive module qualification")
+def _():
+    src = "module Mod {\n" + decl("test_line2") + "}\n"
+    return run_extractor({"A.mc": src}, where=True), \
+        (0, ["A.mc:2:Mod.test_line2"])
+
+
 def main():
     failures = 0
     for name, fn in CASES:
