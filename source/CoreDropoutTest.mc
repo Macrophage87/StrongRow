@@ -132,3 +132,155 @@ module CoreDrop {
 }
 
 }
+
+module CoreDrop {
+
+// ===========================================================================
+// c1 -- green pins on the new symbols.
+// ===========================================================================
+// Green from the commit that introduces ctTempWritable / ctTempEverAfter /
+// ctMaxCoreAfter onward, INCLUDING the commit where ctTempWritable still
+// carries main's unconditional decision. They assert what must NOT move while
+// the fix lands, which is why they belong here and not among the c2
+// differentials.
+//
+// A dropout sample is the literal 0.0 that coreTempAt / skinTempAt return, so
+// every case below uses 0.0 for "nothing current" and a clamp-plausible value
+// for "a reading". CTW_READING is 37.42 C, the same figure #150's decode
+// script writes, so a byte pattern reported there can be matched to a case
+// here without a conversion step.
+const CTW_READING = 37.42;
+const CTW_DROPOUT = 0.0;
+
+// A current reading is written whatever the flag says. This is the case a
+// "fix" that gated on the flag alone would break, and it is the one that keeps
+// the feature working at all.
+(:test) function test_ctw_c1_aCurrentReadingIsAlwaysWritable(logger) {
+    var ok = true;
+    if (StrongRowView.ctTempWritable(false, CTW_READING) != true) {
+        logger.error("the FIRST reading of a session must be written, or the " +
+                     "field never carries a value at all");
+        ok = false;
+    }
+    if (StrongRowView.ctTempWritable(true, CTW_READING) != true) {
+        logger.error("a reading after an earlier write must still be written");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE LATCH TRAP, and the reason this case exists as a pin rather than as a
+// paragraph. #13's own body proposes skipping setData while stale. Record-
+// scope fields LATCH (#36), so after one real reading that would republish
+// that reading for the rest of the row -- a flat, plausible trace no consumer
+// could tell from a pod that stayed on.
+//
+// This is the case that reds when ctTempWritable is "tidied" to
+// `return tempC > 0.0`. It is green in every epoch of this branch, which is
+// the point: the trap has to be crossed deliberately, over a named failure.
+(:test) function test_ctw_c1_theDropoutMarkerSurvivesTheLatchTrap(logger) {
+    if (StrongRowView.ctTempWritable(true, CTW_DROPOUT) != true) {
+        logger.error("a dropout AFTER a real reading must still be written: " +
+                     "skipping re-emits the last value (#36), which fabricates " +
+                     "a steady temperature instead of leaving a gap");
+        return false;
+    }
+    return true;
+}
+
+// The session maximum is a running maximum: it rises with a higher sample and
+// ignores a lower one.
+(:test) function test_ctw_c1_theMaximumIsARunningMaximum(logger) {
+    var ok = true;
+    if (!$.ctAlmostEq(StrongRowView.ctMaxCoreAfter(0.0, CTW_READING), CTW_READING)) {
+        logger.error("the first reading must become the maximum");
+        ok = false;
+    }
+    if (!$.ctAlmostEq(StrongRowView.ctMaxCoreAfter(CTW_READING, 36.10), CTW_READING)) {
+        logger.error("a lower sample must not lower the maximum");
+        ok = false;
+    }
+    if (!$.ctAlmostEq(StrongRowView.ctMaxCoreAfter(CTW_READING, 38.10), 38.10)) {
+        logger.error("a higher sample must raise the maximum");
+        ok = false;
+    }
+    return ok;
+}
+
+// #13 asks whether stale reads pollute mMaxCore. They do not, and this is the
+// answer as a test rather than as an argument: a dropout sample can neither
+// raise the maximum nor lower an existing one, and on a podless row the
+// maximum stays exactly 0.0 -- which is what keeps `mMaxCore > 0.0` in
+// stopAndSave the sole and still-necessary guard against writing a bogus 0 C
+// max_core_temperature.
+(:test) function test_ctw_c1_aDropoutNeitherRaisesNorLowersTheMaximum(logger) {
+    var ok = true;
+    if (!$.ctAlmostEq(StrongRowView.ctMaxCoreAfter(CTW_READING, CTW_DROPOUT), CTW_READING)) {
+        logger.error("a dropout lowered the session maximum to the marker");
+        ok = false;
+    }
+    if (!$.ctAlmostEq(StrongRowView.ctMaxCoreAfter(0.0, CTW_DROPOUT), 0.0)) {
+        logger.error("a podless row must leave the maximum at 0.0 so " +
+                     "stopAndSave's `mMaxCore > 0.0` still suppresses the write");
+        ok = false;
+    }
+    return ok;
+}
+
+// The flag latches on a real reading, never on a dropout, and never clears
+// once set (startSession is the only reset).
+(:test) function test_ctw_c1_everLatchesOnlyOnARealReading(logger) {
+    var ok = true;
+    if (StrongRowView.ctTempEverAfter(false, CTW_DROPOUT) != false) {
+        logger.error("a dropout must not count as a written reading");
+        ok = false;
+    }
+    if (StrongRowView.ctTempEverAfter(false, CTW_READING) != true) {
+        logger.error("a real reading must latch the flag");
+        ok = false;
+    }
+    if (StrongRowView.ctTempEverAfter(true, CTW_DROPOUT) != true) {
+        logger.error("the flag must not un-latch on a dropout");
+        ok = false;
+    }
+    if (StrongRowView.ctTempEverAfter(true, CTW_READING) != true) {
+        logger.error("the flag must stay latched on a further reading");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE LOCKSTEP PROPERTY, over a tick sequence, calling BOTH functions the way
+// onTick calls them. The flag must never be true without a write having
+// happened -- if it could, a dropout marker would be licensed by a reading
+// that was never recorded, and the file would carry 0.0 for a field whose
+// records are otherwise never-set.
+//
+// Written as a sequence rather than as a truth table on purpose: the property
+// is about the two functions AGREEING as state advances, which no single-call
+// assertion can express. The vector mixes both windows in both orders.
+(:test) function test_ctw_c1_everNeverRunsAheadOfAWrite(logger) {
+    var samples = [CTW_DROPOUT, CTW_DROPOUT, CTW_READING, CTW_DROPOUT,
+                   CTW_READING, 38.01, CTW_DROPOUT, CTW_DROPOUT];
+    var ever   = false;
+    var writes = 0;
+    for (var i = 0; i < samples.size(); i++) {
+        var wrote = StrongRowView.ctTempWritable(ever, samples[i]);
+        if (wrote) { writes++; }
+        var next = StrongRowView.ctTempEverAfter(ever, samples[i]);
+        if (next && !ever && !wrote) {
+            logger.error("tick " + i + ": the flag latched on a sample that " +
+                         "was NOT written -- 'ever written' has run ahead of " +
+                         "the writes it is supposed to describe");
+            return false;
+        }
+        ever = next;
+    }
+    if (ever && writes == 0) {
+        logger.error("the flag ended latched with no write in the whole run");
+        return false;
+    }
+    return true;
+}
+
+}

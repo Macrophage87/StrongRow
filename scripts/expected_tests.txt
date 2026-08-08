@@ -26,6 +26,12 @@
 # see the ceiling note at the top of scripts/list_tests.py.
 CoreDrop.test_ctw_c0_noAcceptedCoreIsZeroOrBelow
 CoreDrop.test_ctw_c0_noAcceptedSkinIsZeroOrBelow
+CoreDrop.test_ctw_c1_aCurrentReadingIsAlwaysWritable
+CoreDrop.test_ctw_c1_theDropoutMarkerSurvivesTheLatchTrap
+CoreDrop.test_ctw_c1_theMaximumIsARunningMaximum
+CoreDrop.test_ctw_c1_aDropoutNeitherRaisesNorLowersTheMaximum
+CoreDrop.test_ctw_c1_everLatchesOnlyOnARealReading
+CoreDrop.test_ctw_c1_everNeverRunsAheadOfAWrite
 
 # source/CoreFieldGateTest.mc
 test_core_gateFalseWhenSensorNull

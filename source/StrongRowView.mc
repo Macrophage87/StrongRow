@@ -626,6 +626,17 @@ class StrongRowView extends Ui.View {
     hidden var mFitCtDiag;
     hidden var mFitHsi;
     hidden var mMaxCore;
+    // #13. "Has a real reading ever been written to this record field in this
+    // session?" -- one flag per field, not one for the pair, because #17 gave
+    // core and skin SEPARATE freshness stamps precisely so they can go stale
+    // independently. A shared flag would let the first core reading license a
+    // skin dropout marker on a field that had never carried a measurement.
+    //
+    // These are about WRITES, not about the pod: they are updated in the same
+    // onTick block as the setData they gate, from the same sample, so a tick
+    // the recording gate skipped cannot advance them. See ctTempWritable.
+    hidden var mCoreEver;
+    hidden var mSkinEver;
     hidden var mStartMs;
 
     hidden var mSteps;
@@ -671,6 +682,8 @@ class StrongRowView extends Ui.View {
         mFitCtDiag  = null;
         mFitHsi     = null;
         mMaxCore    = 0.0;
+        mCoreEver   = false;      // #13
+        mSkinEver   = false;      // #13
         mHrBpm      = 0;
         mLastHrMs   = 0;
         mHrEver     = false;
@@ -1022,12 +1035,34 @@ class StrongRowView extends Ui.View {
                 mFitCorr.setData(cr);
                 mCorrAccum += cr / 240.0;   // spm integrated over a 250 ms tick
             }
+            // #13. Each field decides for itself, from its own sample and its
+            // own "ever written" flag -- core and skin carry SEPARATE freshness
+            // stamps since #17, so one field's first reading must not license
+            // the other's dropout marker. ctTempWritable carries the whole
+            // argument for why the two windows get opposite answers.
+            //
+            // SCOPE, stated rather than implied: these six lines are covered by
+            // review only. The predicates are pinned in
+            // source/CoreDropoutTest.mc; a regression that rewired the CALL
+            // would leave every one of those cases green. #55 owns fuller
+            // in-process coverage of onTick.
             if (mFitCore != null) {
                 var ct = mCoreSensor.coreTemp();
-                mFitCore.setData(ct);
-                if (ct > mMaxCore) { mMaxCore = ct; }
+                if (ctTempWritable(mCoreEver, ct)) { mFitCore.setData(ct); }
+                // Latched from the SAME sample the write decision read, in the
+                // same block: that is what keeps the flag from running ahead of
+                // an actual write.
+                mCoreEver = ctTempEverAfter(mCoreEver, ct);
+                // Unchanged in behaviour from `if (ct > mMaxCore) { ... }`; see
+                // ctMaxCoreAfter for why it is a named function now and why it
+                // is deliberately outside the write gate.
+                mMaxCore  = ctMaxCoreAfter(mMaxCore, ct);
             }
-            if (mFitSkin != null) { mFitSkin.setData(mCoreSensor.skinTemp()); }
+            if (mFitSkin != null) {
+                var sk = mCoreSensor.skinTemp();
+                if (ctTempWritable(mSkinEver, sk)) { mFitSkin.setData(sk); }
+                mSkinEver = ctTempEverAfter(mSkinEver, sk);
+            }
             // #80: the heat strain index. WRITTEN ONLY WHEN THERE IS ONE, which
             // is the opposite of the core/skin lines above it, and the asymmetry
             // is forced rather than stylistic.
@@ -1507,6 +1542,105 @@ class StrongRowView extends Ui.View {
     // Null is the only absence the scale has, so null is the only rejection.
     static function hsiWritable(v) {
         return v != null;
+    }
+
+    // ---- #13: what a CORE dropout records ----------------------------------
+    // Same seam as coreFieldsWanted / hsiWritable above: pure, class-scope
+    // static, untyped parameters, reachable from a (:test) with no Session, no
+    // ANT channel and no clock. source/CoreDropoutTest.mc holds the cases.
+    //
+    // THE INPUT. `tempC` is whatever coreTemp() / skinTemp() returned this
+    // tick: a clamp-accepted reading while one is current, and EXACTLY 0.0
+    // once it is not (CoreTempSensor coreTempAt / skinTempAt). So the sample
+    // carries its own freshness and this gate needs no second call into the
+    // sensor -- one System.getTimer() read per tick instead of two, and no
+    // window in which freshness can flip between the two calls.
+    //
+    // That is a COUPLING to the getters' stale-return convention, stated
+    // rather than hidden, and it is guarded: test_ct_staleReturnsZero pins
+    // "stale coreTemp/skinTemp is 0.0", and CoreDrop's two c0 sweeps pin
+    // "nothing decodeCoreC or decodeSkinC accepts is at or below 0.0 C" over
+    // the raw domain. Change either end and a named test reds.
+    //
+    // `everWritten` is the caller's per-field flag (mCoreEver / mSkinEver):
+    // has a real reading already been written to THIS record field in THIS
+    // session?
+    //
+    // WHY THE TWO WINDOWS GET OPPOSITE ANSWERS. Record-scope FitContributor
+    // fields LATCH -- #36 measured, byte level on fr965 / SDK 9.2.0, that a
+    // skipped setData re-emits the previous value on the next record rather
+    // than leaving a gap. There is no per-record gap available in Monkey C at
+    // all: setData(NaN) lands as 0xFFC00000, which a decoder reads as a datum
+    // (#48; how Garmin Connect renders it is open in #53), and setData(null)
+    // is an uncatchable native error that kills the app (#48). So:
+    //
+    //   * BEFORE the first write, withholding is free -- there is no previous
+    //     value to re-emit. The records carry the FLOAT never-set pattern
+    //     instead of a fabricated 0.0 C. This is the half that fixes the
+    //     4109-record podless row #102 was filed on, and the half #75's
+    //     "such a row logs 0.0" note pointed here for.
+    //   * AFTER a real reading has been written, withholding would republish
+    //     that reading for the rest of the row -- a flat, entirely plausible
+    //     37.4 C trace no consumer could tell from a pod that stayed on. So
+    //     the write CONTINUES, and a dropout records 0.0 C, which cannot
+    //     collide with a measurement because both accepted bands start above
+    //     zero by construction (25-45 C core, 15-45 C skin). An out-of-band
+    //     marker beats an in-band lie. #13's own suggested fix -- skip while
+    //     stale -- is the in-band lie, and CoreDrop's c1 case
+    //     test_ctw_c1_theDropoutMarkerSurvivesTheLatchTrap is what a future
+    //     edit to `return tempC > 0.0` has to red before it can land.
+    //
+    // WHAT IS MEASURED AND WHAT IS NOT, at the strength the evidence supports.
+    // The latch (#36) and the never-set FLOAT pattern (#48) were measured on
+    // rmssd and rr_interval, and #80 re-measured the never-set case for
+    // heat_strain_index. NEITHER WAS MEASURED ON core_temperature OR
+    // skin_temperature: that they behave the same is expected and unverified.
+    // #150 is the [Local] decode with byte-exact pass criteria that would
+    // upgrade it, and it can falsify this design -- if a withheld write does
+    // not produce the never-set pattern for these two fields, the silent
+    // prefix buys nothing and this comment must be corrected here, at its
+    // source. Nothing in this repository can decode a .fit, so no claim about
+    // what a decoder or Garmin Connect SEES appears above; only what this code
+    // calls.
+    static function ctTempWritable(everWritten, tempC) {
+        // c1: main's decision, unchanged and unconditional. The differentials
+        // that red against this body are in CoreDropoutTest.mc's c2 section,
+        // and the commit after them replaces this one line.
+        return true;
+    }
+
+    // The `everWritten` flag's next value. Latches on the first real reading
+    // and never clears within a session -- startSession resets it.
+    //
+    // Split out as a pure function rather than left inline so the lockstep
+    // property is pinnable: the flag turns true only on a sample that
+    // ctTempWritable also accepted, so "ever written" can never run ahead of
+    // an actual write. test_ctw_c1_everNeverRunsAheadOfAWrite asserts that
+    // over a tick sequence by calling BOTH functions, not by restating either.
+    static function ctTempEverAfter(everWritten, tempC) {
+        if (everWritten) { return true; }
+        return tempC != null && tempC > 0.0;
+    }
+
+    // The session maximum's next value, given this tick's sample.
+    //
+    // BEHAVIOUR-IDENTICAL to the `if (ct > mMaxCore) { mMaxCore = ct; }` it
+    // replaces -- same comparison, same direction. Extracted only so the
+    // property can be pinned, because #13 asks whether stale reads pollute the
+    // maximum and the answer needs to be a test rather than an argument:
+    // mMaxCore starts at 0.0 (initialize and startSession), a dropout sample
+    // IS 0.0, and 0.0 > 0.0 is false, so a dropout can neither raise nor lower
+    // it. That is what keeps `mMaxCore > 0.0` in stopAndSave the sole and
+    // still-necessary guard against writing a bogus 0 C max_core_temperature
+    // on a podless row.
+    //
+    // Deliberately NOT gated on ctTempWritable: the maximum is an in-app
+    // accumulator, not a FIT write, and coupling it to the write gate would
+    // make a future change to the gate silently move a session aggregate.
+    static function ctMaxCoreAfter(prevMax, tempC) {
+        if (tempC == null)     { return prevMax; }
+        if (tempC > prevMax)   { return tempC; }
+        return prevMax;
     }
 
     // The rightmost x a mark may occupy at height `yTop`, for a display whose
@@ -2810,6 +2944,15 @@ class StrongRowView extends Ui.View {
                 // to be reset INSIDE the CORE block below, which made its
                 // correctness depend on whether fields were created.
                 mMaxCore = 0.0;
+                // #13, reset HERE with mMaxCore and for the same reason: the
+                // "has this field ever been written" flags describe THIS
+                // session's record fields, and startSession is where those
+                // fields come into existence. Resetting them inside the
+                // coreFieldsWanted block below would make their correctness
+                // depend on whether the createFields succeeded -- the exact
+                // coupling the mMaxCore line above was moved out to avoid.
+                mCoreEver = false;
+                mSkinEver = false;
                 // Core temperature (#75). These fields are declared WITHOUT
                 // asking whether a pod has been heard yet. The previous gate
                 // (`... && mCoreSensor.everSeen()`) was evaluated exactly once,
