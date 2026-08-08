@@ -119,12 +119,28 @@ class LadderProbe extends CoreTempSensor {
     // Overridden by the two concrete probes below; never used from here.
     hidden function makeRetryTimer() { return null; }
 
-    // Counts, THEN runs the real body -- and refuses to re-enter past a cap.
-    // The cap is what turns an unbounded openChannel <-> scheduleReopen
-    // recursion into a FAILED ASSERTION rather than a hung test process. It is
-    // 12 against a legitimate ladder depth of CT_BURST_TRIES = 4: high enough
-    // that no correct behaviour reaches it, low enough that the simulator's own
-    // stack limit is not the thing that stops the run.
+    // Counts, THEN runs the real body -- and refuses to re-enter past a cap of
+    // 12, against a legitimate ladder depth of CT_BURST_TRIES = 4.
+    //
+    // WHAT THE CAP ACTUALLY BOUNDS, stated as MEASURED rather than as intended.
+    // It is not what stops the pre-fix run: on fr965 / SDK 9.2.0 the simulator
+    // aborts the case first, at the ELEVENTH nested openChannel frame, with
+    //
+    //     Error: Stack Overflow Error
+    //     Details: Failed invoking <symbol>
+    //
+    // on a stack alternating makeRetryTimer / scheduleReopen / openChannel down
+    // to initialize(). So the red is an ERROR, not a FAIL, and the observation
+    // is the crash itself -- which is the defect: on a device where the ANT open
+    // throws and no Timer can be armed, the app dies during onLayout rather than
+    // merely wasting radio. An earlier version of this comment claimed the cap
+    // was chosen low enough that the stack limit would not fire first; that was
+    // written before it was run and is RETRACTED here rather than deleted.
+    //
+    // The cap still earns its place: it bounds the re-open COUNT, which a
+    // runaway that does NOT grow the stack (a future edit that looped instead of
+    // recursing) would blow past while the interpreter never complained. Both
+    // bounds are needed; neither lets CI hang.
     hidden function openChannel() {
         if (opens == null) { opens = 0; }
         opens++;
@@ -317,6 +333,144 @@ class DeadTimerProbe extends LadderProbe {
     if ((armed.flagsSlot() & $.CT_DIAG_F_RETRY_LOST) != 0) {
         logger.error("flags = " + armed.flagsSlot() + " on a probe whose retry timer ARMED; " +
                      "a bit that is always set diagnoses nothing");
+        ok = false;
+    }
+    return ok;
+}
+
+// ---- c2: red differentials --------------------------------------------------
+// Every case below FAILS on the code as of the previous commit and passes after
+// the fix. Nothing else is in the commit that adds them.
+
+// THE INVARIANT: no sequence of failures, of any length, in any interleaving of
+// openChannel() throwing and the retry timer failing to arm, may produce
+// unbounded recursion.
+//
+// The cycle, and why nothing in the ladder stops it. openChannel()'s catch calls
+// scheduleReopen(), and scheduleReopen()'s catch called openChannel() straight
+// back. Once mFails >= CT_BURST_TRIES the delay is 30 s or more and NEVER
+// returns to 0 again (test_rb_c0_onlyTheBurstEverAsksForZeroDelay), so every
+// pass takes the timer branch -- and if the Timer cannot be allocated, which is
+// precisely the resource state that also makes the ANT open throw, the pair
+// alternates without bound. The ladder growing cannot help: the delay it grows
+// is the delay being discarded.
+//
+// The probe's cap turns that into a failed assertion rather than a hung test.
+// The re-open count is asserted too, not just the cap: after the fix the ladder
+// must stop at exactly CT_BURST_TRIES, not merely somewhere below 12.
+//
+// The second half is the INTERLEAVING the invariant claims: six more channel
+// closes, each landing on the timer branch (mFails is already past the burst)
+// and each failing to arm, must add no re-opens at all -- while still ATTEMPTING
+// to arm every time, so a later retry is not permanently foresworn.
+(:test) function test_rb_c2_anUnarmableTimerCannotRecurseWithoutBound(logger) {
+    var p = new DeadTimerProbe();
+    var ok = true;
+    if (p.ranAway()) {
+        logger.error("openChannel <-> scheduleReopen recursed past the probe's cap: a retry " +
+                     "timer that cannot be armed must not be answered with an immediate " +
+                     "reopen -- that is unbounded recursion, and it is #26's unpaced " +
+                     "re-search besides");
+        ok = false;
+    }
+    if (p.openCount() != $.CT_BURST_TRIES) {
+        logger.error("open attempts = " + p.openCount() + ", expected exactly " +
+                     $.CT_BURST_TRIES + " -- the burst, and then nothing further");
+        ok = false;
+    }
+    if (p.timerCount() != 1) {
+        logger.error("arm attempts = " + p.timerCount() + ", expected 1 for the first " +
+                     "delayed retry");
+        ok = false;
+    }
+    for (var i = 0; i < 6; i++) { p.closeEvent(); }
+    if (p.ranAway()) {
+        logger.error("a run of channel closes with an unarmable timer recursed past the cap");
+        ok = false;
+    }
+    if (p.openCount() != $.CT_BURST_TRIES) {
+        logger.error("open attempts after 6 further closes = " + p.openCount() + ", expected " +
+                     $.CT_BURST_TRIES + ": every one of those closes asks for 60 s or more, " +
+                     "and a dropped retry must not become an immediate one");
+        ok = false;
+    }
+    if (p.timerCount() != 7) {
+        logger.error("arm attempts = " + p.timerCount() + ", expected 7 (one per scheduled " +
+                     "retry): dropping THIS retry must not stop the ladder trying to arm the next");
+        ok = false;
+    }
+    return ok;
+}
+
+// #18's own defect class, in the code #18 added: a resource is allocated,
+// something throws past it, and the reference is dropped without handing the
+// resource back. Connect IQ caps concurrent Timers exactly as the radio caps
+// channels.
+//
+// Before the fix the catch did `mRetryTimer = null` and nothing else, so a Timer
+// whose start() threw is orphaned -- and if it armed before throwing,
+// cancelReopen() can no longer stop it, which is a callback firing into
+// openChannel() after close(). cancelReopen() is where the release rule for
+// timers already lives, so the fix reuses it rather than restating it; this case
+// is what distinguishes the two.
+(:test) function test_rb_c2_anUnarmableTimerIsHandedBack(logger) {
+    var p = new DeadTimerProbe();
+    if (p.timerCount() < 1) {
+        logger.error("the ladder never reached the timer branch; nothing to assert on");
+        return false;
+    }
+    var t = p.timerAt(0);
+    if (t.starts != 1) {
+        logger.error("the timer's start() must have been attempted, starts = " + t.starts);
+        return false;
+    }
+    if (t.stops < 1) {
+        logger.error("start() threw and the timer was never stopped -- it is orphaned, and " +
+                     "cancelReopen() cannot reach it once the reference is dropped. That is " +
+                     "#18's defect, in the code #18 added.");
+        return false;
+    }
+    return true;
+}
+
+// A crash-avoidance fix that hides the condition trades one invisible failure
+// for another, so the dropped retry has to be READABLE IN THE FILE.
+//
+// What is lost when the timer cannot be armed is the retry itself: nothing else
+// re-enters openChannel() (after the catch mChannel is null, so no further
+// CHANNEL_CLOSED can arrive), so CORE is dead for the rest of the app run. In
+// ct_diag that state and "a 30 s retry is still pending" differ only by an
+// openAttempt that has not happened YET -- an absence. CT_DIAG_F_RETRY_LOST is
+// what makes it positive evidence instead.
+//
+// Asserted BOTH ways on purpose. The bit being set is satisfiable by a mistake
+// that sets it always; the armed probe leaving it clear is the property that
+// makes the two rows different, and the whole-slot comparison is what a reader
+// of the file actually does.
+(:test) function test_rb_c2_aLostRetryIsVisibleInCtDiag(logger) {
+    var dead  = new DeadTimerProbe();
+    var armed = new ArmedProbe();
+    var ok = true;
+    var df = dead.flagsSlot();
+    var af = armed.flagsSlot();
+    if (df < 0 || af < 0) {
+        logger.error("the flags slot is unreadable: dead = " + df + ", armed = " + af);
+        return false;
+    }
+    if ((df & $.CT_DIAG_F_RETRY_LOST) == 0) {
+        logger.error("flags = " + df + " after a retry was dropped for want of a timer; " +
+                     "CT_DIAG_F_RETRY_LOST (" + $.CT_DIAG_F_RETRY_LOST + ") must be set, or " +
+                     "the file cannot tell a stalled ladder from one still waiting");
+        ok = false;
+    }
+    if ((af & $.CT_DIAG_F_RETRY_LOST) != 0) {
+        logger.error("flags = " + af + " on a probe whose timer ARMED; the bit must mean what " +
+                     "it says");
+        ok = false;
+    }
+    if (df == af) {
+        logger.error("both probes read flags = " + df + "; a dropped retry and an armed one " +
+                     "are the same row in the file");
         ok = false;
     }
     return ok;
