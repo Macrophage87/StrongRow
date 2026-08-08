@@ -529,3 +529,269 @@ module CueFix {
     }
     return true;
 }
+
+// -- c2: the differentials ----------------------------------------------------
+//
+// ALL THREE CASES BELOW ARE RED AGAINST c1b AND GREEN ONLY AT c3. That is the
+// whole job of this commit: the hysteresis is not implemented yet, so each fails
+// first and is then made to pass by a commit that touches no test file.
+//
+// THE RULE THEY PIN, stated once:
+//
+//   * while the cue zone is IN, LEAVING it requires rate > hi + DEADBAND or
+//     rate < lo - DEADBAND;
+//   * from any other zone the plain band comparison applies -- returning to
+//     "you're fine" is cheap;
+//   * a change to an OUT-OF-BAND instruction must persist PERSIST_OUT; a change
+//     back INTO the band needs only PERSIST_IN;
+//   * DEADBAND = 1.0 spm, PERSIST_OUT = 4 s, PERSIST_IN = 1 s.
+//
+// WHY THE DIRECTIONS ARE NOT SYMMETRIC. The damaging error is FALSE-HIGH:
+// telling the athlete to ease off while they are actually in the band. In the
+// choppy recording that is what drove the lap medians 16.5 -> 15.0 -> 14.2 ->
+// 13.2 against a 16-18 target. So asserting an out-of-band correction is the
+// expensive claim and pays the long window; withdrawing one is cheap.
+//
+// AND WHY THE NUMBER IS NOT FILTERED, which is the trap a later "improvement"
+// would walk into: pre-smoothing the displayed rate and deriving the zone from
+// the smoothed value makes the choppy row WORSE, measured -- 4.5% false-high on
+// raw against 8.4% (median-5), 12.5% (median-9) and 11.1% (Hampel). Filter the
+// zone, not the number.
+//
+// TIME IS INJECTED, NEVER SYNTHESISED. Every stamp below is an absolute number
+// the case chose. A stamp derived from System.getTimer() would depend on device
+// uptime, and CI's simulator is seconds old while a desktop one is hours old.
+
+// THE DEADBAND. Two sections for what it suppresses and one for where it must
+// NOT apply.
+(:test) function test_cue_theDeadbandIsPaidOnExitOnly(logger) {
+    // (a) and (b): a rate that leaves the band by less than 1.0 spm does not
+    // change the instruction AT ALL -- not after four seconds, not after ten.
+    // Driven as a real frame sequence at the 250 ms tick, feeding each step's
+    // output back in, so an implementation that merely delayed the change would
+    // still red here.
+    var probes = [[18.5, "(a) above"], [15.5, "(b) below"]];
+    for (var i = 0; i < probes.size(); i++) {
+        var rate = probes[i][0];
+        var zone = $.CUEZ_IN;
+        var cand = $.CUEZ_IN;
+        var since = 0;
+        for (var t = 0; t <= 10000; t += 250) {
+            var out = StrongRowView.cueStep(rate, CueFix.LO, CueFix.HI,
+                                            zone, cand, since, t);
+            zone = out[0]; cand = out[1]; since = out[2];
+        }
+        if (zone != $.CUEZ_IN) {
+            logger.error(probes[i][1] + ": a rate of " + rate + " leaves the " +
+                         "16-18 band by less than the 1.0 spm deadband, so the " +
+                         "cue must not change -- held for 10 s and the zone " +
+                         "became " + zone);
+            return false;
+        }
+    }
+
+    // (c) THE DEADBAND IS ASYMMETRIC BETWEEN EXIT AND ENTRY. Re-entry pays NO
+    // deadband: the rate has only to reach the band edge, not to clear it by
+    // 1.0 spm. A deadband applied here would make the band effectively 17-17 to
+    // get back into, and an athlete who corrected exactly onto the edge would be
+    // told to keep correcting.
+    var early = StrongRowView.cueStep(16.0, CueFix.LO, CueFix.HI,
+                                      $.CUEZ_BELOW, $.CUEZ_IN, 0, 999);
+    if (early[0] != $.CUEZ_BELOW) {
+        logger.error("(c) re-entry still owes its 1 s at 999 ms; zone is " +
+                     early[0] + ", expected " + $.CUEZ_BELOW);
+        return false;
+    }
+    var late = StrongRowView.cueStep(16.0, CueFix.LO, CueFix.HI,
+                                     $.CUEZ_BELOW, $.CUEZ_IN, 0, 1000);
+    if (late[0] != $.CUEZ_IN) {
+        logger.error("(c) 16.0 IS the band's lower edge, and coming back from " +
+                     "below costs no deadband -- reaching the edge is enough. " +
+                     "Zone is " + late[0] + ", expected " + $.CUEZ_IN);
+        return false;
+    }
+    return true;
+}
+
+// THE TWO WINDOWS, and what they are measured against.
+(:test) function test_cue_theWindowsAreFourSecondsAndOneOnAClock(logger) {
+    // (a) LEAVING the band takes PERSIST_OUT = 4 s. Both edges, so the window is
+    // pinned at its boundary rather than "somewhere before ten seconds". 19.5
+    // clears hi + DEADBAND = 19.0, so only the time is under test here.
+    var oe = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
+                                   $.CUEZ_IN, $.CUEZ_ABOVE, 0, 3999);
+    var ol = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
+                                   $.CUEZ_IN, $.CUEZ_ABOVE, 0, 4000);
+    if (oe[0] != $.CUEZ_IN) {
+        logger.error("(a) a candidate that has been asking for 3999 ms has not " +
+                     "yet earned the 4 s out-of-band window; zone is " + oe[0] +
+                     ", expected " + $.CUEZ_IN);
+        return false;
+    }
+    if (ol[0] != $.CUEZ_ABOVE) {
+        logger.error("(a) at 4000 ms the out-of-band change is due and must be " +
+                     "taken -- a genuine overshoot has to arrive; zone is " +
+                     ol[0] + ", expected " + $.CUEZ_ABOVE);
+        return false;
+    }
+
+    // (b) RETURNING to the band takes PERSIST_IN = 1 s, not four. "You're fine"
+    // is the cheap claim and must come back quickly, or the cue keeps shouting at
+    // an athlete who has already corrected.
+    var ie = StrongRowView.cueStep(17.0, CueFix.LO, CueFix.HI,
+                                   $.CUEZ_ABOVE, $.CUEZ_IN, 0, 999);
+    var il = StrongRowView.cueStep(17.0, CueFix.LO, CueFix.HI,
+                                   $.CUEZ_ABOVE, $.CUEZ_IN, 0, 1000);
+    if (ie[0] != $.CUEZ_ABOVE) {
+        logger.error("(b) 999 ms is not yet the 1 s re-entry window; zone is " +
+                     ie[0] + ", expected " + $.CUEZ_ABOVE);
+        return false;
+    }
+    if (il[0] != $.CUEZ_IN) {
+        logger.error("(b) at 1000 ms the return to the band is due; zone is " +
+                     il[0] + ", expected " + $.CUEZ_IN);
+        return false;
+    }
+
+    // (c) CROSSING THE BAND, below to above, with no settled frame in between.
+    // Covered by neither "leaving IN" nor "entering IN", so it is stated rather
+    // than left to be inferred: any out-of-band instruction is the expensive
+    // claim and pays the long window.
+    var xe = StrongRowView.cueStep(25.0, CueFix.LO, CueFix.HI,
+                                   $.CUEZ_BELOW, $.CUEZ_ABOVE, 0, 3999);
+    var xl = StrongRowView.cueStep(25.0, CueFix.LO, CueFix.HI,
+                                   $.CUEZ_BELOW, $.CUEZ_ABOVE, 0, 4000);
+    if (xe[0] != $.CUEZ_BELOW || xl[0] != $.CUEZ_ABOVE) {
+        logger.error("(c) an out-of-band instruction is the expensive claim " +
+                     "whichever zone it replaces: at 3999 ms the zone is " +
+                     xe[0] + " (expected " + $.CUEZ_BELOW + ") and at 4000 ms " +
+                     xl[0] + " (expected " + $.CUEZ_ABOVE + ")");
+        return false;
+    }
+
+    // (d) PERSISTENCE MEANS CONTINUOUS. One frame back at the displayed zone
+    // discards the pending change and the next candidate starts a fresh clock --
+    // otherwise an intermittent spike accumulates credit across the gaps between
+    // its appearances, which is a total, not a persistence test.
+    var brk = StrongRowView.cueStep(17.0, CueFix.LO, CueFix.HI,
+                                    $.CUEZ_IN, $.CUEZ_ABOVE, 0, 3000);
+    var again = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
+                                      brk[0], brk[1], brk[2], 3250);
+    var stillIn = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
+                                        again[0], again[1], again[2], 6000);
+    if (stillIn[0] != $.CUEZ_IN) {
+        logger.error("(d) the second spike had been asking for 2750 ms, not " +
+                     "6000 -- the interrupted first spike must not have banked " +
+                     "credit for it. Zone is " + stillIn[0] + ", expected " +
+                     $.CUEZ_IN);
+        return false;
+    }
+
+    // (e) PERSISTENCE IS MEASURED IN TIME, NOT IN CALLS. Forty calls at one
+    // instant: any implementation that counts invocations reaches its threshold
+    // here, one that reads the clock cannot. At the 250 ms tick a window counted
+    // in callbacks would make PERSIST_OUT = 4 mean one second rather than four,
+    // and would silently retune itself if the tick period ever changed.
+    var z = $.CUEZ_IN;
+    var cd = $.CUEZ_IN;
+    var sc = 5000;
+    for (var i = 0; i < 40; i++) {
+        var out = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
+                                        z, cd, sc, 5000);
+        z = out[0]; cd = out[1]; sc = out[2];
+    }
+    if (z != $.CUEZ_IN) {
+        logger.error("(e) forty calls at a single instant advanced the cue to " +
+                     z + " -- the window is being counted in callbacks, not " +
+                     "measured on a clock");
+        return false;
+    }
+
+    // (f) A CLOCK THAT GOES BACKWARDS restarts the timer rather than adopting or
+    // stalling forever.
+    //
+    // SCOPE, stated precisely because the neighbouring hazard is already an open
+    // question here: this pins the guard's contract on a backwards step, using
+    // small unambiguous stamps. It does NOT claim to reproduce
+    // System.getTimer()'s 32-bit wrap -- whether that presents as a backwards
+    // step or as correct two's-complement arithmetic depends on Monkey C's
+    // overflow semantics, which nothing in this repository measures and which
+    // #70 owns for the pre-existing rrIsFresh / hrHave pair. The guard is
+    // written so either answer is safe: the worst case is one window's delay,
+    // once.
+    var back = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
+                                     $.CUEZ_IN, $.CUEZ_ABOVE, 5000, 1000);
+    if (back[0] != $.CUEZ_IN) {
+        logger.error("(f) a backwards clock must not be read as 'the candidate " +
+                     "has waited long enough'; zone became " + back[0]);
+        return false;
+    }
+    if (back[2] != 1000) {
+        logger.error("(f) the timer must restart from the new clock reading, " +
+                     "or the change stalls until the clock catches up; since " +
+                     "is " + back[2] + ", expected 1000");
+        return false;
+    }
+    return true;
+}
+
+// THE SPIKE CASE, END TO END ON THE DRAW PATH -- what the maintainer would
+// actually notice, and the case that separates "four seconds" from "four
+// frames" at the real call site.
+//
+// FIVE consecutive frames of a 25.0 spm reading, spanning 1000 ms of injected
+// clock at the 250 ms tick. Both halves matter and together they are the whole
+// design in one case: the NUMBER is the measurement and updates immediately; the
+// COLOUR is the instruction and does not, because a one-second excursion is not
+// something to correct against.
+//
+// Five rather than two, deliberately: an implementation that counted callbacks
+// with PERSIST_OUT = 4 would flip on the fifth frame while barely a second of
+// clock had passed.
+(:test) function test_cue_theScreenLagsTheColourNotTheNumber(logger) {
+    var p = CueFix.workProbe();
+    p.setRate(17.0);
+    CueFix.renderAt(p, 0);
+    CueFix.renderAt(p, 250);
+
+    p.setRate(25.0);
+    CueFix.renderAt(p, 500);
+    CueFix.renderAt(p, 750);
+    CueFix.renderAt(p, 1000);
+    CueFix.renderAt(p, 1250);
+    var d = CueFix.renderAt(p, 1500);
+
+    var s = CueFix.numeralText(d);
+    if (s == null || !s.equals("25.0")) {
+        logger.error("the NUMBER is the measurement and must update at once; " +
+                     "got '" + s + "', expected '25.0'");
+        return false;
+    }
+    var c = CueFix.numeralColour(d);
+    if (c != Gfx.COLOR_GREEN) {
+        logger.error("a 1.0 s excursion is not an instruction to ease off: " +
+                     "five frames spanning 1000 ms after the spike, the cue " +
+                     "must still read green (COLOR_GREEN = " + Gfx.COLOR_GREEN +
+                     "); got " + c + ". Either the window is being counted in " +
+                     "frames rather than measured in seconds, or there is no " +
+                     "window at all");
+        return false;
+    }
+
+    // The other direction, one frame: a single dip below the band does not turn
+    // the numeral blue, so the athlete is not told to row harder on the strength
+    // of one reading.
+    var q = CueFix.workProbe();
+    q.setRate(17.0);
+    CueFix.renderAt(q, 0);
+    CueFix.renderAt(q, 250);
+    q.setRate(14.0);
+    var cd = CueFix.numeralColour(CueFix.renderAt(q, 500));
+    if (cd != Gfx.COLOR_GREEN) {
+        logger.error("one frame below the band is not an instruction; the cue " +
+                     "must still read green (COLOR_GREEN = " + Gfx.COLOR_GREEN +
+                     "); got " + cd);
+        return false;
+    }
+    return true;
+}
