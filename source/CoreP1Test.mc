@@ -142,6 +142,120 @@ module CoreP1 {
         function maxCore() { return mMaxCore; }
     }
 
+    // ---- retry-timer doubles -----------------------------------------------
+    //
+    // CoreProbe (CoreTempSensorTest.mc) OVERRIDES scheduleReopen entirely, with
+    // a stand-in that reopens synchronously behind a depth guard -- and its own
+    // comment says why: "a real Timer breaks that cycle by deferring". That is
+    // true whenever the Timer works, and it is the reason CoreProbe cannot see
+    // what happens when it does not. These probes run the REAL scheduleReopen
+    // instead, against a timer factory they control.
+
+    // A one-shot Timer stand-in that arms normally.
+    class LiveTimer {
+        var starts;
+        var stops;
+        var lastMs;
+        var lastRepeat;
+        function initialize() { starts = 0; stops = 0; lastMs = 0; lastRepeat = true; }
+        function start(cb, ms, repeat) {
+            starts++; lastMs = ms; lastRepeat = repeat;
+        }
+        function stop() { stops++; return true; }
+    }
+
+    // A Timer that cannot be armed. Records the call FIRST and then fails, so
+    // "never called" and "called and threw" stay distinguishable -- the rule
+    // LifeTimer states in ViewLifecycleTest.mc.
+    //
+    // Connect IQ caps concurrent Timers, so start() failing is a documented
+    // resource exhaustion rather than an invented case. Whether it EVER fails
+    // on this path is NOT measured and is not claimed: no environment here has
+    // an ANT radio, and the one real-row ct_diag readout available (#122)
+    // reached the timer path with 22 of 22 opens succeeding.
+    class DeadTimer {
+        var starts;
+        var stops;
+        function initialize() { starts = 0; stops = 0; }
+        function start(cb, ms, repeat) {
+            starts++;
+            throw new Lang.Exception();
+        }
+        function stop() { stops++; return true; }
+    }
+
+    // Base probe over the SHIPPING retry path.
+    //
+    // MEASURED HAZARD, the one CoreProbe documents: CoreTempSensor.initialize()
+    // calls openChannel(), which DISPATCHES TO THIS SUBCLASS while the
+    // subclass's own fields are still null, because Monkey C requires
+    // Base.initialize() to complete before a subclass assigns anything. So
+    // every override lazy-initialises on entry, and the channel double is
+    // returned from the constructor's own attempt onward -- the real allocation
+    // throws under the headless simulator and would drive the ladder before a
+    // test could configure anything.
+    //
+    // The channel always throws on open(), so the whole ladder runs from
+    // construction: attempts 1..CT_BURST_TRIES at zero delay, then the first
+    // delayed retry, which is where the timer factory below is reached.
+    class LadderProbe extends CoreTempSensor {
+        var opens;      // openChannel() entries, counted before delegating
+        var runaway;    // the re-entry cap was hit -- see openChannel below
+        var timers;     // every timer handed to the shipping code, in order
+
+        function initialize() {
+            CoreTempSensor.initialize();   // re-enters the overrides below
+            if (opens   == null) { opens   = 0; }
+            if (runaway == null) { runaway = false; }
+            if (timers  == null) { timers  = []; }
+        }
+
+        hidden function makeChannel() { return new $.FakeChannel(true); }
+
+        // Overridden by the two concrete probes.
+        hidden function makeRetryTimer() { return null; }
+
+        // Counts, THEN runs the real body -- and refuses to re-enter past a
+        // cap. The cap is what turns an unbounded openChannel <-> scheduleReopen
+        // recursion into a FAILED ASSERTION instead of a hung test process or a
+        // stack exhaustion reported as an ERROR. It is well above the
+        // CT_BURST_TRIES attempts the ladder legitimately makes.
+        hidden function openChannel() {
+            if (opens == null) { opens = 0; }
+            opens++;
+            if (opens > 24) {
+                runaway = true;
+                return;
+            }
+            CoreTempSensor.openChannel();
+        }
+
+        function openCount()  { if (opens  == null) { opens  = 0; }  return opens; }
+        function ranAway()    { return runaway == true; }
+        function timerCount() { if (timers == null) { timers = []; } return timers.size(); }
+        function timerAt(i)   { return timers[i]; }
+    }
+
+    class ArmedProbe extends LadderProbe {
+        function initialize() { LadderProbe.initialize(); }
+        hidden function makeRetryTimer() {
+            if (timers == null) { timers = []; }
+            var t = new LiveTimer();
+            timers.add(t);
+            return t;
+        }
+    }
+
+    class DeadTimerProbe extends LadderProbe {
+        function initialize() { LadderProbe.initialize(); }
+        hidden function makeRetryTimer() {
+            if (timers == null) { timers = []; }
+            var t = new DeadTimer();
+            timers.add(t);
+            return t;
+        }
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     function almost(a, b) {
@@ -287,6 +401,80 @@ module CoreP1 {
     // again (a "always retry immediately" tidy-up, or a burst count raised
     // without thought) reds a test that names the consequence, instead of
     // producing an unbounded recursion nothing measures.
+    // ---- c1 green pins on the new seams ------------------------------------
+
+    // The #13 decision's whole truth table, against the two inputs that matter.
+    // Green from the moment ctTempWritable exists; it is wired into onTick in
+    // c3, and the differentials that prove the wiring are in c2.
+    //
+    // The 0.0-with-everWritten row is the load-bearing one: it is the case a
+    // "skip when stale" reading of #13 would get wrong, and the case
+    // test_c0_dropoutAfterAReadingWritesZeroNotTheLastValue guards end to end.
+    (:test) function test_c1_tempWritableTruthTable(logger) {
+        var cases = [
+            // [tempC, everWritten, expected, what it is]
+            [37.42, false, true,  "the first current reading of the session"],
+            [37.42, true,  true,  "an ordinary current reading"],
+            [0.0,   false, false, "no reading yet -- leave the records never-set"],
+            [0.0,   true,  true,  "a dropout AFTER a reading -- 0.0 is the marker, " +
+                                  "and skipping would latch the last real value"],
+            [15.0,  false, true,  "the bottom of the skin band is still a reading"],
+            [45.0,  true,  true,  "the top of both bands is still a reading"]
+        ];
+        var ok = true;
+        for (var i = 0; i < cases.size(); i++) {
+            var c = cases[i];
+            var got = StrongRowView.ctTempWritable(c[0], c[1]);
+            if (got != c[2]) {
+                logger.error("ctTempWritable(" + c[0] + ", " + c[1] + ") = " + got +
+                             ", expected " + c[2] + " -- " + c[3]);
+                ok = false;
+            }
+        }
+        return ok;
+    }
+
+    // The seam is really on the shipping path, and the normal delayed retry is
+    // unchanged by it: once the burst is spent the ladder ARMS a one-shot timer
+    // at 30 s and does NOT reopen synchronously.
+    //
+    // Green before and after the c3 fix, deliberately. c3 changes only what
+    // happens when arming FAILS; if it also changed the success path -- if the
+    // retry stopped being scheduled at all -- this reds, and #26 would be
+    // reopened by the fix meant to harden it.
+    (:test) function test_c1_theLadderArmsAOneShotTimerAndDoesNotReopenAtOnce(logger) {
+        var p = new ArmedProbe();
+        var ok = true;
+        if (p.ranAway()) {
+            logger.error("the ladder re-entered openChannel past the cap with a WORKING timer");
+            return false;
+        }
+        if (p.openCount() != $.CT_BURST_TRIES) {
+            logger.error("burst attempts = " + p.openCount() + ", expected " + $.CT_BURST_TRIES +
+                         " before the first deferred retry");
+            ok = false;
+        }
+        if (p.timerCount() != 1) {
+            logger.error("the first delayed retry must arm exactly one timer, armed = " + p.timerCount());
+            return false;
+        }
+        var t = p.timerAt(0);
+        if (t.starts != 1) {
+            logger.error("the retry timer must be started once, starts = " + t.starts);
+            ok = false;
+        }
+        if (t.lastMs != $.CT_BACKOFF_BASE_MS) {
+            logger.error("retry delay " + t.lastMs + " != " + $.CT_BACKOFF_BASE_MS);
+            ok = false;
+        }
+        if (t.lastRepeat != false) {
+            logger.error("the retry timer must be ONE-SHOT; a repeating timer would " +
+                         "re-search every 30 s forever, which is #26 restored");
+            ok = false;
+        }
+        return ok;
+    }
+
     (:test) function test_c0_backoffIsPositiveOncePastTheBurst(logger) {
         var ok = true;
         if (CoreTempSensor.ctBackoffMs($.CT_BURST_TRIES - 1) != 0) {

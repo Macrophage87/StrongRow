@@ -157,6 +157,8 @@ CoreP1.test_c0_theFirstReadingIsAlwaysWritten
 CoreP1.test_c0_dropoutsDoNotDisturbTheSessionMax
 CoreP1.test_c0_zeroIsNeverAnAcceptedReading
 CoreP1.test_c0_backoffIsPositiveOncePastTheBurst
+CoreP1.test_c1_tempWritableTruthTable
+CoreP1.test_c1_theLadderArmsAOneShotTimerAndDoesNotReopenAtOnce
 
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork

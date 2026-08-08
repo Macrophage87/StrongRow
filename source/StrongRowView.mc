@@ -1509,6 +1509,67 @@ class StrongRowView extends Ui.View {
         return v != null;
     }
 
+    // #13. May this tick call setData on a record-scope TEMPERATURE field,
+    // given the value the sensor is reporting and whether this field has ever
+    // been written in this session?
+    //
+    // ---- WHAT A DROPOUT RECORDS, AND WHY --------------------------------
+    //
+    // This is the decision #13 asks for, and the answer is not the one the
+    // issue suggests. #13 proposes skipping setData while stale, "leaving the
+    // record field absent for stale ticks". THAT IS NOT WHAT SKIPPING DOES.
+    // Record-scope FitContributor fields LATCH: #36 measured, byte level on
+    // fr965 / SDK 9.2.0, that a skipped write RE-EMITS THE PREVIOUS VALUE on
+    // the next record. So after one real reading, skipping republishes that
+    // reading for the rest of the row -- a flat 37.4 C trace no consumer can
+    // tell from a pod that stayed on and read steady. There is no per-record
+    // gap available in Monkey C at all: setData(NaN) lands as 0xFFC00000,
+    // which a decoder reads as a datum (#48), and setData(null) is an
+    // uncatchable native error that kills the app (#48).
+    //
+    // So the two cases have opposite best answers, and this one line is what
+    // keeps them apart:
+    //
+    //   BEFORE this field has ever been written -- a podless row, or a pod not
+    //   yet acquired -- write NOTHING. Records then carry the FLOAT never-set
+    //   invalid pattern (#48 measured 0xFFFFFFFF exactly where a field had not
+    //   yet been set as of that record; #80 re-measured the same for a FLOAT
+    //   record field and saw the slot absent rather than a number). That is a
+    //   genuine absence, and it is the half of #13 that is actually fixable:
+    //   today a row with no pod declares core_temperature and writes 0.0 into
+    //   every record -- the 4109-record row #102 was filed on.
+    //
+    //   AFTER a real reading has been written, KEEP WRITING 0.0. It is not a
+    //   fabrication and it is not #86/#107's "absence rendered as a value":
+    //   0.0 C is outside both accepted bands BY CONSTRUCTION (25-45 C core,
+    //   15-45 C skin), so it cannot collide with a measurement -- whereas a
+    //   latched 37.4 C can, and does. #83 states the same asymmetry from the
+    //   other side: 0.0 C survives as a marker precisely because it is
+    //   impossible as a reading, which is exactly why #80's heat-strain field
+    //   could NOT copy this shape (0.0 a.u. is an ordinary reading).
+    //   CoreP1.test_c0_dropoutAfterAReadingWritesZeroNotTheLastValue is what a
+    //   future "tidy this up into a skip" edit has to red first.
+    //
+    // `tempC > 0.0` is the freshness test, not a second-guess at one. The
+    // getters return `fresh ? reading : 0.0` and the clamps put every accepted
+    // reading strictly above zero, so the value ALONE carries the answer --
+    // which also means one platform read per tick instead of two, and no
+    // window in which freshness flips between a coreFresh() call and a
+    // coreTemp() call. CoreP1.test_c0_zeroIsNeverAnAcceptedReading pins that
+    // premise through the decoders rather than by restating the constants.
+    //
+    // WHAT IS AND IS NOT MEASURED. The latch and the never-set pattern were
+    // measured in the SIMULATOR (fr965 / SDK 9.2.0) for record-scope developer
+    // fields of this shape -- #36, #48, #80. NOTHING here has been measured for
+    // core_temperature or skin_temperature themselves, and what a DECODER
+    // RENDERS for either byte pattern is not measured for any field. Do not
+    // upgrade "the records carry the never-set pattern" into "the field is
+    // absent in Connect". #150 is the [Local] decode that would settle it, and
+    // it names the outcome that would falsify this design.
+    static function ctTempWritable(tempC, everWritten) {
+        return tempC > 0.0 || everWritten;
+    }
+
     // The rightmost x a mark may occupy at height `yTop`, for a display whose
     // visible area is the circle inscribed in `w` x `h`.
     //

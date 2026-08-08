@@ -567,6 +567,17 @@ class CoreTempSensor {
         }
     }
 
+    // Allocation split out so a test can substitute a timer it controls --
+    // exactly the seam makeChannel() above is, and for a sharper reason. The
+    // shipping path constructs a REAL one-shot Timer; a test that let that
+    // happen would leave a live callback firing back into openChannel() thirty
+    // seconds later, in the middle of some other suite. Without this seam the
+    // catch below is unreachable from any test, because nothing here can make
+    // Timer.start() fail.
+    hidden function makeRetryTimer() {
+        return new Timer.Timer();
+    }
+
     // Re-open the channel after `delayMs`. A zero delay reopens synchronously,
     // which is what the first CT_BURST_TRIES searches do, so discovery keeps
     // exactly today's timing. A non-zero delay defers via a one-shot timer,
@@ -579,7 +590,7 @@ class CoreTempSensor {
             return;
         }
         try {
-            mRetryTimer = new Timer.Timer();
+            mRetryTimer = makeRetryTimer();
             mRetryTimer.start(method(:onRetry), delayMs, false);
         } catch (e) {
             // No timer available: fall back to today's behaviour rather than
