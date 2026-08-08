@@ -82,12 +82,24 @@ laps.)
   a podless row logs `0.0` for both, and the diagnostic field below is written
   unconditionally. `max_core_temperature` is still suppressed when no reading
   was ever accepted.
+- **Heat Strain Index**: the same CORE broadcast carries greenTEG's 0–10 heat
+  strain figure, and StrongRow decodes it into a record-level
+  `heat_strain_index` field. A small **mark next to the CT indicator** shows
+  its state — hollow while there is no current reading, solid while there is.
+  Two things are worth knowing about it. First, **a heat index of `0.0` is a
+  real reading** meaning "no thermal strain", so this field is *absent* rather
+  than zero when there is nothing to report: on a row where the pod never sent
+  one, the field is created and never written. Second, **the byte layout is
+  taken from published documentation and has never been checked against a real
+  pod** (issue #81 is the open capture that would check it), so treat the
+  series as unverified until it has been. Nothing about core or skin
+  temperature is affected either way.
 - FIT developer fields written for offline analysis: `row_stroke_rate` (spm),
   `dist_per_stroke` (m), `corrective_rate` (spm of blade movements that are
   not drives), `rr_interval` (up to 4 raw ms values per record), `rmssd` (ms),
-  `core_temperature` and `skin_temperature` (°C) per record, plus session-level
-  `avg_rmssd` (ms), `total_corrective_strokes`, `max_core_temperature` and
-  `ct_diag`.
+  `core_temperature` and `skin_temperature` (°C) and `heat_strain_index`
+  (a.u.) per record, plus session-level `avg_rmssd` (ms),
+  `total_corrective_strokes`, `max_core_temperature` and `ct_diag`.
 - `ct_diag` is a session-level **diagnostic** array of counters describing what
   the app's own ANT channel did — opens attempted and succeeded, messages and
   broadcast frames received, page numbers seen, and the reason any frame was
@@ -95,7 +107,9 @@ laps.)
   told apart from one where no pod was present, without guessing (#102). It is
   not a training metric; the slot-by-slot key lives with the `CT_DIAG_*`
   constants in [`source/CoreTempSensor.mc`](source/CoreTempSensor.mc), and slot
-  0 carries a layout version so an older file stays readable.
+  0 carries a layout version so an older file stays readable. **Version 2**
+  (24 slots) adds three heat-strain slots; slots 0–20 are unchanged from
+  version 1, so an older key still reads them.
 
 ### ⚠️ Stroke-rate timing fix — older sessions are not comparable
 

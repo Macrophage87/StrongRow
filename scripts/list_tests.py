@@ -48,9 +48,67 @@ import sys
 # a name "no longer declared"; unpinned, run-tests reds on "unexpected
 # tests" -- and this is the comment to widen when that happens.
 _ANN_BODY = r'(?:[^()]|\([^()]*\))*'
-DECL_RE = re.compile(
-    r'\(\s*:' + _ANN_BODY + r'\btest\b' + _ANN_BODY + r'\)\s*function\s+([A-Za-z_][A-Za-z0-9_]*)',
+_DECL_SRC = (r'\(\s*:' + _ANN_BODY + r'\btest\b' + _ANN_BODY +
+             r'\)\s*function\s+(?P<dname>[A-Za-z_][A-Za-z0-9_]*)')
+DECL_RE = re.compile(_DECL_SRC)
+
+# MODULE SCOPE, and why the extractor has to care.
+#
+# A (:test) declared inside `module M { ... }` is compiled and RUN exactly like
+# one at file scope -- but the simulator's RESULTS table names it `M.test_foo`,
+# not `test_foo`. So an extractor that reported the bare name would pin a name
+# the runner never prints, and check_ciq_tests.py would red with "expected but
+# missing" AND "unexpected" for the same test. That is the same unfixable
+# deadlock the module docstring above describes, reached from a new direction.
+#
+# WHY ANY OF THIS MATTERS RATHER THAN BEING A STYLE OPTION. MEASURED, SDK 9.2.0:
+# a --unit-test build of this repository for the fenix6 family (fenix6, 6pro,
+# 6spro, 6xpro) fails with
+#
+#     Found N members in module 'globals', exceeding the limit of 253
+#
+# and on the commit this was written against N was already 246. Every file-scope
+# (:test), helper function and test class costs one. SEVEN slots remained for
+# the whole repository, and a suite of 26 new cases needs 26 of them. Tests
+# inside a module cost ONE member between them, which is what makes further
+# testing possible on those four devices at all.
+#
+# The scanner is deliberately crude: a balanced-brace walk over the
+# comment-stripped, literal-blanked text. `module NAME {` pushes NAME, any other
+# `{` pushes an anonymous frame, `}` pops. Dictionary literals and function
+# bodies therefore push and pop harmlessly, and a `{` inside a string or comment
+# cannot be seen at all because strip_comments has already blanked it.
+#
+# `class` is NOT treated as a named scope. A (:test) inside a class is not a
+# form the runner supports, so guessing at the name it would print would be
+# inventing an answer; left anonymous, such a declaration surfaces as ordinary
+# pin drift rather than silently.
+_SCOPE_RE = re.compile(
+    r'(?P<mod>\bmodule\s+(?P<mname>[A-Za-z_][A-Za-z0-9_]*))'
+    r'|(?P<open>\{)'
+    r'|(?P<close>\})'
+    r'|(?P<decl>' + _DECL_SRC + r')'
 )
+
+
+def qualified_decls(stripped):
+    """Yield (offset, qualified_name) for every (:test) declaration, prefixing
+    the enclosing module path the way the simulator's RESULTS table does."""
+    stack = []       # innermost last; None for an anonymous brace frame
+    pending = None   # a module name whose `{` has not arrived yet
+    for m in _SCOPE_RE.finditer(stripped):
+        if m.group('mod') is not None:
+            pending = m.group('mname')
+        elif m.group('open') is not None:
+            stack.append(pending)
+            pending = None
+        elif m.group('close') is not None:
+            if stack:
+                stack.pop()
+        else:
+            path = [s for s in stack if s is not None]
+            name = m.group('dname')
+            yield m.start(), (".".join(path + [name]) if path else name)
 
 
 def strip_comments(text):
@@ -126,9 +184,8 @@ def main():
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             raw = fh.read()
         stripped = strip_comments(raw)
-        for m in DECL_RE.finditer(stripped):
-            name = m.group(1)
-            line = stripped.count("\n", 0, m.start()) + 1
+        for offset, name in qualified_decls(stripped):
+            line = stripped.count("\n", 0, offset) + 1
             if args.where:
                 print("%s:%d:%s" % (path, line, name))
             else:

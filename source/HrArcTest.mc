@@ -91,6 +91,37 @@ class HrDc {
     function setPenWidth(p)   { }
     function clear()          { }
 
+    // #80. A MOCK VALUE, not a measurement: 0.0815h is the largest FONT_XTINY
+    // height measured across the twelve manifest devices, and it stands in here
+    // only so the draw path has a number to centre a mark on. No case in this
+    // repository asserts a y derived from it -- the pip row's real geometry is
+    // pinned against explicit arguments in PipLayoutTest.mc, and measured
+    // locally per device.
+    function getFontHeight(font) { return (h * 0.0815).toNumber(); }
+
+    // #80. Circles are recorded as [cx, cy, r, filled], because the status
+    // indicator uses BOTH: an outline whatever the state, filled only when
+    // there is a reading. A count alone could not tell the two apart, and
+    // "always filled" is precisely the regression that would delete the shape
+    // channel and leave colour carrying the answer alone.
+    var circles;
+    function drawCircle(x, y, r) { circleLog(x, y, r, false); }
+    function fillCircle(x, y, r) { circleLog(x, y, r, true); }
+    hidden function circleLog(x, y, r, filled) {
+        if (circles == null) { circles = []; }
+        circles.add([x, y, r, filled]);
+    }
+    function circleCount() { if (circles == null) { circles = []; } return circles.size(); }
+    function circleAt(i)   { return circles[i]; }
+    function filledCircleCount() {
+        if (circles == null) { return 0; }
+        var n = 0;
+        for (var i = 0; i < circles.size(); i++) {
+            if (circles[i][3] == true) { n += 1; }
+        }
+        return n;
+    }
+
     // Counts FIRST, then fails -- the same rule LifeTimer.start states
     // (ViewLifecycleTest.mc:50-55): "never called" and "called and threw" must
     // stay distinguishable.
@@ -274,6 +305,11 @@ class HrProbe extends StrongRowView {
     hidden var mFakeSpeed;
     hidden var mFakeDist;
     function setSpeed(v) { mFakeSpeed = v; }
+
+    // #80. The CORE sensor handle, so a render case can drive the status row's
+    // indicators without an ANT channel. onLayout is the only other writer, and
+    // these cases never call it.
+    function setCoreSensor(s) { mCoreSensor = s; }
     function setDist(v)  { mFakeDist = v; }
     hidden function currentSpeed() {
         return (mFakeSpeed == null) ? 0.0 : mFakeSpeed;

@@ -123,6 +123,20 @@ class HrGeoDc {
     function clear() { }
     function setPenWidth(p) { pen = p; }
 
+    // #80. Circles carry their pen too, for the same reason the arcs do: the
+    // outermost drawn pixel of an outline is r + pen/2, and an envelope case
+    // that ignored the pen would under-report the extent it exists to bound.
+    var circles;      // [cx, cy, r, penAtIssue, filled]
+    function drawCircle(x, y, r) { circleLog(x, y, r, false); }
+    function fillCircle(x, y, r) { circleLog(x, y, r, true); }
+    hidden function circleLog(x, y, r, filled) {
+        if (circles == null) { circles = []; }
+        circles.add([x, y, r, pen, filled]);
+    }
+
+    // See HrDc.getFontHeight: a stand-in, not a measurement.
+    function getFontHeight(font) { return (h * 0.0815).toNumber(); }
+
     // Normalised to [lo, hi] regardless of the direction flag: the swept set of
     // pixels is the same either way, and a bound only cares about the set.
     // RECORDS THE DIRECTION, and that is not a refinement -- it is required for

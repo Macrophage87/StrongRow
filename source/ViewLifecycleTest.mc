@@ -93,6 +93,11 @@ class LifeCoreSensor {
     function everSeen() { return false; }
     function coreTemp() { return 0.0; }
     function skinTemp() { return 0.0; }
+    // #80. NULL, matching the shipping sensor's own absent state -- a stand-in
+    // returning 0.0 would let a test pass against a view that treated absence
+    // as a reading, which is the one thing this field must never do.
+    function hsiFresh()  { return false; }
+    function heatIndex() { return null; }
 }
 
 // -- Probe --------------------------------------------------------------------
@@ -206,6 +211,13 @@ class LifeProbe extends StrongRowView {
     }
     function coreFieldHandle() { return mFitCore; }
     function skinFieldHandle() { return mFitSkin; }
+
+    // #80. Armed SEPARATELY from the pair above, deliberately: the invariant
+    // this file pins is "field handle non-null implies mCoreSensor non-null",
+    // and arming all three together would let a case pass because the other two
+    // were cleared. Each handle has to be shown cleared on its own.
+    function armHsiField()   { mFitHsi = new LifeField(); }
+    function hsiFieldHandle() { return mFitHsi; }
 
     function saveCount()          { return (saves == null) ? 0 : saves; }
     function sensorLiveAtSave()   { return sensorAtSave == true; }
@@ -912,4 +924,46 @@ class LifeThrowingStartProbe extends LifeProbe {
         ok = false;
     }
     return ok;
+}
+
+module Hsi {
+
+// #80 c2. The same invariant, for the heat-strain field handle.
+//
+// RED before the wiring lands: mFitHsi exists but shutdown's finally does not
+// clear it. Written as its own case rather than folded into
+// test_life_shutdownKeepsCoreFieldInvariantOnThrow, because that case arms
+// mFitCore and mFitSkin together and a third handle added to it would pass the
+// moment either of the first two was cleared. Armed alone, this can only pass
+// if the finally names it.
+//
+// The stake is the same and is worth restating: onTick dereferences mCoreSensor
+// guarded ONLY by a field handle, so `mFitHsi != null && mCoreSensor == null` is
+// an uncatchable fault on the next tick, not an exception.
+(:test) function test_life_shutdownKeepsHeatFieldInvariantOnThrow(logger) {
+    var p = new LifeThrowingSaveProbe();
+    p.onLayout(null as Gfx.Dc);
+    p.armHsiField();      // mFitHsi alone; mSession left null
+
+    try {
+        p.shutdown();
+    } catch (e) {
+        // expected: this probe's stopAndSave throws
+    }
+
+    var ok = true;
+    if (p.sensorHandle() != null) {
+        logger.error("the sensor handle should have been cleared by the finally");
+        ok = false;
+    }
+    if (p.hsiFieldHandle() != null) {
+        logger.error("mFitHsi outlived mCoreSensor: onTick dereferences " +
+                     "mCoreSensor guarded only by the field handle, so the next " +
+                     "tick is a HARD FAULT rather than a catchable throw. Clear " +
+                     "it in the same finally as mFitCore and mFitSkin.");
+        ok = false;
+    }
+    return ok;
+}
+
 }
