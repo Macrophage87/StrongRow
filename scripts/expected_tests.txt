@@ -37,6 +37,10 @@ CoreDrop.test_ctw_c2_aPodlessRowWritesNothingAtAll
 CoreDrop.test_ctw_c2_theFirstValueEverWrittenIsARealReading
 CoreDrop.test_ctw_c2_nullIsNeverHandedToSetData
 
+# source/RetryBoundTest.mc -- inside `module RetryBound`, so the names carry the
+# module, for the same fenix6 globals-ceiling reason CoreDrop states above.
+RetryBound.test_rb_c0_onlyTheBurstEverAsksForZeroDelay
+
 # source/CoreFieldGateTest.mc
 test_core_gateFalseWhenSensorNull
 test_core_gateTrueWhenPodSeen
