@@ -2767,12 +2767,51 @@ class StrongRowView extends Ui.View {
     // Pure: the spm above which a reading needs the autocorrelation lock to
     // corroborate it, given the rate this athlete has established.
     //
-    // c1 NOTE, and it is temporary by design: this body still returns the
-    // ABSOLUTE constant and ignores `base`. The seam exists here so the wiring,
-    // the baseline plumbing and the differentials can each land as their own
-    // commit; the relative rule is c3's, and c2's cases are RED against this.
+    //     gate(base) = min( FAST_NEEDS_LOCK,
+    //                       max( LOCK_GATE_FLOOR, LOCK_REL_K * base ) )
+    //     gate(none) = FAST_NEEDS_LOCK
+    //
+    // Read outward from the middle term:
+    //
+    //   LOCK_REL_K * base   is the change. The same MULTIPLE for every athlete
+    //                       -- the one a 20 spm rower already had -- instead of
+    //                       a fixed 30.0 that is 1.48x for one rower and 1.98x
+    //                       for another (#149, measured on two decoded rows).
+    //
+    //   max(FLOOR, ...)     stops the gate tracking below the rate the absolute
+    //                       constant was calibrated at. A ZEROED READING DOES
+    //                       NOT ESTABLISH THE BASELINE, so without this a
+    //                       baseline left at a rest cadence could reject an
+    //                       entire work interval. Binds only under 13.33 spm.
+    //
+    //   min(ABSOLUTE, ...)  is #149's first bar as an invariant of the code
+    //                       rather than of the tuning: at NO baseline can this
+    //                       return more than what shipped, so no reading that
+    //                       used to be zeroed can now pass.
+    //
+    //   base <= 0.0         is "nothing established yet" -- session start, or
+    //                       after the stroke ring timed out. It is NOT "no
+    //                       guard": it falls back to exactly the rule that
+    //                       shipped. Null is handled for the same reason every
+    //                       other predicate in this file handles it: an absent
+    //                       value must not be arithmetic.
+    //
+    // WHAT THIS IS NOT. It is not validated on the water. #149 established that
+    // the over-reads are real detector errors (the hull sits at 0.851x / 0.916x
+    // of its own speed baseline across them, and speed is recorded
+    // independently of this detector), and that the absolute gate is
+    // relative-blind. It did NOT establish that the gate is what lets them
+    // through -- whether the autocorrelation lock was even up during those
+    // excursions is unanswerable from any recording that exists, which is what
+    // the lock_* diagnostic fields are for. This ships as a reasoned correction
+    // to a guard that is wrong on its own terms, not as a measured fix for the
+    // reported symptom.
     static function fastGate(base) {
-        return $.FAST_NEEDS_LOCK;
+        if (base == null || base <= 0.0) { return $.FAST_NEEDS_LOCK; }
+        var g = $.LOCK_REL_K * base;
+        if (g < $.LOCK_GATE_FLOOR)   { g = $.LOCK_GATE_FLOOR; }
+        if (g > $.FAST_NEEDS_LOCK)   { g = $.FAST_NEEDS_LOCK; }
+        return g;
     }
 
     // Pure: the whole output-stage decision, as a function of the three inputs
