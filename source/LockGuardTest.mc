@@ -58,6 +58,9 @@ using Toybox.Math;
 //   c4   the lock-state diagnostic symbols, wired behaviour-preservingly
 //   c5   the diagnostic differentials -- RED against c4, by design
 //   c6   the diagnostic fields and their writes
+//   c9   the GATE-INPUT encodings + plumbing, wired behaviour-preservingly
+//   c10  the gate-input differentials -- RED against c9, by design
+//   c11  the gate-input fields (ids 23-24) and their writes
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator on
 // fr965. Test names are pinned in scripts/expected_tests.txt -- update that file
@@ -156,6 +159,12 @@ module Lock {
         function lockLowState()    { return mAcLowConf; }
         function dtState()         { return mDt; }
 
+        // #149 part 2: the PRE-GATE median, read straight off the detector.
+        // rateBase() above is its companion. Both are READ-ONLY views for the
+        // cases that establish state through the shipping registerStroke, which
+        // is the whole point of driving a rate rather than assigning one.
+        function rawRate() { return mRate; }
+
         // The estimator's own unlock threshold. A class `hidden const` is an
         // INSTANCE member, so a (:test) free function cannot name it; exposing
         // it here rather than transcribing 0.35 into an assertion keeps the pin
@@ -188,6 +197,19 @@ module Lock {
             mFitLockConf = confF;
             mFitLockLow  = lowF;
         }
+
+        // #149 part 2: the two gate-input handles.
+        function installRateFields(rawF, baseF) {
+            mFitRateRaw  = rawF;
+            mFitRateBase = baseF;
+        }
+
+        // row_stroke_rate itself -- the field these two exist to be read
+        // ALONGSIDE. Installed so a case can compare the gate's recorded INPUT
+        // against the gate's recorded OUTPUT as two arguments of two shipping
+        // setData calls in the same tick, rather than against outputRate()
+        // called a second time from the case.
+        function installOutField(rateF) { mFitRate = rateF; }
 
         // The real 250 ms tick, called directly.
         function runTick() { onTick(); }
@@ -235,10 +257,22 @@ module Lock {
         p.setSpeed(0.0);
         p.setDist(0.0);
         p.installLockFields(fields[0], fields[1], fields[2]);
+        // #149 part 2. Installed for EVERY tickProbe, not only for the cases
+        // that read them: a probe whose field set depends on which case built
+        // it is two probes, and the cases that ignore slots 3-5 are unaffected
+        // by a write they never look at.
+        p.installRateFields(fields[3], fields[4]);
+        p.installOutField(fields[5]);
         return p;
     }
 
-    // Three recording fields, in the order installLockFields takes them.
+    // Six recording fields, in the order tickProbe installs them:
+    //
+    //   0  lock_rate         1  lock_confidence    2  lock_lowconf_run
+    //   3  rate_raw          4  rate_base          5  row_stroke_rate
+    //
+    // Slots 0-2 are #149's lock state; 3-4 are part 2's gate inputs; 5 is the
+    // shipping output field the pair exists to be read alongside.
     //
     // CueFix.Field (CueZoneTest.mc) is REUSED rather than copied: a second
     // stand-in for the same platform type is a second thing that can drift from
@@ -250,7 +284,8 @@ module Lock {
     // nothing about what lands in the file's bytes and nothing about what a
     // decoder renders. Those need a simulator session and a decode.
     function fields() {
-        return [new CueFix.Field(), new CueFix.Field(), new CueFix.Field()];
+        return [new CueFix.Field(), new CueFix.Field(), new CueFix.Field(),
+                new CueFix.Field(), new CueFix.Field(), new CueFix.Field()];
     }
 
     // A probe with the detector at (spm, lock period) and nothing else
@@ -1468,6 +1503,414 @@ module Lock {
                      ". A guard disarmed by the readings the snap flagged as " +
                      "errors is this change reverting to the constant it " +
                      "replaces");
+        return false;
+    }
+    return true;
+}
+
+// -- c9: the gate-input diagnostic symbols (#149 part 2) ----------------------
+//
+// WHAT PART 1 LEFT UNANSWERABLE. The lock fields say whether a lock was up.
+// They do not say what the GATE was given, and the file still cannot show the
+// gate firing: row_stroke_rate is gatedRate's OUTPUT, in which a zeroed reading
+// and a tick with no median are the same 0.0, and a snapped reading is
+// indistinguishable from one that passed through. Nor can the gate's own
+// threshold be recovered -- fastGate keys on mRateBase, and nextRateBase
+// consumes the PRE-GATE median, so the recursion cannot be replayed from a file
+// that does not carry it.
+//
+// rate_raw (mRate) and rate_base (mRateBase) close both. c9 lands the encodings
+// and the plumbing; c10's differentials are RED against it because nothing
+// writes the fields yet; c11 creates them and writes them.
+//
+// The two cases below are green at c9 and stay green at c11.
+
+// THE NO-DATA ZERO IS THE DETECTOR'S OWN VALUE, NOT A SUBSTITUTED MARKER.
+//
+// This is the #86 / #107 question asked for these two fields specifically, and
+// the answer is NOT the one lock_confidence got. A confidence of zero is an
+// ordinary reading, so 0.0 there had to mean something else and needed a
+// negative sentinel. Here 0.0 is what mRate and mRateBase ACTUALLY HOLD in the
+// no-data state, and no reading can collide with it -- but only because
+// registerStroke DROPS an out-of-band period rather than admitting a small rate,
+// which is the step this case exists to hold. Everything else in the encoding
+// argument rests on it.
+(:test) function test_lock_theNoDataZeroIsTheDetectorsOwnValue(logger) {
+    // (a) THE INEQUALITY, asserted rather than described -- the same form
+    // LOCK_RATE_NONE's takes, so a future MIN_RATE of zero reds here instead of
+    // silently making both encodings ambiguous.
+    if (!($.RATE_RAW_NONE < $.MIN_RATE)) {
+        logger.error("(a) RATE_RAW_NONE (" + $.RATE_RAW_NONE + ") must lie " +
+                     "OUTSIDE the band a median can occupy (" + $.MIN_RATE +
+                     ".." + $.MAX_RATE + " spm), or 'no median' is " +
+                     "indistinguishable from a slow one");
+        return false;
+    }
+    if (!($.RATE_BASE_NONE < $.MIN_RATE)) {
+        logger.error("(a) RATE_BASE_NONE (" + $.RATE_BASE_NONE + ") must lie " +
+                     "OUTSIDE the band a baseline can occupy (" + $.MIN_RATE +
+                     ".." + $.MAX_RATE + " spm), or 'nothing established' is " +
+                     "indistinguishable from a low established rate");
+        return false;
+    }
+
+    // (b) THE STEP THE INEQUALITY RESTS ON, driven through the SHIPPING
+    // registerStroke rather than argued. 5.0 spm is a 12.0 s period, outside
+    // the accepted band [60/MAX_RATE, 60/MIN_RATE] = [1.5, 10.0] s, so every
+    // one of these strokes is DROPPED. The claim under test is that this leaves
+    // the median at EXACTLY 0.0 -- if sub-band motion instead produced a small
+    // rate, a recorded 0.0 would be ambiguous and the encoding above would be
+    // the very defect it claims not to be.
+    var slow = new Lock.Probe();
+    slow.rowAt(5.0, 8);
+    if (slow.rawRate() != 0.0) {
+        logger.error("(b) motion at 5.0 spm is BELOW MIN_RATE and its periods " +
+                     "are dropped, so the median must stay at exactly 0.0; it " +
+                     "reads " + slow.rawRate() + ". A value in (0, " +
+                     $.MIN_RATE + ") would collide with nothing today but " +
+                     "would make rate_raw's 0.0 mean two things");
+        return false;
+    }
+    if (slow.rateBase() != 0.0) {
+        logger.error("(b) and nothing was published, so no baseline may be " +
+                     "established either; it reads " + slow.rateBase());
+        return false;
+    }
+
+    // (c) THE FAST EDGE runs the same way: 45.0 spm is a 1.333 s period, under
+    // 60/MAX_RATE = 1.5 s, so it is dropped rather than clamped into the band.
+    var fast = new Lock.Probe();
+    fast.rowAt(45.0, 8);
+    if (fast.rawRate() != 0.0) {
+        logger.error("(c) motion at 45.0 spm is ABOVE MAX_RATE and its periods " +
+                     "are dropped, so the median must stay at exactly 0.0; it " +
+                     "reads " + fast.rawRate());
+        return false;
+    }
+
+    // (d) AND THE SLOWEST READING THE DETECTOR CAN REPORT IS MIN_RATE ITSELF,
+    // so there is no gap between the encoding and the first legal value for a
+    // reading to fall into. 6.0 spm is a 10.0 s period -- the band's outer edge,
+    // accepted, because the comparison is inclusive.
+    var edge = new Lock.Probe();
+    edge.rowAt($.MIN_RATE, 8);
+    if (!Lock.near(edge.rawRate(), $.MIN_RATE)) {
+        logger.error("(d) a 10.0 s period is the slowest the band admits and " +
+                     "must give a median of exactly " + $.MIN_RATE + " spm; " +
+                     "got " + edge.rawRate() + ". Without this leg (b) would be " +
+                     "satisfied by a detector that reported nothing at all");
+        return false;
+    }
+    if (!Lock.near(edge.rateBase(), $.MIN_RATE)) {
+        logger.error("(d) that reading passes the gate (it is far under " +
+                     $.FAST_NEEDS_LOCK + "), so it must ESTABLISH the baseline " +
+                     "at " + $.MIN_RATE + "; got " + edge.rateBase());
+        return false;
+    }
+
+    // (e) THE STATICS NORMALISE what the members cannot hold today. Reachable
+    // only from a future caller, and here so the field's contract belongs to
+    // these functions rather than to the invariants of their one call site --
+    // the same argument lockLowClamp's negative clamp carries.
+    var absent = [null, -1.0, -0.001, 0.0];
+    for (var i = 0; i < absent.size(); i++) {
+        if (!Lock.near(StrongRowView.rateRawOf(absent[i]), $.RATE_RAW_NONE)) {
+            logger.error("(e) rateRawOf(" + absent[i] + ") must be " +
+                         $.RATE_RAW_NONE + "; got " +
+                         StrongRowView.rateRawOf(absent[i]));
+            return false;
+        }
+        if (!Lock.near(StrongRowView.rateBaseOf(absent[i]), $.RATE_BASE_NONE)) {
+            logger.error("(e) rateBaseOf(" + absent[i] + ") must be " +
+                         $.RATE_BASE_NONE + "; got " +
+                         StrongRowView.rateBaseOf(absent[i]));
+            return false;
+        }
+    }
+
+    // (f) AND AN IN-BAND VALUE SURVIVES VERBATIM. This is what separates
+    // "the variable" from "an encoding of the variable", and without it (e)
+    // would be satisfied by a function that returned the sentinel always.
+    var keep = [$.MIN_RATE, 13.0, 15.2, 20.3, 29.0, $.MAX_RATE];
+    for (var j = 0; j < keep.size(); j++) {
+        if (!Lock.near(StrongRowView.rateRawOf(keep[j]), keep[j])) {
+            logger.error("(f) rate_raw carries the median UNCHANGED; " +
+                         keep[j] + " came back as " +
+                         StrongRowView.rateRawOf(keep[j]));
+            return false;
+        }
+        if (!Lock.near(StrongRowView.rateBaseOf(keep[j]), keep[j])) {
+            logger.error("(f) rate_base carries the baseline UNCHANGED; " +
+                         keep[j] + " came back as " +
+                         StrongRowView.rateBaseOf(keep[j]));
+            return false;
+        }
+    }
+    return true;
+}
+
+// THE RECORDED INPUTS REPRODUCE THE PUBLISHED RATE.
+//
+// This is the property #149 actually needs, and it is the one an encoding can
+// silently break: whatever transform stands between the detector's state and the
+// file must not map two states the GATE reads differently onto one number. If it
+// does, an analyst replaying the decision from the file gets a different answer
+// from the one the athlete's watch gave, on precisely the rows these fields exist
+// to explain.
+//
+// Asserted as an EQUALITY BETWEEN TWO CALLS OF THE SHIPPING gatedRate over a
+// swept state space -- never by re-deriving the gate here, which would pin this
+// case's own arithmetic and nothing else.
+//
+// THE SWEEP IS CHECKED FOR BEING NON-VACUOUS, and that guard is load-bearing
+// rather than decorative: over a state space in which the gate never fires and
+// never snaps, "the replay agrees" holds for any encoding whatsoever, including
+// one that discarded the baseline entirely.
+(:test) function test_lock_theRecordedInputsReproduceThePublishedRate(logger) {
+    // Medians spanning the band plus the no-median 0.0; baselines spanning
+    // nothing-established, under the gate floor, #149's two measured rows
+    // (15.2 and 20.3 spm) and the ceiling; lock periods spanning no-lock and
+    // the four corners of the estimator's own range.
+    var raws  = [0.0, $.MIN_RATE, 15.0, 20.3, 22.0, 25.0, 29.0, 30.0, 38.0,
+                 $.MAX_RATE];
+    var bases = [0.0, $.MIN_RATE, 12.0, 13.3, 15.2, 20.0, 20.3, 25.0,
+                 $.MAX_RATE];
+    var acs   = [0.0, 1.5, 3.0, 4.0, 10.0];
+
+    var fired = 0;     // the gate zeroed a reading
+    var snapped = 0;   // the lock corrected a reading
+    for (var i = 0; i < raws.size(); i++) {
+        for (var j = 0; j < bases.size(); j++) {
+            // THE THRESHOLD ITSELF, first: the value that reaches the file must
+            // select the SAME gate the app used. rateBaseOf's `<= 0.0` test is
+            // fastGate's own absence predicate, and this is where that identity
+            // is pinned rather than left to be noticed.
+            var gWas = StrongRowView.fastGate(bases[j]);
+            var gRec = StrongRowView.fastGate(
+                StrongRowView.rateBaseOf(bases[j]));
+            if (!Lock.near(gWas, gRec)) {
+                logger.error("a baseline of " + bases[j] + " gave the app a " +
+                             "gate of " + gWas + ", but the value recorded for " +
+                             "it (" + StrongRowView.rateBaseOf(bases[j]) +
+                             ") reconstructs a gate of " + gRec + ". The " +
+                             "threshold is not recoverable from the file, " +
+                             "which is the whole reason rate_base is recorded " +
+                             "instead of inferred");
+                return false;
+            }
+            for (var k = 0; k < acs.size(); k++) {
+                var published = StrongRowView.gatedRate(raws[i], acs[k],
+                                                        bases[j]);
+                var replayed  = StrongRowView.gatedRate(
+                    StrongRowView.rateRawOf(raws[i]), acs[k],
+                    StrongRowView.rateBaseOf(bases[j]));
+                if (!Lock.near(published, replayed)) {
+                    logger.error("replaying the decision from what the FILE " +
+                                 "carries disagrees with what the app " +
+                                 "published: raw=" + raws[i] + " acPeriod=" +
+                                 acs[k] + " base=" + bases[j] +
+                                 " published " + published + ", replay gave " +
+                                 replayed);
+                    return false;
+                }
+                if (raws[i] > 0.0 && published == 0.0)      { fired++; }
+                if (published > 0.0 && published != raws[i]) { snapped++; }
+            }
+        }
+    }
+
+    // THE NON-VACUITY GUARD. Both outcomes must actually occur in the sweep, or
+    // the equality above was proven over a state space in which the encodings
+    // could not have mattered.
+    if (fired == 0) {
+        logger.error("the sweep never made the gate ZERO a reading, so the " +
+                     "agreement above says nothing about the case rate_raw " +
+                     "exists for -- a reading the gate rejected, invisible in " +
+                     "row_stroke_rate");
+        return false;
+    }
+    if (snapped == 0) {
+        logger.error("the sweep never made the lock SNAP a reading, so the " +
+                     "agreement above says nothing about the other way " +
+                     "row_stroke_rate hides its input");
+        return false;
+    }
+    return true;
+}
+
+// -- c10: the gate-input differentials ----------------------------------------
+//
+// BOTH CASES BELOW ARE RED AGAINST c9 AND GREEN ONLY AT c11. The two handles
+// exist at c9 and stay null; onTick does not know about them, so the recording
+// stand-ins tickProbe installs receive nothing and `last()` is null.
+//
+// WHAT THESE CASES OBSERVE, at the strength the evidence supports and no
+// further -- the same scope note the c5 pair carries, because the temptation to
+// overreach is the same: the ARGUMENT of an in-app setData call. They say
+// nothing about what lands in the file's bytes and nothing about what a decoder
+// renders. Those need a simulator session and a decode, and no (:test) in this
+// repository can obtain either.
+
+// THE TICK RECORDS THE GATE'S OWN INPUTS.
+//
+// The state under test is #149's, exactly: a rower established near the choppy
+// row's 15.2 spm, a 25.0 spm median, and no lock to corroborate it. The gate
+// zeroes it, so row_stroke_rate carries 0.0 -- and THAT NUMBER ON ITS OWN IS
+// THE PROBLEM. It is the same 0.0 a tick with no median produces, so the
+// recording shows the symptom and never the mechanism, which is the situation
+// #149 was filed to escape.
+(:test) function test_lock_theTickRecordsTheGatesOwnInputs(logger) {
+    var f = Lock.fields();
+    var p = Lock.tickProbe(f);
+    // Established through the SHIPPING registerStroke, not assigned: what the
+    // gate keys on has to be what the detector really built.
+    p.rowAt(15.0, 8);
+    p.setDetector(25.0, 0.0);
+    p.runTick();
+
+    // (a) SETUP, AND THE AMBIGUITY. row_stroke_rate carries 0.0 for a reading
+    // the gate rejected.
+    if (!Lock.near(f[5].last(), 0.0)) {
+        logger.error("setup: a 25.0 spm median with no lock, against a 15.0 " +
+                     "spm baseline, must be ZEROED by the gate -- otherwise " +
+                     "this case is not observing the state #149 is about. " +
+                     "row_stroke_rate carries " + f[5].last());
+        return false;
+    }
+
+    // (b) THE PRE-GATE MEDIAN. Without it the 0.0 above is unreadable.
+    if (f[3].last() == null) {
+        logger.error("rate_raw was never written. Record-scope fields LATCH, " +
+                     "so a field this app declares and does not write carries " +
+                     "the type's never-set pattern before the first write and " +
+                     "then re-emits whatever it last held -- an unwritten " +
+                     "diagnostic is not a quiet diagnostic");
+        return false;
+    }
+    if (!Lock.near(f[3].last(), 25.0)) {
+        logger.error("rate_raw must carry the median the gate was GIVEN " +
+                     "(25.0), which is the number row_stroke_rate discards; " +
+                     "got " + f[3].last());
+        return false;
+    }
+
+    // (c) AND THE THRESHOLD'S INPUT. Not reconstructible offline: nextRateBase
+    // consumes the pre-gate median, so the recursion cannot be replayed from a
+    // file, and the zeroed and snapped cases discard the median outright so the
+    // output cannot be inverted either.
+    if (f[4].last() == null) {
+        logger.error("rate_base was never written, so the gate's own " +
+                     "threshold at this instant is unknown and unrecoverable " +
+                     "-- the same latch argument as rate_raw above applies");
+        return false;
+    }
+    if (!Lock.near(f[4].last(), 15.0)) {
+        logger.error("rate_base must carry the established baseline the gate " +
+                     "keys on (15.0); got " + f[4].last());
+        return false;
+    }
+
+    // (d) THE THREE READ TOGETHER ANSWER #149's QUESTION, and this leg is what
+    // separates "two numbers were written" from "the mechanism is now
+    // recoverable". Every step is a call into the SHIPPING statics on values
+    // taken from the recording stand-ins -- nothing is re-derived here.
+    if (!Lock.near(f[0].last(), $.LOCK_RATE_NONE)) {
+        logger.error("(d) lock_rate must say NO LOCK for this state, or the " +
+                     "replay below is reconstructing a decision that was not " +
+                     "taken; got " + f[0].last());
+        return false;
+    }
+    var gate = StrongRowView.fastGate(f[4].last());
+    if (!(f[3].last() > gate)) {
+        logger.error("(d) the recorded pair must SHOW the gate firing: " +
+                     "rate_raw (" + f[3].last() + ") above the threshold " +
+                     "rate_base reconstructs (" + gate + "). It does not, so " +
+                     "a reader still cannot tell a rejected reading from a " +
+                     "tick with no median");
+        return false;
+    }
+    var replay = StrongRowView.gatedRate(f[3].last(), 0.0, f[4].last());
+    if (!Lock.near(replay, f[5].last())) {
+        logger.error("(d) replaying the output stage from what the FILE " +
+                     "carries must give what row_stroke_rate carries; replay " +
+                     "gave " + replay + " against a recorded " + f[5].last());
+        return false;
+    }
+    return true;
+}
+
+// THE GATE INPUTS ARE RECORDED AS STATES, NOT AS SILENCE.
+//
+// THE LOAD-BEARING CASE, and the trap is the one part 1 already walked into
+// once: the obvious implementation writes a rate only when there IS one, which
+// reads as caution. Record-scope FitContributor fields LATCH -- a skipped
+// setData re-emits the previous value on the next record (#36, byte level) --
+// so on the rows these fields exist to explain, that implementation keeps
+// re-emitting the last median and the last baseline and reports rowing that
+// stopped minutes ago.
+//
+// The stop is driven through the SHIPPING stroke-ring timeout in onSensorData,
+// which clears BOTH quantities together, rather than by assigning zeros: it is
+// the state a real row ends in, and it is the one where a latched median is
+// most obviously a lie.
+(:test) function test_lock_theGateInputsAreRecordedAsStatesNotAsSilence(logger) {
+    var f = Lock.fields();
+    var p = Lock.tickProbe(f);
+
+    // A real row first, so there is something to latch.
+    p.rowAt(15.0, 8);
+    p.runTick();
+    if (!Lock.near(f[3].last(), 15.0) || !Lock.near(f[4].last(), 15.0)) {
+        logger.error("setup: the first tick must record the 15.0 spm median " +
+                     "and baseline; rate_raw=" + f[3].last() + " rate_base=" +
+                     f[4].last());
+        return false;
+    }
+
+    // Then the athlete stops. 4.0 s periods put the ring timeout at 8.8 s and
+    // the last stroke landed at t = 28.0 s on the detector's synthetic clock
+    // (mSampleIdx * mDt, mDt = 1/REQ_RATE = 0.04 s), so 1200 quiet samples take
+    // that clock to 48.0 s and clear the ring with margin. NOT
+    // System.getTimer(): this clock counts the samples this case feeds, so it
+    // reads the same on a seconds-old CI simulator and an hours-old desktop one.
+    p.feedQuiet(48, 25);
+    if (p.rawRate() != 0.0 || p.rateBase() != 0.0) {
+        logger.error("setup: 48 s of quiet must clear both the median and the " +
+                     "baseline through the shipping timeout, or the leg below " +
+                     "is asserting about a state it never reached. median=" +
+                     p.rawRate() + " baseline=" + p.rateBase());
+        return false;
+    }
+    p.runTick();
+
+    if (!Lock.near(f[3].last(), $.RATE_RAW_NONE)) {
+        logger.error("after the athlete stops, rate_raw must carry the " +
+                     "no-median encoding " + $.RATE_RAW_NONE + "; it carries " +
+                     f[3].last() + ". If that is the previous 15.0, the write " +
+                     "was SKIPPED -- and a skipped write on a record-scope " +
+                     "field re-emits the last value, so the file would report " +
+                     "a median the detector no longer had");
+        return false;
+    }
+    if (f[3].vals.size() != 2) {
+        logger.error("two ticks must produce two rate_raw writes; got " +
+                     f[3].vals.size() + ". Withholding the write is the " +
+                     "specific defect this case exists to catch: it does not " +
+                     "leave a gap, it latches");
+        return false;
+    }
+    if (!Lock.near(f[4].last(), $.RATE_BASE_NONE)) {
+        logger.error("the ring timeout takes the established rate with it, so " +
+                     "rate_base must carry " + $.RATE_BASE_NONE + " -- the " +
+                     "state in which the gate falls back to " +
+                     $.FAST_NEEDS_LOCK + ". It carries " + f[4].last() +
+                     ", which reconstructs a gate of " +
+                     StrongRowView.fastGate(f[4].last()));
+        return false;
+    }
+    if (f[4].vals.size() != 2) {
+        logger.error("two ticks must produce two rate_base writes; got " +
+                     f[4].vals.size());
         return false;
     }
     return true;
