@@ -21,6 +21,28 @@ using Toybox.Lang;
 //                  UNMODIFIED estimator output. If a recorded value moves, the
 //                  change is wrong.
 //
+// WHAT THIS FILE OBSERVES OF THAT CONSTRAINT, stated because the sentence above
+// names THREE writes and the pins reach ONE.
+// test_cue_c0_theMeasurementSurvivesTheCue installs a recording Field on
+// mFitRate ALONE (CueFix.Probe exposes only installFitRate), so row_stroke_rate
+// is pinned and dist_per_stroke and corrective_rate are NOT. Their safety here
+// is STRUCTURAL and reviewable rather than pinned: mCueZone / mCueCand /
+// mCueSince are written only from onUpdate, and the onTick path that issues all
+// three writes never reads them (see the display-cue state block in
+// StrongRowView.mc), and the whole StrongRowView diff for this change removes
+// one line and touches none of outputRate / recomputeRate / registerStroke /
+// distPerStroke / correctiveRate.
+//
+// MEASURED, so that this is a statement rather than a hedge: halving
+// distPerStroke's return leaves all 236 cases green. A dist_per_stroke pin IS
+// available in process (speed 3.0 m/s at 25.0 spm writes 7.2) and is worth its
+// own RED step rather than being smuggled in green here -- filed, not done.
+// corrective_rate is NOT pinnable in process at all: Activity.getActivityInfo()
+// carries no currentCadence under (:test), so nativeCadence() is 0.0 and
+// correctiveRate() clamps to 0.0 whatever outputRate() returns. An assertion on
+// it would be green for the wrong reason, which is the fourth trap in this
+// file's own list.
+//
 // The displayed NUMBER stays raw too -- only the colour is filtered. That is a
 // measured result and not a preference; the negative result that rules out
 // filtering the number is recorded at the CUE_* constants in StrongRowView.mc.
@@ -361,9 +383,23 @@ module CueFix {
         return false;
     }
 
-    // (b) a SUSTAINED overshoot still says so. Three frames, not an 80-frame
-    // sweep: what matters is the frame that starts a pending change and one far
-    // past any window it could be waiting on.
+    // (b) a SUSTAINED overshoot still says so, FROM A CLEAN START.
+    //
+    // CORRECTION, kept rather than edited away because this section was
+    // credited with coverage it has never had. An earlier revision said "what
+    // matters is the frame that starts a pending change and one far past any
+    // window it could be waiting on". NO FRAME HERE STARTS A PENDING CHANGE:
+    // workProbe leaves mCueZone at CUEZ_NONE, so the very first renderAt is
+    // taken by cueStep's no-data fast path and adopts CUEZ_ABOVE at t = 0, and
+    // the 20000 ms frame merely re-asserts a zone adopted twenty seconds
+    // earlier. Deleting the fast path reds this case; deleting the call site's
+    // `mCueCand = cue[1];` did NOT, which is how the overclaim was found.
+    //
+    // What it pins is real and worth keeping: a rate over the band from the
+    // first frame of a work step must read red and stay red. ADOPTION UNDER
+    // PERSISTENCE -- an IN display that has to become ABOVE -- is a different
+    // path and is pinned by section (c) of
+    // test_cue_theScreenLagsTheColourNotTheNumber.
     var pov = CueFix.workProbe();
     pov.setRate(25.0);
     CueFix.renderAt(pov, 0);
@@ -574,15 +610,24 @@ module CueFix {
 //
 // WHY THE DIRECTIONS ARE NOT SYMMETRIC. The damaging error is FALSE-HIGH:
 // telling the athlete to ease off while they are actually in the band. In the
-// choppy recording that is what drove the lap medians 16.5 -> 15.0 -> 14.2 ->
-// 13.2 against a 16-18 target. So asserting an out-of-band correction is the
-// expensive claim and pays the long window; withdrawing one is cheap.
+// choppy recording five of the eight work-lap medians (16.5, 15.0, 14.2, 15.2,
+// 13.2, 14.3, 16.1, 16.0) sit below a 16-18 target. So asserting an out-of-band
+// correction is the expensive claim and pays the long window; withdrawing one is
+// cheap.
+//
+// RETRACTION: an earlier revision of this paragraph quoted "16.5 -> 15.0 ->
+// 14.2 -> 13.2" as a progressive drift. That is four of the eight laps with the
+// middle and the tail dropped; the real series is not monotone and recovers into
+// band over the last two intervals. Corrected at its source in the CUE_* block
+// of StrongRowView.mc, which also records what replaying the SHIPPED rule does
+// and does not deliver.
 //
 // AND WHY THE NUMBER IS NOT FILTERED, which is the trap a later "improvement"
-// would walk into: pre-smoothing the displayed rate and deriving the zone from
-// the smoothed value makes the choppy row WORSE, measured -- 4.5% false-high on
-// raw against 8.4% (median-5), 12.5% (median-9) and 11.1% (Hampel). Filter the
-// zone, not the number.
+// would walk into: pre-smoothing the displayed rate and taking the zone from the
+// smoothed value makes the choppy row WORSE, re-measured on the shipped rule
+// with causal filters -- 6.9% false-high unfiltered against 9.7% (median-5) and
+// 13.2% (median-9), with Hampel unable to move it at all. Filter the zone, not
+// the number. Regenerate with `python3 scripts/cue_replay.py`.
 //
 // TIME IS INJECTED, NEVER SYNTHESISED. Every stamp below is an absolute number
 // the case chose. A stamp derived from System.getTimer() would depend on device
@@ -596,6 +641,14 @@ module CueFix {
     // Driven as a real frame sequence at the 250 ms tick, feeding each step's
     // output back in, so an implementation that merely delayed the change would
     // still red here.
+    //
+    // WHAT THESE TWO CANNOT SEE, stated so the next reader does not credit them
+    // with it: while the rate sits inside the deadband cueStep returns
+    // [cur, cur, now], so the fed-back candidate is pinned EQUAL to the
+    // displayed zone and `cur != cand` never arises in this loop. They pin that
+    // a deadband exists and that it is not merely a delay; they cannot tell
+    // cueTarget(rate, lo, hi, cur) from cueTarget(rate, lo, hi, cand). Section
+    // (c) below is what does that.
     var probes = [[18.5, "(a) above"], [15.5, "(b) below"]];
     for (var i = 0; i < probes.size(); i++) {
         var rate = probes[i][0];
@@ -616,7 +669,67 @@ module CueFix {
         }
     }
 
-    // (c) THE DEADBAND IS ASYMMETRIC BETWEEN EXIT AND ENTRY. Re-entry pays NO
+    // (c) THE DEADBAND KEYS ON THE DISPLAYED ZONE, NOT ON THE PENDING ONE.
+    //
+    // This is the load-bearing sentence of the whole design -- "while the cue
+    // zone is IN, leaving it requires rate > hi + DEADBAND" is about the zone ON
+    // SCREEN -- and until this section existed nothing pinned it: changing
+    // cueStep's first line to cueTarget(rate, lo, hi, cand) left all 236 cases
+    // green (measured, not argued).
+    //
+    // Reached by spiking ONCE past hi + DEADBAND, which forms a pending ABOVE
+    // while IN is still displayed, then settling 0.5 spm over the band -- the
+    // recorded choppy-water pattern, and an ordinary frame sequence at the call
+    // site, which feeds mCueZone/mCueCand/mCueSince straight back in every
+    // frame. Under the mutant the widened band would belong to the pending
+    // ABOVE, 18.5 would be plainly over 18, and the cue would turn red after
+    // four seconds: a FALSE-HIGH, the exact error direction this feature was
+    // measured and chosen to remove.
+    var spike = StrongRowView.cueStep(20.0, CueFix.LO, CueFix.HI,
+                                      $.CUEZ_IN, $.CUEZ_IN, 0, 0);
+    if (spike[0] != $.CUEZ_IN || spike[1] != $.CUEZ_ABOVE) {
+        logger.error("(c) setup: one frame at 20.0 must leave IN displayed " +
+                     "with ABOVE pending; got zone " + spike[0] +
+                     ", candidate " + spike[1]);
+        return false;
+    }
+    var hz = spike[0]; var hc = spike[1]; var hs = spike[2];
+    for (var t = 250; t <= 10000; t += 250) {
+        var ho = StrongRowView.cueStep(18.5, CueFix.LO, CueFix.HI,
+                                       hz, hc, hs, t);
+        hz = ho[0]; hc = ho[1]; hs = ho[2];
+    }
+    if (hz != $.CUEZ_IN) {
+        logger.error("(c) the widened band belongs to the zone ON SCREEN, not " +
+                     "to the candidate asking to replace it: 18.5 is inside " +
+                     "the 1.0 spm deadband around a displayed IN, so a single " +
+                     "20.0 frame must not license it. Zone became " + hz +
+                     " -- this is the false-high the feature exists to remove");
+        return false;
+    }
+    // The mirror, so the below-band side is stated rather than inferred.
+    var dip = StrongRowView.cueStep(14.0, CueFix.LO, CueFix.HI,
+                                    $.CUEZ_IN, $.CUEZ_IN, 0, 0);
+    if (dip[0] != $.CUEZ_IN || dip[1] != $.CUEZ_BELOW) {
+        logger.error("(c) setup: one frame at 14.0 must leave IN displayed " +
+                     "with BELOW pending; got zone " + dip[0] +
+                     ", candidate " + dip[1]);
+        return false;
+    }
+    var dz = dip[0]; var dc = dip[1]; var ds = dip[2];
+    for (var u = 250; u <= 10000; u += 250) {
+        var dout = StrongRowView.cueStep(15.5, CueFix.LO, CueFix.HI,
+                                         dz, dc, ds, u);
+        dz = dout[0]; dc = dout[1]; ds = dout[2];
+    }
+    if (dz != $.CUEZ_IN) {
+        logger.error("(c) below-band mirror: 15.5 is inside the deadband " +
+                     "around a displayed IN, so a single 14.0 frame must not " +
+                     "license 'row harder'; zone became " + dz);
+        return false;
+    }
+
+    // (d) THE DEADBAND IS ASYMMETRIC BETWEEN EXIT AND ENTRY. Re-entry pays NO
     // deadband: the rate has only to reach the band edge, not to clear it by
     // 1.0 spm. A deadband applied here would make the band effectively 17-17 to
     // get back into, and an athlete who corrected exactly onto the edge would be
@@ -624,14 +737,14 @@ module CueFix {
     var early = StrongRowView.cueStep(16.0, CueFix.LO, CueFix.HI,
                                       $.CUEZ_BELOW, $.CUEZ_IN, 0, 999);
     if (early[0] != $.CUEZ_BELOW) {
-        logger.error("(c) re-entry still owes its 1 s at 999 ms; zone is " +
+        logger.error("(d) re-entry still owes its 1 s at 999 ms; zone is " +
                      early[0] + ", expected " + $.CUEZ_BELOW);
         return false;
     }
     var late = StrongRowView.cueStep(16.0, CueFix.LO, CueFix.HI,
                                      $.CUEZ_BELOW, $.CUEZ_IN, 0, 1000);
     if (late[0] != $.CUEZ_IN) {
-        logger.error("(c) 16.0 IS the band's lower edge, and coming back from " +
+        logger.error("(d) 16.0 IS the band's lower edge, and coming back from " +
                      "below costs no deadband -- reaching the edge is enough. " +
                      "Zone is " + late[0] + ", expected " + $.CUEZ_IN);
         return false;
@@ -817,6 +930,52 @@ module CueFix {
         logger.error("one frame below the band is not an instruction; the cue " +
                      "must still read green (COLOR_GREEN = " + Gfx.COLOR_GREEN +
                      "); got " + cd);
+        return false;
+    }
+
+    // (c) THE ADOPTION HALF. Everything above is suppression: it asserts GREEN,
+    // and a call site that had stopped advancing the cue at all would satisfy
+    // every line of it. A spike that does NOT stop must still become "ease off",
+    // and until this section existed nothing in the suite drove an IN -> ABOVE
+    // adoption through the shipping draw path. Measured, not argued: deleting
+    // `mCueCand = cue[1];` at the call site left all 236 cases green.
+    //
+    // Driven from an IN DISPLAY on purpose -- not from CUEZ_NONE, which cueStep
+    // adopts without delay and which is what section (b) of
+    // test_cue_c0_theSteadyAndTheWhiteStatesAreUnchanged actually exercises.
+    //
+    // THE STAMPS START LATE ON PURPOSE. With every stamp under 4000 ms a call
+    // site that never wrote mCueSince back would be indistinguishable from one
+    // that did, because `now - 0` is already past the window. Starting at 60 s
+    // makes the window relative to the candidate rather than to zero, so this
+    // one section kills both write-backs.
+    var r = CueFix.workProbe();
+    r.setRate(17.0);
+    CueFix.renderAt(r, 60000);
+    CueFix.renderAt(r, 60250);
+    r.setRate(25.0);
+    CueFix.renderAt(r, 60500);
+    CueFix.renderAt(r, 60750);
+    CueFix.renderAt(r, 61000);
+    CueFix.renderAt(r, 61250);
+    var cs = CueFix.numeralColour(CueFix.renderAt(r, 61500));
+    if (cs != Gfx.COLOR_GREEN) {
+        logger.error("(c) one second into the spike is still not an " +
+                     "instruction; expected green (COLOR_GREEN = " +
+                     Gfx.COLOR_GREEN + "), got " + cs);
+        return false;
+    }
+    for (var t = 61750; t < 64500; t += 250) {
+        CueFix.renderAt(r, t);
+    }
+    var cr = CueFix.numeralColour(CueFix.renderAt(r, 64500));
+    if (cr != Gfx.COLOR_RED) {
+        logger.error("(c) a 25.0 spm overshoot held past PERSIST_OUT must " +
+                     "reach red (COLOR_RED = " + Gfx.COLOR_RED + "); got " +
+                     cr + ". The warning half of the cue has been deleted: " +
+                     "either the candidate or its timestamp is not surviving " +
+                     "the frame at the call site, so the zone freezes at " +
+                     "whatever it first showed");
         return false;
     }
     return true;
