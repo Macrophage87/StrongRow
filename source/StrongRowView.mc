@@ -197,6 +197,83 @@ const LOCK_RATE_NONE = 0.0;
 const LOCK_CONF_NONE = -1.0;
 const LOCK_LOW_MAX   = 65534;
 
+// ---- the GATE-INPUT DIAGNOSTICS (#149, part 2) ----------------------------
+// The three fields above record what the LOCK was doing. These two record what
+// the GATE WAS GIVEN, and without them a decoded row still does not determine
+// what the detector did:
+//
+//   * row_stroke_rate is the gate's OUTPUT (outputRate() -> gatedRate). A
+//     reading the gate ZEROED and a tick with no median are the same 0.0 in it,
+//     and a reading the lock SNAPPED is indistinguishable from one that passed
+//     through. So the file shows the gate's RESULT and never the gate firing.
+//
+//   * the gate's own threshold at any instant is fastGate(mRateBase), and
+//     mRateBase IS NOT RECONSTRUCTIBLE OFFLINE. nextRateBase consumes the
+//     PRE-GATE median, which is exactly the number no field carries, so the
+//     recursion cannot be replayed from the file -- inverting the recorded
+//     output is not available either, because the zeroed and snapped cases
+//     discard the median outright.
+//
+//   rate_raw    mRate, the pre-gate median -- gatedRate's `raw`
+//   rate_base   mRateBase, the established baseline fastGate keys on
+//
+// THE ENCODING QUESTION IS ASKED SEPARATELY FOR THESE TWO rather than inherited
+// from LOCK_RATE_NONE, because the two arguments are not the same shape.
+//
+// lock_rate's 0.0 is a SUBSTITUTED MARKER. When no lock is up there is no rate
+// to write at all (60.0/0.0 is not a number), so lockRateOf has to invent one,
+// and 0.0 is safe because a lock is a rate in [MIN_RATE, MAX_RATE] by
+// construction.
+//
+// THESE TWO INVENT NOTHING. mRate and mRateBase hold a value at every tick, and
+// in the "nothing" state that value IS 0.0 -- assigned by recomputeRate when
+// the period ring is empty, by the stroke-ring timeout in onSensorData, and by
+// resetDetector. So the question is not "which marker do we choose" but "is the
+// variable's own 0.0 ambiguous", and the discriminating test is the one
+// lock_confidence FAILS:
+//
+//     IS THERE A STATE IN WHICH THE QUANTITY IS LEGITIMATELY 0.0 AND THAT STATE
+//     IS NOT THE NOTHING STATE?
+//
+//   lock_confidence  YES. A correlation of zero over a real energy is an
+//                    ORDINARY READING -- an uncorrelated signal -- and that is a
+//                    different state from "no estimate was computed". Hence
+//                    LOCK_CONF_NONE = -1.0.
+//
+//   rate_raw         NO. registerStroke accepts only periods in
+//                    [60/MAX_RATE, 60/MIN_RATE]; the median of such periods is
+//                    in that band; mRate = 60/median. So a median rate lies in
+//                    [MIN_RATE, MAX_RATE]. Motion too slow or too fast for the
+//                    band does not yield a SMALL rate -- the period is DROPPED
+//                    and mRate is not touched at all, which is what keeps 0.0
+//                    from ever meaning "a very slow reading".
+//
+//   rate_base        NO. nextRateBase establishes from a PUBLISHED reading
+//                    (in band) and thereafter returns an EMA between two in-band
+//                    numbers, which stays between them. Its only assignments of
+//                    0.0 are resetDetector and the ring timeout.
+//
+// So for these two, 0.0 is NOT the #86 / #107 defect of absence rendered as a
+// legal value: it is the quantity's own value, and it is out of band for a
+// reading. A negative sentinel would buy no distinction that does not already
+// exist and would cost the faithfulness -- the field would stop being the
+// variable and start being an encoding of it, and every future reader would
+// have to know which.
+//
+// PINNED RATHER THAN ASSERTED IN PROSE, and the pin is deliberately the STEP
+// BEHIND the inequality: sub-band motion driven through the SHIPPING
+// registerStroke leaves both quantities at exactly 0.0 rather than at a small
+// rate (Lock.test_lock_theNoDataZeroIsTheDetectorsOwnValue, which also asserts
+// RATE_RAW_NONE < MIN_RATE and RATE_BASE_NONE < MIN_RATE). If a later change
+// ever lets either quantity take a value in (0, MIN_RATE), that case reds and
+// this argument has to be re-made instead of quietly outliving its evidence.
+//
+// AND THEY ARE STILL WRITTEN ON EVERY TICK, for the reason the three above are:
+// record-scope fields LATCH, so withholding the write on a no-data tick
+// re-emits the last median and reports rowing that did not happen.
+const RATE_RAW_NONE  = 0.0;
+const RATE_BASE_NONE = 0.0;
+
 // #110 -- left-edge heart-rate arc. At module (global) scope for exactly the
 // reason the R-R constants above are: a Monkey C class `const` is an instance
 // member, unreachable from a static method, and every decision this feature
@@ -776,6 +853,9 @@ class StrongRowView extends Ui.View {
     hidden var mFitLockRate;
     hidden var mFitLockConf;
     hidden var mFitLockLow;
+    // #149 part 2's gate-input diagnostics, record scope, ids 23-24.
+    hidden var mFitRateRaw;
+    hidden var mFitRateBase;
     hidden var mMaxCore;
     // #13. "Has a real reading ever been written to this record field in this
     // session?" -- one flag per field, not one for the pair, because #17 gave
@@ -835,6 +915,8 @@ class StrongRowView extends Ui.View {
         mFitLockRate = null;
         mFitLockConf = null;
         mFitLockLow  = null;
+        mFitRateRaw  = null;
+        mFitRateBase = null;
         mMaxCore    = 0.0;
         mCoreEver   = false;      // #13
         mSkinEver   = false;      // #13
@@ -3263,6 +3345,44 @@ class StrongRowView extends Ui.View {
         return n;
     }
 
+    // ---- the gate-input diagnostic encodings (#149 part 2) ----------------
+    // Two more pure statics, for the reasons the three above are static: so
+    // what each field CARRIES is a named, reviewable decision rather than an
+    // expression buried in a setData argument, and so it can be pinned without
+    // a Session -- which no (:test) in this repository can obtain.
+    //
+    // BOTH ARE THE IDENTITY OVER THE WHOLE REACHABLE DOMAIN, and that is the
+    // point rather than an oversight: the encoding decision recorded at
+    // RATE_RAW_NONE is that 0.0 is the quantity's OWN no-data value and needs no
+    // substitution. What these add is the normalisation of null and of a
+    // negative neither quantity can hold today, so the field's contract -- "a
+    // recorded value below MIN_RATE means there was no median / no baseline" --
+    // is a property of THIS function instead of a property of the invariants of
+    // its one caller. lockLowClamp carries a negative clamp it can never be
+    // handed for exactly the same reason.
+    //
+    // The `<= 0.0` test is not a free choice for rateBaseOf: it is the SAME
+    // predicate fastGate uses to decide "nothing established yet", so the set of
+    // states recorded as RATE_BASE_NONE is exactly the set the gate treats as
+    // having no baseline. That identity is what makes the field reproduce the
+    // threshold the app actually used, and it is pinned as such
+    // (Lock.test_lock_theRecordedInputsReproduceThePublishedRate) rather than
+    // left to be inferred from the two functions sitting near each other.
+
+    // Pure: the PRE-GATE median in spm, or RATE_RAW_NONE when the detector has
+    // no median. See the RATE_RAW_NONE block at the top of this file.
+    static function rateRawOf(rate) {
+        if (rate == null || rate <= 0.0) { return $.RATE_RAW_NONE; }
+        return rate;
+    }
+
+    // Pure: the established-rate baseline in spm, or RATE_BASE_NONE when none is
+    // established. See the RATE_BASE_NONE block at the top of this file.
+    static function rateBaseOf(base) {
+        if (base == null || base <= 0.0) { return $.RATE_BASE_NONE; }
+        return base;
+    }
+
     // Advance the baseline. Called from recomputeRate() and nowhere else.
     //
     // Reads the guard's answer through the SHIPPING outputRate(), computed
@@ -4072,6 +4192,11 @@ class StrongRowView extends Ui.View {
             mFitLockRate = null;
             mFitLockConf = null;
             mFitLockLow = null;
+            // #149 part 2, cleared with the three above and for the same
+            // reason: they are per-record diagnostics with no session-scope
+            // companion, so there is nothing to write at save time.
+            mFitRateRaw = null;
+            mFitRateBase = null;
         }
         mStarted = false;
         // #74: the attempt is over either way, so the footer goes back to
