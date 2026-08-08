@@ -1603,10 +1603,27 @@ class StrongRowView extends Ui.View {
     // what a decoder or Garmin Connect SEES appears above; only what this code
     // calls.
     static function ctTempWritable(everWritten, tempC) {
-        // c1: main's decision, unchanged and unconditional. The differentials
-        // that red against this body are in CoreDropoutTest.mc's c2 section,
-        // and the commit after them replaces this one line.
-        return true;
+        // Never hand null to setData: #48 measured it as an uncatchable native
+        // error that escapes try/catch and kills the app.
+        //
+        // It also stops a throw one step EARLIER than the setData it is named
+        // for, which was measured rather than assumed: with this line removed
+        // and nothing else changed, test_ctw_c2_nullIsNeverHandedToSetData
+        // reports ERROR, not FAIL -- `null > 0.0` on the next line throws.
+        //
+        // Unreachable from today's getters (coreTempAt/skinTempAt return a
+        // clamped value or the literal 0.0) and guarded anyway: heatIndexAt
+        // already returns null for its absent case, so a "make these
+        // consistent" edit is a plausible next step.
+        if (tempC == null) { return false; }
+        // A current reading, always. Nothing either decoder accepts is at or
+        // below 0.0 C (pinned by CoreDrop's two c0 sweeps), so this is exactly
+        // "the sample is a measurement".
+        if (tempC > 0.0)   { return true; }
+        // A dropout. Writing the 0.0 marker is right only once a real value
+        // has been written -- before that there is nothing for the latch to
+        // re-emit and silence is strictly more honest.
+        return everWritten;
     }
 
     // The `everWritten` flag's next value. Latches on the first real reading
@@ -2966,15 +2983,30 @@ class StrongRowView extends Ui.View {
                 // attempts, so pressing START before the first valid broadcast
                 // is the ordinary case, not an edge case.
                 //
-                // Accepted cost, stated so it is a decision and not a surprise:
-                // a row with no pod now declares these three fields and writes
-                // core/skin every tick. coreTemp()/skinTemp() return 0.0 when
-                // nothing is fresh, so such a row logs 0.0 rather than leaving
-                // the fields unwritten. That is #13's territory (it owns the
-                // guard, and the freshness model it depends on); do not
-                // pre-empt it here. Note 0.0 cannot collide with a real reading
-                // -- the 25-45 C / 15-45 C clamps in CoreTempSensor put it
-                // outside the accepted band by construction in this code.
+                // CORRECTION (#13), kept in place rather than edited away
+                // because the sentence it replaces was the pointer a reader
+                // would have followed. This paragraph used to read:
+                //
+                //     "a row with no pod now declares these three fields and
+                //      writes core/skin every tick ... so such a row logs 0.0
+                //      rather than leaving the fields unwritten. That is #13's
+                //      territory ...; do not pre-empt it here."
+                //
+                // That accepted cost is no longer paid, and the second half is
+                // now FALSE. #13 landed: onTick withholds the write until the
+                // first current reading of the session, so a row with no pod
+                // declares these fields and writes NOTHING to core/skin at all.
+                // What such a row's records carry instead is the FLOAT
+                // never-set pattern -- expected-same and unmeasured for these
+                // two fields, which is #150's [Local] decode to settle.
+                //
+                // The clause that survives unchanged, because the whole design
+                // rests on it: 0.0 cannot collide with a real reading -- the
+                // 25-45 C / 15-45 C clamps in CoreTempSensor put it outside the
+                // accepted band by construction, swept and pinned by
+                // CoreDrop.test_ctw_c0_noAcceptedCoreIsZeroOrBelow and its skin
+                // twin. That is what lets 0.0 serve as the dropout marker AFTER
+                // a real reading has been written. See ctTempWritable.
                 //
                 // CONSEQUENCE FOR stopAndSave, do not "simplify" it away: with
                 // these fields now created on every row, `mFitMaxCore != null`
@@ -4231,9 +4263,11 @@ class StrongRowView extends Ui.View {
         // undoing the feature rather than fixing a data loss:
         //
         //   * THE FIT FILE IS THE RECORD AND HAS NO ATTENTION BUDGET. onTick
-        //     writes row_stroke_rate, dist_per_stroke, rr_interval, rmssd,
-        //     corrective_rate, core_temperature and skin_temperature every
-        //     250 ms regardless of what is on the screen, and the
+        //     writes row_stroke_rate, dist_per_stroke, rr_interval, rmssd and
+        //     corrective_rate every 250 ms regardless of what is on the
+        //     screen -- and core_temperature / skin_temperature every 250 ms
+        //     from the first current reading of the session onward (#13; before
+        //     that they are deliberately left unwritten). And the
         //     session-scope aggregates land in stopAndSave. The per-interval
         //     accumulators (#109) run off onTick and advanceStep, not off the
         //     draw path. NOTHING below changes any of that: removing an
