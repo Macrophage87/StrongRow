@@ -73,7 +73,18 @@ NOTE_RE = re.compile(
 
 TEXT_EXTS = {".mc", ".py", ".md", ".sh", ".yml", ".yaml", ".txt", ".xml",
              ".jungle", ".json"}
-SKIP_DIRS = {".git", "bin", "gen", "node_modules", ".claude", "__pycache__"}
+
+# Build output and dependency trees, plus EVERY dot-directory. The dot rule is
+# load-bearing rather than tidiness: a checkout can carry additional working
+# copies of this same repository underneath a dot-directory, and scanning those
+# would find a second, older copy of every note and report drift that does not
+# exist in the tree being checked. No note is expected to live in a
+# dot-directory, so the rule costs nothing.
+SKIP_DIRS = {"bin", "gen", "node_modules", "__pycache__"}
+
+
+def skipped_dir(name):
+    return name.startswith(".") or name in SKIP_DIRS
 
 SELF = os.path.abspath(__file__)
 SELF_TEST = os.path.join(os.path.dirname(SELF), "test_check_ceiling_notes.py")
@@ -92,7 +103,7 @@ def ordinal(n):
 def scan(root):
     """Yield (path, lineno, match, raw_line) for every marked note under root."""
     for dirpath, dirs, files in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+        dirs[:] = sorted(d for d in dirs if not skipped_dir(d))
         for f in sorted(files):
             if os.path.splitext(f)[1] not in TEXT_EXTS:
                 continue

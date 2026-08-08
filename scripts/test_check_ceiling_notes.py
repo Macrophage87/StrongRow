@@ -142,6 +142,21 @@ def _():
     return (rc, "no %s note found" % MARK in out), (1, True)
 
 
+@case("a note under a dot-directory is not scanned")
+def _():
+    # A checkout can hold extra working copies of this same repository under a
+    # dot-directory. Scanning those would find an older copy of every note and
+    # report drift against a tree the maintainer is not editing -- a red with a
+    # file:line pointing outside the work. Pinned so the skip is not "tidied"
+    # into a plain .git exclusion.
+    rc, out = run({"scripts/x.py": "# " + note() + "\n",
+                   ".worktrees/old/scripts/x.py": "# " + note(used=246, free=7,
+                                                              nth=8,
+                                                              suffix="th")
+                   + "\n"})
+    return (rc, "OK:" in out), (0, True)
+
+
 @case("a note in a non-text file extension is not scanned")
 def _():
     # Bounds the scan honestly: the walk reads a fixed extension set, so a note
