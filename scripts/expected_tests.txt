@@ -145,6 +145,19 @@ CueFix.test_cue_theDeadbandIsPaidOnExitOnly
 CueFix.test_cue_theWindowsAreFourSecondsAndOneOnAClock
 CueFix.test_cue_theScreenLagsTheColourNotTheNumber
 
+# source/CoreP1Test.mc
+#
+# Names are MODULE-QUALIFIED: every declaration in that file lives inside
+# `module CoreP1`, so the simulator's RESULTS table prints `CoreP1.test_...`.
+# The whole block costs ONE member of module 'globals' instead of one per
+# declaration -- see the ceiling note at the top of source/CoreP1Test.mc.
+CoreP1.test_c0_freshTickWritesTheReading
+CoreP1.test_c0_dropoutAfterAReadingWritesZeroNotTheLastValue
+CoreP1.test_c0_theFirstReadingIsAlwaysWritten
+CoreP1.test_c0_dropoutsDoNotDisturbTheSessionMax
+CoreP1.test_c0_zeroIsNeverAnAcceptedReading
+CoreP1.test_c0_backoffIsPositiveOncePastTheBurst
+
 # source/RateColourTest.mc
 test_rate_whiteOutsideWork
 test_rate_whiteWhenNoData
