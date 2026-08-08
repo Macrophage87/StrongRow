@@ -1299,6 +1299,28 @@ class StrongRowView extends Ui.View {
             if (mFitLockLow != null) {
                 mFitLockLow.setData(lockLowClamp(mAcLowConf));
             }
+            // #149 part 2: the gate's own INPUTS, written unconditionally
+            // alongside the three above and for the identical reason. The
+            // mFitRate line at the top of this block records the gate's OUTPUT;
+            // these two record what produced it, so a reading the gate zeroed
+            // or the lock snapped is visible as a decision rather than only as
+            // a result.
+            //
+            // rate_base is here rather than left to be inferred because it
+            // CANNOT be inferred: nextRateBase consumes the pre-gate median, so
+            // the recursion is not replayable from a file that lacks it, and
+            // the zeroed and snapped cases discard the median outright so
+            // row_stroke_rate cannot be inverted either.
+            //
+            // Both are plain in-app reads through pure statics; nothing on this
+            // path can throw, so no try/catch is added that would only hide a
+            // defect.
+            if (mFitRateRaw != null) {
+                mFitRateRaw.setData(rateRawOf(mRate));
+            }
+            if (mFitRateBase != null) {
+                mFitRateBase.setData(rateBaseOf(mRateBase));
+            }
             // #13. Each field decides for itself, from its own sample and its
             // own "ever written" flag -- core and skin carry SEPARATE freshness
             // stamps since #17, so one field's first reading must not license
@@ -3626,6 +3648,57 @@ class StrongRowView extends Ui.View {
                     mFitLockRate = null;
                     mFitLockConf = null;
                     mFitLockLow = null;
+                }
+                // #149 part 2: the GATE-INPUT diagnostics. Record scope, ids
+                // 23-24.
+                //
+                // ITS OWN try/catch, per #74 and for the reason every group
+                // above gives for theirs: a throw here must not null handles
+                // that were already created successfully -- and these two are
+                // the newest, therefore the likeliest to fail, and the three
+                // lock fields they sit beside are already shipped.
+                //
+                // OUTSIDE the coreFieldsWanted gate, for the same reason the
+                // lock fields are: they describe the STROKE DETECTOR, which
+                // runs on every row, and a podless row is not a row without a
+                // stroke rate.
+                //
+                // WHY 23 AND 24. Every developer field id in this file was
+                // enumerated before choosing: 0..11 (row_stroke_rate,
+                // dist_per_stroke, rr_interval, rmssd, avg_rmssd,
+                // corrective_rate, total_corrective_strokes, core_temperature,
+                // skin_temperature, max_core_temperature, ct_diag,
+                // heat_strain_index) and 20..22 (lock_rate, lock_confidence,
+                // lock_lowconf_run). 23-24 continue the lock block's run
+                // contiguously and leave 12..19 free, which is the reservation
+                // the block above made for another branch in flight. A
+                // duplicate id is a SEMANTIC collision git cannot see: two
+                // branches both taking 23 merge cleanly and produce one file in
+                // which the id means two things.
+                //
+                // No :scale/:offset on either, so what lockRateOf's siblings
+                // hand setData is what the field carries.
+                //
+                // WHAT IS NOT MEASURED, and it is deliberately not claimed.
+                // #77 measured eleven fields created and saved on fr965 /
+                // SDK 9.2.0, found no cap below 256, and found that AT id 256
+                // the SDK raises an uncatchable System Error that escapes this
+                // try. #80 measured twelve. SEVENTEEN fields, and a
+                // non-contiguous id set, are beyond both -- so this is EXPECTED
+                // to behave and has not been observed to. No in-process test
+                // can settle it: a (:test) cannot obtain a Session. A [Local]
+                // issue owns the simulator session and the decode; do not
+                // upgrade the expectation in this comment without one.
+                try {
+                    mFitRateRaw = mSession.createField(
+                        "rate_raw", 23, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
+                    mFitRateBase = mSession.createField(
+                        "rate_base", 24, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
+                } catch (e) {
+                    mFitRateRaw = null;
+                    mFitRateBase = null;
                 }
                 mCorrAccum = 0.0;
                 // Per-session accumulator, reset with the others above. It used
