@@ -70,6 +70,133 @@ const FOOT_PAUSED   = 2;
 const FOOT_REC      = 3;
 const FOOT_IDLE     = 4;   // not started yet
 
+// ============ the STROKE-RATE OUTPUT STAGE (#149) =========================
+// FOUR consts moved out of the class here -- MIN_RATE, MAX_RATE, LOCK_SNAP_K
+// and FAST_NEEDS_LOCK, i.e. exactly the four declared immediately below and
+// exactly the four the companion note at updateAutocorr's caller names. Written
+// as an inventory rather than as a bare count because the bare count was wrong
+// ("five") from the commit that introduced it, and a reader who trusts it goes
+// hunting for a fifth relocated const that never existed. The #149 constants
+// under the next header down are NET-NEW and were never class members.
+//
+// They are module (global) consts now for the reason the R-R and FOOT_* blocks
+// above give: a Monkey C class `const` is
+// an INSTANCE member, unreachable from a static method, and #149 requires the
+// output stage's whole decision to be a pure static so a (:test) can reach it
+// with plain numbers instead of through a built view and an event loop. A
+// module-scope const costs nothing in the fenix6 `globals` budget -- it is
+// inlined (measured; see the ceiling note at the top of scripts/list_tests.py).
+//
+// The VALUES are unchanged from the class consts they replace.
+const MIN_RATE = 6.0;             // slowest period the detector will accept
+const MAX_RATE = 40.0;            // hard ceiling on anything that reaches the file
+const LOCK_SNAP_K = 0.30;         // a locked rate deviating more snaps to the lock
+const FAST_NEEDS_LOCK = 30.0;     // the ABSOLUTE no-lock gate, in spm
+
+// ---- the RELATIVE no-lock gate (#149) ------------------------------------
+// THE DEFECT, as measured on the two decoded rows and recorded in #149:
+// FAST_NEEDS_LOCK is an absolute threshold guarding an error -- a doubled
+// stroke period -- that is RELATIVE to the athlete.
+//
+//     row            baseline    30.0 in units of this rower's own rate
+//     calm 4x15'     20.3 spm    1.48x
+//     choppy 8x3'    15.2 spm    1.98x
+//
+// A 20 spm rower was guarded at 1.5x; a 15 spm rower only past a full doubling.
+// The weakest guard went to the low-rate work this app exists for.
+//
+// LOCK_REF_RATE is the rate the absolute constant was IMPLICITLY calibrated at,
+// and LOCK_REL_K is the multiple that follows from it. Written as two constants
+// with the identity FAST_NEEDS_LOCK == LOCK_REL_K * LOCK_REF_RATE stated
+// (and pinned, in source/LockGuardTest.mc) rather than as a bare 1.5, so the
+// provenance of the number survives the next reader.
+const LOCK_REF_RATE = 20.0;
+const LOCK_REL_K    = 1.5;        // == FAST_NEEDS_LOCK / LOCK_REF_RATE
+
+// A FLOOR under the relative gate, and it is a safety device rather than a
+// tuning knob. The gate ZEROES a reading, and a zeroed reading does not feed
+// the baseline (see nextRateBase), so a baseline that has drifted far below the
+// rate the athlete is about to row at could otherwise reject every reading of
+// the next interval with nothing able to lift it back. The recorded workout is
+// 8 x 3' with 2' rests and the rests ARE rowed, so a baseline at rest cadence
+// meeting a work interval is the ordinary case, not an edge case.
+//
+// 20.0 spm is LOCK_REF_RATE: at or below the rate the absolute constant was
+// calibrated at, the gate stops tracking down and holds where a 20 spm rower's
+// guard has always been. It binds only for baselines under
+// LOCK_GATE_FLOOR / LOCK_REL_K = 13.33 spm; #149's worked example (a 15 spm
+// rower, gated at 22.5) is above it and is unaffected.
+const LOCK_GATE_FLOOR = 20.0;
+
+// THE ESTABLISHED-RATE BASELINE, in spm, updated once per REGISTERED STROKE --
+// never per call and never per tick. outputRate() is called several times a
+// frame (the FIT write, distPerStroke, correctiveRate, the numeral, the cue),
+// so a baseline advanced from there would have a time constant set by how many
+// consumers happened to read it. One update per stroke is a physical clock the
+// call graph cannot retune.
+//
+// TWO RATES, and the asymmetry is the whole design:
+//   * LOCK_BASE_A_OK  applies when the guard ACCEPTED the reading. Fast enough
+//     (a ~4-stroke time constant) that an ordinary ramp keeps its own gate
+//     ahead of it: the gate only fires when the reading jumps past
+//     LOCK_REL_K x baseline in a single step of a FIVE-PERIOD MEDIAN, which
+//     needs three of the last five periods to have halved -- the phantom-burst
+//     signature, not a ramp.
+//   * LOCK_BASE_A_REJ applies when the guard REJECTED it, and exists so
+//     rejection can never be permanent. A genuinely sustained step up (a racing
+//     start from a low paddle) lifts the baseline slowly until it is accepted;
+//     a 26 s burst -- the longest excursion #149 measured -- does not last long
+//     enough to. Without it the guard has a deadlock: reject, so the baseline
+//     never moves, so reject.
+//
+// NEITHER FIGURE IS MEASURED ON THE WATER. They are chosen so the two
+// behaviours above hold arithmetically, and #149 cannot validate them until the
+// lock-state diagnostics land and one more row is recorded. Do not quote them
+// as tuned.
+const LOCK_BASE_A_OK  = 0.25;
+const LOCK_BASE_A_REJ = 0.02;
+
+// ---- the LOCK-STATE DIAGNOSTICS (#149) -----------------------------------
+// #149's own words: "whether the lock was even up during these excursions is
+// exactly what I cannot tell from the recordings", and every account of the
+// over-reads -- including the one the change above rests on -- is inference
+// until it can be. Three record-scope fields answer it from one more row.
+//
+// WHAT "NO LOCK" IS WRITTEN AS, decided deliberately rather than by omission,
+// because RECORD-SCOPE FIELDS LATCH: once setData has been called even once, a
+// record committing without a new setData RE-EMITS the last value (#36,
+// byte-level, fr965 / SDK 9.2.0; reconfirmed by #48's probe_skip). So
+// WITHHOLDING A WRITE DOES NOT PRODUCE A GAP -- it fabricates a lock that was
+// not there, which is the exact opposite of what these fields are for. All
+// three are therefore written on EVERY tick under the mStarted && !mPaused
+// gate, and "no lock" gets an encoding instead of a silence.
+//
+//   LOCK_RATE_NONE   0.0 spm. This is NOT the #86 / #107 trap of rendering
+//                    absence as a legal value: updateAutocorr searches lags in
+//                    [60/MAX_RATE, 60/MIN_RATE] only, so a lock IS a rate in
+//                    [6.0, 40.0] spm by construction and 0.0 lies outside it.
+//                    Same argument the core/skin 0.0 lines already make, and it
+//                    is pinned (LOCK_RATE_NONE < MIN_RATE) rather than asserted
+//                    in prose.
+//
+//   LOCK_CONF_NONE   -1.0. Here 0.0 WOULD be the trap: a confidence of zero is
+//                    an ordinary reading (an uncorrelated signal), so it cannot
+//                    also mean "no estimate was computed". The computed value
+//                    is a ratio of a correlation to an energy and is
+//                    non-negative by construction, so a negative sentinel
+//                    cannot collide with one.
+//
+//   the run counter  written verbatim, SATURATED. mAcLowConf counts consecutive
+//                    low-confidence estimates and is never reset except by a
+//                    confident one, so it grows without bound on a long
+//                    unlocked row. LOCK_LOW_MAX is one below 0xFFFF because
+//                    0xFFFF is the UINT16 "no data" pattern (the same fact
+//                    RR_INVALID records) -- saturating ONTO it would turn a
+//                    long unlocked row into an apparent absence.
+const LOCK_RATE_NONE = 0.0;
+const LOCK_CONF_NONE = -1.0;
+const LOCK_LOW_MAX   = 65534;
+
 // #110 -- left-edge heart-rate arc. At module (global) scope for exactly the
 // reason the R-R constants above are: a Monkey C class `const` is an instance
 // member, unreachable from a static method, and every decision this feature
@@ -473,8 +600,10 @@ class StrongRowView extends Ui.View {
 
     // ================= stroke detector tunables =============================
     hidden const REQ_RATE = 25;
-    hidden const MIN_RATE = 6.0;
-    hidden const MAX_RATE = 40.0;
+    // MIN_RATE / MAX_RATE / FAST_NEEDS_LOCK / LOCK_SNAP_K moved to MODULE scope
+    // (top of this file, the #149 block) so the pure statics of the output
+    // stage can name them. A class `const` is an instance member and a static
+    // cannot resolve one. Values unchanged; the sites below now read `$.NAME`.
     hidden const FC_SLOW = 0.10;
     hidden const FC_FAST = 1.80;
     hidden const FC_ENV  = 0.30;
@@ -484,8 +613,6 @@ class StrongRowView extends Ui.View {
     hidden const MIN_THR  = 40.0;
     hidden const NPER = 5;
     hidden const QUIET_S = 5.0;       // no strokes while filters settle at boot
-    hidden const FAST_NEEDS_LOCK = 30.0; // rates above this need an autocorr lock
-    hidden const LOCK_SNAP_K = 0.30;  // locked rate deviating more snaps to lock
     // autocorrelation period gate
     hidden const AC_HZ       = 5.0;   // decimated sample rate
     hidden const AC_BUF      = 128;   // ~25 s of history
@@ -520,6 +647,16 @@ class StrongRowView extends Ui.View {
     hidden var mPIdx;
     hidden var mPCount;
     hidden var mRate;
+    // #149: the rate this athlete has ESTABLISHED, in spm, or 0.0 for "none
+    // yet". Advanced once per registered stroke (updateRateBase) and cleared
+    // when the stroke ring times out, so a long gap degrades to the absolute
+    // gate rather than to a stale baseline from a previous piece.
+    hidden var mRateBase;
+    // #149 round 2: strokes still to be withheld from the baseline. Set to NPER
+    // whenever a stroke registers DURING A PAUSE and counted down after the
+    // resume, because mPeriods survives the pause and the first medians after it
+    // are still the pause's. See updateRateBase for the measurement.
+    hidden var mBaseHold;
     hidden var mStrokeCount;
 
     // ---- per-work-interval accumulators (#109) --------------------------
@@ -560,6 +697,16 @@ class StrongRowView extends Ui.View {
     hidden var mAcBatch;
     hidden var mAcPeriod;
     hidden var mAcLowConf;
+    // #149: the LAST COMPUTED autocorrelation confidence, or LOCK_CONF_NONE
+    // when none has been computed (before the first estimate, and whenever the
+    // signal window carries no energy at all). Written by updateAutocorr, read
+    // only by the diagnostic write in onTick -- it gates nothing.
+    //
+    // "LAST COMPUTED", precisely: updateAutocorr returns early when there is
+    // not yet enough history, when the lag range collapses, or when the window
+    // is too short. Those rounds compute nothing and leave this standing, which
+    // is what makes the field's name honest.
+    hidden var mAcConf;
 
     // #110 heart-rate state. THREE fields, and the split is the whole point:
     //   mHrBpm     the last VALID reading. Never consulted for presence.
@@ -625,6 +772,10 @@ class StrongRowView extends Ui.View {
     hidden var mFitMaxCore;
     hidden var mFitCtDiag;
     hidden var mFitHsi;
+    // #149's lock-state diagnostics, record scope, ids 20-22.
+    hidden var mFitLockRate;
+    hidden var mFitLockConf;
+    hidden var mFitLockLow;
     hidden var mMaxCore;
     // #13. "Has a real reading ever been written to this record field in this
     // session?" -- one flag per field, not one for the pair, because #17 gave
@@ -681,6 +832,9 @@ class StrongRowView extends Ui.View {
         mFitMaxCore = null;
         mFitCtDiag  = null;
         mFitHsi     = null;
+        mFitLockRate = null;
+        mFitLockConf = null;
+        mFitLockLow  = null;
         mMaxCore    = 0.0;
         mCoreEver   = false;      // #13
         mSkinEver   = false;      // #13
@@ -811,6 +965,8 @@ class StrongRowView extends Ui.View {
         mPIdx        = 0;
         mPCount      = 0;
         mRate        = 0.0;
+        mRateBase    = 0.0;
+        mBaseHold    = 0;
         // #126: mStrokeCount is deliberately NOT reset here. resetDetector runs
         // ONCE PER APP LAUNCH -- initialize() is its only caller -- and owns DSP
         // state; the stroke count is session-scoped and is reset by
@@ -828,6 +984,7 @@ class StrongRowView extends Ui.View {
         mAcBatch     = 0;
         mAcPeriod    = 0.0;
         mAcLowConf   = 0;
+        mAcConf      = $.LOCK_CONF_NONE;   // #149: nothing computed yet
     }
 
     // Allocation seams for the two app-lifetime resources onLayout owns. Split
@@ -1035,6 +1192,31 @@ class StrongRowView extends Ui.View {
                 mFitCorr.setData(cr);
                 mCorrAccum += cr / 240.0;   // spm integrated over a 250 ms tick
             }
+            // #149: the lock state, WRITTEN UNCONDITIONALLY, which is the
+            // opposite of the heat-strain line below and the asymmetry is
+            // forced rather than stylistic.
+            //
+            // heat_strain_index withholds its write because 0.0 a.u. is an
+            // ordinary reading on that scale and writing it would fabricate a
+            // measurement. THESE THREE HAVE OUT-OF-BAND ENCODINGS FOR ABSENCE
+            // (LOCK_RATE_NONE lies outside [MIN_RATE, MAX_RATE]; LOCK_CONF_NONE
+            // is negative and a confidence never is), so the fabrication runs
+            // the OTHER WAY here: record-scope fields LATCH, so skipping the
+            // write on a dropped lock would re-emit the last good lock rate and
+            // report a lock that was not up -- on precisely the rows these
+            // fields exist to explain. Withholding is not caution here.
+            //
+            // Every value is a plain in-app read; nothing on this path can
+            // throw, so no try/catch is added that would only hide a defect.
+            if (mFitLockRate != null) {
+                mFitLockRate.setData(lockRateOf(mAcPeriod));
+            }
+            if (mFitLockConf != null) {
+                mFitLockConf.setData(mAcConf);
+            }
+            if (mFitLockLow != null) {
+                mFitLockLow.setData(lockLowClamp(mAcLowConf));
+            }
             // #13. Each field decides for itself, from its own sample and its
             // own "ever written" flag -- core and skin carry SEPARATE freshness
             // stamps since #17, so one field's first reading must not license
@@ -1214,7 +1396,7 @@ class StrongRowView extends Ui.View {
         // dynamic refractory: once the autocorrelation has locked the cycle
         // period, a new peak within REFRACT_FRAC of it is the recovery surge
         // of the SAME stroke, not a new stroke.
-        var refract = 60.0 / MAX_RATE;
+        var refract = 60.0 / $.MAX_RATE;
         if (mAcPeriod > 0.0) {
             var r2 = mAcPeriod * REFRACT_FRAC;
             if (r2 > refract) { refract = r2; }
@@ -1309,6 +1491,13 @@ class StrongRowView extends Ui.View {
             mRate = 0.0;
             mPCount = 0;
             mPIdx = 0;
+            // #149: the ESTABLISHED rate goes with the ring it was built from.
+            // This is the "after a long gap" degrade: the next piece starts
+            // against the absolute gate -- never looser than what shipped
+            // before -- instead of against a baseline describing a piece that
+            // has ended. Keeping it would carry a warm-up cadence into a work
+            // interval, or a rest paddle into a sprint.
+            mRateBase = 0.0;
         }
     }
 
@@ -1328,8 +1517,8 @@ class StrongRowView extends Ui.View {
             buf[i] = mAcBuf[(start + i) % AC_BUF];
         }
 
-        var minLag = ((60.0 / MAX_RATE) / mAcDt + 0.5).toNumber();
-        var maxLag = ((60.0 / MIN_RATE) / mAcDt + 0.5).toNumber();
+        var minLag = ((60.0 / $.MAX_RATE) / mAcDt + 0.5).toNumber();
+        var maxLag = ((60.0 / $.MIN_RATE) / mAcDt + 0.5).toNumber();
         if (minLag < 2) { minLag = 2; }
         if (maxLag > n - 8) { maxLag = n - 8; }
         if (maxLag <= minLag) { return; }
@@ -1340,7 +1529,11 @@ class StrongRowView extends Ui.View {
 
         var e = 0.0;
         for (var k = n - w; k < n; k++) { e += buf[k] * buf[k]; }
-        if (e <= 0.0) { mAcPeriod = 0.0; return; }
+        // #149: a window with no energy admits no confidence at all, so the
+        // sentinel goes in rather than the previous round's number. That is a
+        // DIFFERENT state from "computed, and it was zero", and the two must
+        // not be written the same way.
+        if (e <= 0.0) { mAcPeriod = 0.0; mAcConf = $.LOCK_CONF_NONE; return; }
 
         var rr = new [maxLag + 1];
         var best = 0.0;
@@ -1352,9 +1545,15 @@ class StrongRowView extends Ui.View {
             if (s > best) { best = s; bestL = lag; }
         }
 
+        // #149: record the confidence the gate below is about to be taken on.
+        // e > 0.0 is established above and `best` starts at 0.0 and only grows,
+        // so lockConf here is exactly `best / e` -- the substitution in the
+        // condition below is an equality, not a re-tuning.
+        mAcConf = lockConf(best, e);
+
         // three consecutive low-confidence evaluations to unlock, so a brief
         // lull mid-piece can't drop the period gate and let artifacts through
-        if (bestL == 0 || best / e < AC_MIN_CONF) {
+        if (bestL == 0 || mAcConf < AC_MIN_CONF) {
             mAcLowConf++;
             if (mAcLowConf >= 3) { mAcPeriod = 0.0; }
             return;
@@ -2729,7 +2928,7 @@ class StrongRowView extends Ui.View {
     hidden function registerStroke(t) {
         if (mLastStrokeT > -50.0) {
             var p = t - mLastStrokeT;
-            if (p >= 60.0 / MAX_RATE && p <= 60.0 / MIN_RATE) {
+            if (p >= 60.0 / $.MAX_RATE && p <= 60.0 / $.MIN_RATE) {
                 mPeriods[mPIdx] = p;
                 mPIdx = (mPIdx + 1) % NPER;
                 if (mPCount < NPER) { mPCount++; }
@@ -2758,14 +2957,34 @@ class StrongRowView extends Ui.View {
                 // THAT IS A TRADE, NOT A CLEAN WIN, and the cost follows from
                 // the same premise as the paragraph above: sustained motion at
                 // a 1.5-10 s cadence during a pause holds the median at a rate
-                // no COUNTED stroke produced, and it survives the first two
-                // strokes after the resume because NPER is 5. It reaches more
-                // than the numeral -- outputRate feeds distPerStroke (and so
-                // mFitDps), rateColour's band, and correctiveRate's
-                // session-scope mCorrAccum. A quiet pause is safe: the ring
-                // times out after 4-12 s. Pre-existing behaviour, unchanged
-                // here; recorded so the next reader does not take it for
-                // deliberate correctness.
+                // no COUNTED stroke produced, and it survives the first strokes
+                // after the resume because NPER is 5. It reaches FOUR things,
+                // and they do NOT share a bound:
+                //
+                //   THE THREE THAT ARE BOUNDED. outputRate feeds the numeral,
+                //   distPerStroke (and so mFitDps), rateColour's band and
+                //   correctiveRate's session-scope mCorrAccum -- all under
+                //   onTick's mStarted && !mPaused gate, so they take the
+                //   contamination only AFTER the resume and only until the
+                //   median clears, which is a couple of strokes because NPER
+                //   is 5. Pre-existing behaviour, unchanged here.
+                //
+                //   mRateBase (#149) IS NOT ONE OF THEM, and that is why
+                //   updateRateBase carries a pause gate and a post-resume hold
+                //   of its own -- see its note. The baseline is an EMA, so it
+                //   does not "clear" when the median does; and it sets the
+                //   NO-LOCK GATE, so a baseline dragged down by a phantom
+                //   cadence ZEROES the athlete's own rate rather than merely
+                //   misreporting it, in the FILE. Left ungated it cost tens of
+                //   strokes of row_stroke_rate and dist_per_stroke reading 0.0
+                //   over real rowing (measured; the figures are in
+                //   updateRateBase's note). The gate and the hold are NEW in
+                //   #149, not pre-existing, and they close the whole of that
+                //   fourth cost -- not the three above it.
+                //
+                // A quiet pause is safe for all four: the ring times out after
+                // 4-12 s and takes the baseline with it. Recorded so the next
+                // reader does not take any of this for deliberate correctness.
                 if (!mPaused) { mStrokeCount++; }
                 recomputeRate();
             }
@@ -2788,6 +3007,209 @@ class StrongRowView extends Ui.View {
         var med = tmp[mPCount / 2];
         if (mPCount % 2 == 0) { med = (med + tmp[mPCount / 2 - 1]) / 2.0; }
         if (med > 0.0) { mRate = 60.0 / med; }
+        // #149: one baseline update per REGISTERED STROKE. This is the ONLY
+        // caller, and registerStroke is the only caller of this -- so the
+        // baseline advances on a physical clock rather than on however many
+        // consumers happen to read outputRate() in a given frame.
+        updateRateBase();
+    }
+
+    // ================= the OUTPUT STAGE (#149) =============================
+    // THIS STAGE CHANGES A RECORDED VALUE, DELIBERATELY, AND THAT IS NOT THE
+    // THING THE MAINTAINER'S RULE FORBIDS. Read this before "restoring" it.
+    //
+    // outputRate() feeds three FIT writes -- row_stroke_rate (onTick),
+    // dist_per_stroke (via distPerStroke) and corrective_rate (via
+    // correctiveRate) -- so a change here moves what lands in the file. The rule
+    // is "the in-row measurement is a cue, but keep the ACTUAL measurement in
+    // the file", and the distinction it draws is between:
+    //
+    //   FILTERING THE FILE FOR DISPLAY -- forbidden. Smoothing, hysteresis or
+    //   any other treatment applied because it reads better on a wrist. That is
+    //   what the DISPLAY CUE (the CUE_* block below) exists to hold, and why
+    //   the cue keeps no rate at all: it produces a ZONE, and the number on
+    //   screen and the number in the file both come straight from here.
+    //
+    //   CORRECTING A DETECTOR ERROR -- required. The over-reads are measured
+    //   against an INDEPENDENT witness: across the seconds reading above 1.25x
+    //   their own lap's median rate, the hull sits at 0.814x (calm row) and
+    //   0.692x (choppy row) of that lap's median speed, while the seconds that
+    //   are NOT over-reads sit at 0.989x and 0.997x. enhanced_speed is recorded
+    //   independently of this detector and a genuine rate rise pushes speed UP,
+    //   so these are wrong readings -- and leaving a wrong reading in the file
+    //   is not fidelity. Every figure in this paragraph is printed by
+    //   `python3 scripts/speed_witness.py` from two committed fixtures and
+    //   pinned by scripts/test_speed_witness.py; the control in the second
+    //   clause is what separates "the hull is slower HERE" from an artefact of
+    //   the statistic.
+    //
+    //   RETRACTION. This paragraph previously read "0.851x (calm) and 0.916x
+    //   (choppy)", with no committed witness of any kind -- the repository's
+    //   only extract of these two rows carries stroke rate and nothing else,
+    //   and says so in its own header. Those two figures are WITHDRAWN: the
+    //   harness sweeps 48 definitions per row and gets 0.7890-0.8666 for the
+    //   calm row, which brackets 0.851, and 0.5630-0.7866 for the choppy row,
+    //   which never reaches 0.916. So the published pair cannot have come from
+    //   one consistent definition and 0.916 is unsupported by anything these
+    //   recordings contain. What survives is the direction, and it survives
+    //   with room to spare: all 96 sweep values are well under 1.0.
+    //
+    // Nothing here consults the display, the cue, or any zone. It consults the
+    // detector's own two witnesses -- the autocorrelation lock and the rate the
+    // athlete has actually been holding -- and it is the same value that then
+    // reaches the screen and the file. If a future change makes this stage read
+    // anything a screen owns, that is the line being crossed.
+
+    // Pure: the spm above which a reading needs the autocorrelation lock to
+    // corroborate it, given the rate this athlete has established.
+    //
+    //     gate(base) = min( FAST_NEEDS_LOCK,
+    //                       max( LOCK_GATE_FLOOR, LOCK_REL_K * base ) )
+    //     gate(none) = FAST_NEEDS_LOCK
+    //
+    // Read outward from the middle term:
+    //
+    //   LOCK_REL_K * base   is the change. The same MULTIPLE for every athlete
+    //                       -- the one a 20 spm rower already had -- instead of
+    //                       a fixed 30.0 that is 1.48x for one rower and 1.98x
+    //                       for another (#149, measured on two decoded rows).
+    //
+    //   max(FLOOR, ...)     stops the gate tracking below the rate the absolute
+    //                       constant was calibrated at. A ZEROED READING DOES
+    //                       NOT ESTABLISH THE BASELINE, so without this a
+    //                       baseline left at a rest cadence could reject an
+    //                       entire work interval. Binds only under 13.33 spm.
+    //
+    //   min(ABSOLUTE, ...)  is #149's first bar as an invariant of the code
+    //                       rather than of the tuning: at NO baseline can this
+    //                       return more than what shipped, so no reading that
+    //                       used to be zeroed can now pass.
+    //
+    //   base <= 0.0         is "nothing established yet" -- APP LAUNCH, or
+    //                       after the stroke ring timed out. NOT session start,
+    //                       and the difference is reachable rather than
+    //                       pedantic: mRateBase is zeroed in exactly two places,
+    //                       resetDetector (whose ONLY caller is initialize --
+    //                       the file states that at resetDetector itself) and
+    //                       the ring timeout. onLayout registers the
+    //                       accelerometer listener, registerStroke has no
+    //                       mStarted gate, and neither startSession nor
+    //                       beginSessionAccum touches detector state -- so a
+    //                       warm-up or a paddle to the start ESTABLISHES the
+    //                       baseline before START is pressed, and a session
+    //                       reaches this state only if the ring has timed out
+    //                       first (mLastPeriod * 2.2, clamped to 4-12 s, of
+    //                       quiet). That is deliberate, not a defect: the note
+    //                       at the ring timeout argues it, and the outer min
+    //                       keeps the gate never looser than what shipped
+    //                       either way. It is NOT "no guard": it falls back to
+    //                       exactly the rule that shipped. Null is handled for
+    //                       the same reason every other predicate in this file
+    //                       handles it: an absent value must not be arithmetic.
+    //
+    // WHAT THIS IS NOT. It is not validated on the water. What is established is
+    // that the over-reads are real detector errors -- the hull sits at 0.814x /
+    // 0.692x of its own lap's median speed across them against 0.989x / 0.997x
+    // across every other second, and speed is recorded independently of this
+    // detector (regenerate with scripts/speed_witness.py) -- and that the
+    // absolute gate is relative-blind. It is NOT established that the gate is
+    // what lets them through: whether the autocorrelation lock was even up
+    // during those excursions is unanswerable from any recording that exists,
+    // which is what the lock_* diagnostic fields are for. This ships as a
+    // reasoned correction to a guard that is wrong on its own terms, not as a
+    // measured fix for the reported symptom.
+    static function fastGate(base) {
+        if (base == null || base <= 0.0) { return $.FAST_NEEDS_LOCK; }
+        var g = $.LOCK_REL_K * base;
+        if (g < $.LOCK_GATE_FLOOR)   { g = $.LOCK_GATE_FLOOR; }
+        if (g > $.FAST_NEEDS_LOCK)   { g = $.FAST_NEEDS_LOCK; }
+        return g;
+    }
+
+    // Pure: the whole output-stage decision, as a function of the three inputs
+    // it actually has.
+    //
+    //   raw        the detector's median rate, spm (mRate)
+    //   acPeriod   the autocorrelation lock period in seconds, 0.0 for NO LOCK
+    //   base       the established rate, spm, 0.0 for NONE YET
+    //
+    // A STATIC AND NOT A METHOD, so the decision is reachable from a (:test)
+    // with plain numbers -- the seam rateColour, cueStep, footState, hrZone and
+    // dpsZone all use. A (:test) never yields to the simulator event loop, so a
+    // decision reachable only through a built view and a Dc is a decision only
+    // a render case can see.
+    static function gatedRate(raw, acPeriod, base) {
+        var r = raw;
+        if (acPeriod > 0.0) {
+            var ac = 60.0 / acPeriod;
+            if (r > 0.0) {
+                var dev = r - ac;
+                if (dev < 0.0) { dev = -dev; }
+                if (dev > $.LOCK_SNAP_K * ac) { r = ac; }
+            }
+        } else if (r > fastGate(base)) {
+            r = 0.0;
+        }
+        if (r > $.MAX_RATE) { r = $.MAX_RATE; }
+        return r;
+    }
+
+    // Pure: the established-rate baseline after one stroke.
+    //
+    //   base       the baseline before this stroke, 0.0 for NONE YET
+    //   guarded    what the OUTPUT STAGE PUBLISHED for this stroke, i.e. what
+    //              gatedRate returned. 0.0 means it published nothing.
+    //   raw        the detector's median for this stroke
+    //
+    // THE BASELINE FOLDS IN WHAT THE APP BELIEVED, NOT WHAT THE DETECTOR SAID.
+    // That distinction is the whole of this function and it was got wrong once
+    // (round 2, finding 5/6), so it is written out. gatedRate has THREE
+    // outcomes, not two:
+    //
+    //   PASSED THROUGH   guarded == raw. The ordinary case.
+    //   ZEROED           guarded == 0.0. No lock corroborated a reading above
+    //                    fastGate(base), so nothing was published.
+    //   CORRECTED        guarded > 0.0 AND guarded != raw -- the lock SNAP
+    //                    (gatedRate, the LOCK_SNAP_K branch), and the MAX_RATE
+    //                    clamp. The output stage has just declared `raw` wrong
+    //                    and substituted its own answer.
+    //
+    // The earlier revision tested only `guarded > 0.0` and then folded in `raw`,
+    // so a CORRECTED reading counted as corroboration and the discarded median
+    // set the bar. Measured, on this tree: a first-stroke median of 38.0 spm
+    // against a 20.0 spm lock snapped to 20.0 and still established a baseline
+    // of 38.0, which fastGate maps to FAST_NEEDS_LOCK exactly -- the relative
+    // gate collapsing to the absolute constant it exists to replace, disarmed
+    // by the very readings the snap flagged as errors.
+    //
+    // THE FIRST PUBLISHED READING ESTABLISHES THE BASELINE OUTRIGHT rather than
+    // easing a zero toward it, because an EMA started from 0.0 would spend its
+    // first strokes claiming the athlete rows at 4 spm and would gate them at
+    // the floor for no reason.
+    //
+    // A ZEROED READING STILL MOVES THE BASELINE, slowly, and that clause is the
+    // escape hatch rather than an oversight: see the LOCK_BASE_A_REJ note at the
+    // top of this file. Without it the guard can deadlock -- reject, so the
+    // baseline never moves, so reject -- and the deadlock is permanent because a
+    // rejected reading is exactly the one that would have lifted the bar. With
+    // it, a sustained genuine step up wins after some tens of strokes and a
+    // burst does not last long enough to. It is the ONE path that still reads
+    // `raw`, and it must: nothing was published, so there is no other number.
+    //
+    // A ZERO RAW IS NOT A READING. mRate is 0.0 when the stroke ring has timed
+    // out or nothing has been measured, and folding that in would drag the
+    // baseline toward a rate nobody rowed.
+    static function nextRateBase(base, guarded, raw) {
+        if (raw == null || raw <= 0.0) { return base; }
+        if (guarded > 0.0) {
+            if (base == null || base <= 0.0) { return guarded; }
+            return base + $.LOCK_BASE_A_OK * (guarded - base);
+        }
+        // Nothing was published. Establishing here would let the first phantom
+        // burst of a session set the bar it is then measured against, so a
+        // zeroed reading may creep an EXISTING baseline and may not create one.
+        if (base == null || base <= 0.0) { return base; }
+        return base + $.LOCK_BASE_A_REJ * (raw - base);
     }
 
     // final cleaned rate for display and FIT: fast readings need the
@@ -2795,19 +3217,98 @@ class StrongRowView extends Ui.View {
     // hand motion), and a locked reading that disagrees with the lock by
     // more than 30% snaps to it (kills residual half/double readings)
     hidden function outputRate() {
-        var r = mRate;
-        if (mAcPeriod > 0.0) {
-            var ac = 60.0 / mAcPeriod;
-            if (r > 0.0) {
-                var dev = r - ac;
-                if (dev < 0.0) { dev = -dev; }
-                if (dev > LOCK_SNAP_K * ac) { r = ac; }
-            }
-        } else if (r > FAST_NEEDS_LOCK) {
-            r = 0.0;
-        }
-        if (r > MAX_RATE) { r = MAX_RATE; }
-        return r;
+        return gatedRate(mRate, mAcPeriod, mRateBase);
+    }
+
+    // ---- the lock-state diagnostic encodings (#149) ----------------------
+    // Three pure statics, one per field, so what each field CARRIES is a
+    // reviewable decision with a name rather than an expression buried in a
+    // setData argument -- and so the no-lock encodings can be pinned without a
+    // Session, which no (:test) in this repository can obtain.
+
+    // Pure: the LOCKED stroke rate in spm, or LOCK_RATE_NONE when no lock is
+    // up. See the LOCK_RATE_NONE note at the top of this file for why 0.0 is
+    // not an in-band value here: updateAutocorr searches only lags in
+    // [60/MAX_RATE, 60/MIN_RATE], so a lock is a rate in [MIN_RATE, MAX_RATE].
+    static function lockRateOf(acPeriod) {
+        if (acPeriod == null || acPeriod <= 0.0) { return $.LOCK_RATE_NONE; }
+        return 60.0 / acPeriod;
+    }
+
+    // Pure: the autocorrelation confidence -- the best lag's correlation as a
+    // fraction of the window's energy -- or LOCK_CONF_NONE when the window
+    // carries no energy and no confidence exists to report.
+    //
+    // The clamp at zero is defensive and not reachable from updateAutocorr
+    // (`best` starts at 0.0 and only grows), and it is here so the field's
+    // contract -- "a real confidence is never negative, so a negative value is
+    // the sentinel" -- is a property of THIS function rather than of its one
+    // caller.
+    static function lockConf(best, e) {
+        if (best == null || e == null || e <= 0.0) { return $.LOCK_CONF_NONE; }
+        var c = best / e;
+        return (c < 0.0) ? 0.0 : c;
+    }
+
+    // Pure: the consecutive low-confidence run, saturated for a UINT16 field.
+    //
+    // mAcLowConf is never reset except by a confident estimate, so it grows
+    // without bound on a long unlocked row. SATURATING ONE BELOW 0xFFFF is the
+    // point: 0xFFFF is the UINT16 "no data" pattern (the same fact RR_INVALID
+    // records), so saturating onto it would turn the longest unlocked rows --
+    // the ones this field exists to show -- into an apparent absence.
+    static function lockLowClamp(n) {
+        if (n == null || n < 0) { return 0; }
+        if (n > $.LOCK_LOW_MAX) { return $.LOCK_LOW_MAX; }
+        return n;
+    }
+
+    // Advance the baseline. Called from recomputeRate() and nowhere else.
+    //
+    // Reads the guard's answer through the SHIPPING outputRate(), computed
+    // against the OLD baseline, so what the output stage PUBLISHED for this
+    // stroke -- not the median it may have corrected or discarded -- is what
+    // moves the bar. nextRateBase owns that distinction; see its note.
+    //
+    // FROZEN WHILE PAUSED, AND FOR NPER STROKES AFTER THE RESUME. That is
+    // #109's rule -- an athlete-state accumulator does not advance while the
+    // athlete is not rowing -- applied to the one such accumulator this change
+    // adds. registerStroke gates only the stroke COUNTER on !mPaused and calls
+    // recomputeRate() unconditionally, on purpose (the numeral must not blank
+    // for NPER strokes after every resume), so nothing else stops pause-time
+    // motion from setting the guard's reference.
+    //
+    // WHY THE PAUSE FLAG ALONE IS NOT ENOUGH, and this is measured rather than
+    // argued. mPeriods survives the pause too, so the first medians AFTER the
+    // resume are still the pause's, and the baseline is an EMA: it takes them at
+    // LOCK_BASE_A_OK (a quarter of the gap per stroke) and can only creep back
+    // at LOCK_BASE_A_REJ (a fiftieth), because the guard never REJECTS a reading
+    // for being too slow. Driven through the shipping
+    // registerStroke/recomputeRate/outputRate path on fr965 (SDK 9.2.0), a 20
+    // spm rower whose pause was gestured at 8 spm and who resumed at 24 spm with
+    // no lock lost 15 strokes of row_stroke_rate and dist_per_stroke to 0.0 with
+    // the pause flag alone -- three post-resume medians still reading 8.0 pulled
+    // the baseline 20.0 -> 17.0 -> 14.75 -> 13.06, and 0.02-of-the-gap steps
+    // needed twelve more strokes to reopen the gate. At a 26 spm resume it was
+    // 24 strokes. Holding for NPER strokes -- the ring length that causes it --
+    // makes both zero, and costs nothing: what the baseline holds during the
+    // hold is the rate the athlete rowed BEFORE the pause, which is the right
+    // reference for the interval about to start.
+    //
+    // Pinned end to end by test_lock_theBaselineFreezesWhileTheSessionIsPaused
+    // (the freeze) and test_lock_theResumeIsNotGuardedByThePausesCadence (the
+    // hold, over four row/pause/resume timelines, asserting the OUTCOME -- that
+    // no stroke of the resumed piece comes out as 0.0 -- rather than this
+    // mechanism, so a better implementation is free to replace it).
+    //
+    // The long-gap clear at the stroke-ring timeout is NOT affected: a quiet
+    // pause still times the ring out and takes the baseline with it, which is
+    // the intended "nothing established yet" degrade. A quiet pause also sets no
+    // hold, because no stroke registers to set one.
+    hidden function updateRateBase() {
+        if (mPaused) { mBaseHold = NPER; return; }
+        if (mBaseHold > 0) { mBaseHold--; return; }
+        mRateBase = nextRateBase(mRateBase, outputRate(), mRate);
     }
 
     // ================= speed / distance helpers ============================
@@ -2955,6 +3456,56 @@ class StrongRowView extends Ui.View {
                 } catch (e) {
                     mFitCorr = null;
                     mFitCorrTotal = null;
+                }
+                // #149: the LOCK-STATE DIAGNOSTICS. Record scope, ids 20-22.
+                //
+                // ITS OWN try/catch, per #74 and for the reason every group
+                // above gives for theirs: a throw here must not null handles
+                // that were already created successfully.
+                //
+                // OUTSIDE the coreFieldsWanted gate, unlike ct_diag: these
+                // describe the STROKE DETECTOR, which runs on every row, and a
+                // podless row is not a row without a stroke rate.
+                //
+                // WHY THE IDS START AT 20 rather than at 12. Another branch is
+                // in flight adding fields of its own, and a duplicate developer
+                // field id is a SEMANTIC collision git cannot see: two branches
+                // both taking 12 merge cleanly and produce one file in which
+                // the id means two things. Every id currently in this file was
+                // enumerated before choosing (0..11: row_stroke_rate,
+                // dist_per_stroke, rr_interval, rmssd, avg_rmssd,
+                // corrective_rate, total_corrective_strokes, core_temperature,
+                // skin_temperature, max_core_temperature, ct_diag,
+                // heat_strain_index), and 20 leaves the contiguous block free
+                // for that branch.
+                //
+                // WHAT IS NOT MEASURED, and it is deliberately not claimed.
+                // #77 measured eleven fields created and saved on fr965 /
+                // SDK 9.2.0, found no cap below 256, and found that AT id 256
+                // the SDK raises an uncatchable System Error that escapes this
+                // try. #80 measured twelve. FIFTEEN fields, and a
+                // NON-CONTIGUOUS id set, are beyond both -- so this is
+                // EXPECTED to behave and has not been observed to. A [Local]
+                // issue owns the simulator session and the decode; do not
+                // upgrade the expectation in this comment without one.
+                try {
+                    mFitLockRate = mSession.createField(
+                        "lock_rate", 20, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
+                    mFitLockConf = mSession.createField(
+                        "lock_confidence", 21, Fit.DATA_TYPE_FLOAT,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "a.u." });
+                    // UINT16, not UINT8: the run is unbounded (see
+                    // lockLowClamp) and a UINT8 would wrap inside an ordinary
+                    // unlocked row. No :scale/:offset, so the saturating value
+                    // reaches the file verbatim and stays below 0xFFFF.
+                    mFitLockLow = mSession.createField(
+                        "lock_lowconf_run", 22, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "n" });
+                } catch (e) {
+                    mFitLockRate = null;
+                    mFitLockConf = null;
+                    mFitLockLow = null;
                 }
                 mCorrAccum = 0.0;
                 // Per-session accumulator, reset with the others above. It used
@@ -3514,6 +4065,13 @@ class StrongRowView extends Ui.View {
             mFitMaxCore = null;
             mFitCtDiag = null;
             mFitHsi = null;
+            // #149. No session-scope companion and no save-time write: these
+            // are per-record diagnostics, and a session aggregate of a lock
+            // state would need a seen-flag guard of its own to avoid reporting
+            // "never locked" and "locked at 0.0" the same way.
+            mFitLockRate = null;
+            mFitLockConf = null;
+            mFitLockLow = null;
         }
         mStarted = false;
         // #74: the attempt is over either way, so the footer goes back to
