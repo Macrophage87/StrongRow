@@ -337,14 +337,29 @@ def _():
 # yet held: ANY nesting depth, and that a `module` keyword which is only TEXT --
 # inside a comment or a string literal -- opens no scope.
 #
-# THESE WERE GREEN ON ARRIVAL. The behaviour they pin already exists: it falls
-# out of running the scope walk over strip_comments' output rather than over the
-# raw text, which 3460b27 chose deliberately. So they are pins, not
-# differentials, and neither can be shown red against the extractor as it
-# stands. What makes them load-bearing is the mutant: point the walk at the raw
-# text and the three text-only cases red while every other case in this file
-# stays green. Recorded here so a later reader does not mistake a pin for a
+# THESE WERE GREEN ON ARRIVAL: the behaviour already existed, so they are pins,
+# not differentials, and none of them can be shown red against the extractor as
+# it stands. Recorded here so a later reader does not mistake a pin for a
 # regression test that once failed.
+#
+# TWO DIFFERENT MECHANISMS, and an earlier version of this comment credited all
+# five to one of them. The three TEXT-ONLY cases come from running the scope
+# walk over strip_comments' output rather than the raw text. The two DEPTH
+# cases come from the brace stack in qualified_decls and have nothing to do
+# with strip_comments -- their sources contain no comment and no string
+# literal at all.
+#
+# What makes each of them load-bearing is a mutant, and the mutants are no
+# longer described here: they are RUN, at the foot of this file, where the set
+# of cases each one reds is asserted rather than asserted-about. Read those
+# three differentials for the numbers. One correction belongs here, at the
+# source of the wrong claim: this comment used to say that pointing the walk at
+# the raw text reds "the three text-only cases while every other case in this
+# file stays green". RETRACTED -- it reds EIGHT, the three text-only pins plus
+# five pre-existing lexing cases, and it cannot be made finer: _SCOPE_RE
+# matches declarations and tracks scope in one pass over one string, so there
+# is no edit that points the walk at raw text without pointing the declaration
+# match there too.
 
 @case("three module levels qualify with the whole path")
 def _():
@@ -467,16 +482,27 @@ def flipped_by(old, new):
     return sorted(n for n, ok in mutated.items() if real.get(n) and not ok)
 
 
-@differential("M5 raw-text walk reds exactly the three text-only pins")
+@differential("M5 raw-text walk reds the three text-only pins AND five older lexing cases")
 def _():
-    # The claim as scripts/test_list_tests.py ships it today, made executable:
-    # "point the walk at the raw text and the three text-only cases red while
-    # every other case in this file stays green."
+    # NOT SURGICAL, and it cannot be. _SCOPE_RE tracks scope and matches
+    # declarations in a single pass over a single string, so the one edit that
+    # points the scope walk at the raw text points the declaration match there
+    # too -- and every case that depends on strip_comments goes with it. The
+    # comment this file shipped for one round claimed "the three text-only
+    # cases red while every other case in this file stays green"; the measured
+    # answer is the eight below. Finer differentials exist for the lexer, one
+    # branch at a time; this mutant is the coarsest of them and the only one
+    # that reaches the three module-keyword pins.
     return flipped_by("stripped = strip_comments(raw)",
                       "stripped = raw"), [
+        "a Char literal quote does not desynchronise the comment stripper",
         "a module keyword inside a block comment opens no scope",
         "a module keyword inside a line comment opens no scope",
         "a module keyword inside a string literal opens no scope",
+        "an escaped quote does not end the string literal early",
+        "annotation text inside a string literal is not a declaration",
+        "declaration behind a line comment is excluded",
+        "declaration inside a block comment is excluded",
     ]
 
 
