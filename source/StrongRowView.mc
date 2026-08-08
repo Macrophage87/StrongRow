@@ -271,6 +271,14 @@ const LOCK_LOW_MAX   = 65534;
 // AND THEY ARE STILL WRITTEN ON EVERY TICK, for the reason the three above are:
 // record-scope fields LATCH, so withholding the write on a no-data tick
 // re-emits the last median and reports rowing that did not happen.
+//
+// WHAT THIS ARGUMENT DOES NOT COVER. Every sentence above is about the app's own
+// arithmetic. Whether a decoder RENDERS a record-scope float32 0.0 as the number
+// 0 -- rather than folding it into "no data" -- is unmeasured, and #53 already
+// records that Connect's rendering of an unusual float32 pattern is untested. If
+// it cannot, the encoding is still correct in-app and the diagnostic is
+// unreadable in practice. #159 is the [Local] decode that settles it; do not
+// restate any of this as a fact about a file until it has run.
 const RATE_RAW_NONE  = 0.0;
 const RATE_BASE_NONE = 0.0;
 
@@ -3686,9 +3694,16 @@ class StrongRowView extends Ui.View {
                 // try. #80 measured twelve. SEVENTEEN fields, and a
                 // non-contiguous id set, are beyond both -- so this is EXPECTED
                 // to behave and has not been observed to. No in-process test
-                // can settle it: a (:test) cannot obtain a Session. A [Local]
-                // issue owns the simulator session and the decode; do not
-                // upgrade the expectation in this comment without one.
+                // can settle it: a (:test) cannot obtain a Session, so every
+                // case in source/LockGuardTest.mc observes the ARGUMENT of a
+                // setData call and nothing about a field_description message or
+                // a record's bytes.
+                //
+                // #154 owns whether creation and save survive this count and
+                // this id gap; #159 owns what the two VALUES decode to, and in
+                // particular whether their deliberate 0.0 no-data encoding
+                // reads back as the number 0 rather than as absence. Do not
+                // upgrade the expectation in this comment without one of them.
                 try {
                     mFitRateRaw = mSession.createField(
                         "rate_raw", 23, Fit.DATA_TYPE_FLOAT,
