@@ -81,11 +81,24 @@ DECL_RE = re.compile(_DECL_SRC)
 #
 #     Found N members in module 'globals', exceeding the limit of 253
 #
-# and on the commit this was written against N was already 246. Every file-scope
-# (:test), helper function and test class costs one. SEVEN slots remained for
-# the whole repository, and a suite of 26 new cases needs 26 of them. Tests
-# inside a module cost ONE member between them, which is what makes further
-# testing possible on those four devices at all.
+# Every file-scope (:test), helper function and test class costs one member; a
+# module-scope const costs none (it is inlined); a `module { }` block costs one,
+# and everything declared inside it leaves 'globals' entirely.
+#
+# The count is only printed once it is ALREADY over, so it has to be probed:
+# drop N throwaway file-scope (:test) functions into source/, compile for
+# fenix6 --unit-test, and read N back out of the reported total. Measured that
+# way, and both figures are of the whole repository, not of one file:
+#
+#     2b23b03 (main, before this work)   252 of 253   -- ONE slot
+#     this branch, FootStateTest moved   238 of 253   -- fourteen freed
+#
+# At 252 the next (:test) added anywhere at file scope red the required
+# compile-unit-test check on four devices with an error naming neither the test
+# nor the file, while fr965 (which run-tests uses) and release-build stayed
+# green -- so a green local run proved nothing. Tests inside a module cost ONE
+# member between them, which is what makes further testing possible on those
+# four devices at all.
 #
 # The scanner is deliberately crude: a balanced-brace walk over the
 # comment-stripped, literal-blanked text. `module NAME {` pushes NAME, any other

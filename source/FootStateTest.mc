@@ -24,8 +24,38 @@ using Toybox.Test;
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator
 // on every PR (`monkeydo <prg> fr965 -t`, judged by a fail-closed parser),
-// with the test names pinned in scripts/expected_tests.txt -- update that file
-// in the same commit as any (:test) change here. See docs/CI.md.
+// with the test names pinned in scripts/expected_tests.txt -- the names are
+// `Foot.test_...`, see below. Update that file in the same commit as any
+// (:test) change here. See docs/CI.md.
+
+// ---------------------------------------------------------------------------
+// THIS SUITE LIVES IN `module Foot`, and the reason is a measured ceiling, not
+// taste. MEASURED, SDK 9.2.0, by bisecting throwaway file-scope (:test)
+// functions against `monkeyc -d fenix6 --unit-test` (the compiler prints the
+// count only once it is already over): this repository stood at
+//
+//     252 of the 253 members module 'globals' allows
+//
+// on 2b23b03 -- ONE slot for the whole repository, so the next (:test) added
+// anywhere at file scope red the compile-unit-test check on fenix6, fenix6pro,
+// fenix6spro and fenix6xpro, with an error naming neither the test nor the
+// file. release-build was unaffected (tests are stripped) and run-tests uses
+// fr965, which compiles clean -- so a green local run proved nothing.
+//
+// Every file-scope function and class costs one member. A `module { }` block
+// costs ONE, and everything inside it leaves 'globals' entirely. These fifteen
+// cases therefore cost one member between them instead of fifteen. Re-measured
+// after the move: 238 of 253, fourteen slots freed.
+//
+// The declarations below are NOT re-indented, matching the `module Hsi` blocks
+// in CoreTempSensorTest.mc and PipLayoutTest.mc: the win is the brace, and
+// re-indenting 250 lines would bury a two-line change in a whole-file diff.
+//
+// The simulator names these cases `Foot.test_...` -- MEASURED on fr965, see the
+// depth note in scripts/list_tests.py -- and scripts/list_tests.py emits that
+// qualified name so the pin matches what the runner prints.
+// ---------------------------------------------------------------------------
+module Foot {
 
 // -- The load-bearing case -----------------------------------------------------
 // This is the regression #74 is about. If footState ever returns FOOT_REC for a
@@ -282,3 +312,5 @@ using Toybox.Test;
     }
     return true;
 }
+
+}   // module Foot
