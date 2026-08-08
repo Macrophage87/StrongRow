@@ -517,3 +517,37 @@ function wlRender(p) {
     }
     return true;
 }
+
+module Hsi {
+
+// -- c0 for #80 ---------------------------------------------------------------
+
+// The status row's LABEL SET, counted rather than merely detected.
+//
+// Green before #80's heat-strain pip and green after it, and that is the point:
+// #80 adds a fourth indicator to this row, and the one outcome that must not
+// happen is an existing label being displaced, duplicated or renamed to make
+// space. A presence test cannot see a duplicate; a count can.
+//
+// Deliberately says NOTHING about x, y or spacing. HrDc records those, but this
+// file has no font metric and no renderer, so a coordinate assertion here would
+// pin a number it cannot justify -- the rule stated at the head of this file.
+// The pip row's horizontal geometry is measured locally and recorded in the
+// pull request instead.
+(:test) function test_lay_c0_statusRowDrawsEachLabelOnce(logger) {
+    var k = new HrProbe();
+    var d = wlRender(wlProbeAt(k.kindWarm()));
+    var want = [ "GPS", "RR", "CT" ];
+    var ok = true;
+    for (var i = 0; i < want.size(); i++) {
+        var n = wlCount(d, want[i]);
+        if (n != 1) {
+            logger.error("the status row must draw '" + want[i] +
+                         "' exactly once; counted " + n + ". Drew:\n" + d.textLog());
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+}

@@ -1179,3 +1179,98 @@ function ctSlot(p, i) {
     }
     return ok;
 }
+
+// ---------------------------------------------------------------------------
+// EVERYTHING #80 ADDS TO THIS FILE LIVES IN `module Hsi`, and that is a
+// hard constraint rather than a taste. MEASURED, SDK 9.2.0: a --unit-test
+// build for the fenix6 family fails at 254 members of module 'globals', and
+// this repository was already at 246 before #80. A file-scope (:test) costs
+// one of the seven that were left; the whole of #80's suite inside a module
+// costs one between them. The simulator names these cases `Hsi.test_...`, and
+// scripts/list_tests.py emits that qualified name so the pin matches what the
+// runner prints. See the note in scripts/list_tests.py.
+// ---------------------------------------------------------------------------
+module Hsi {
+
+// ============================================================================
+// #80 -- Heat Strain Index. c0 characterization pins.
+// ============================================================================
+// Both cases below are green BEFORE any of the heat-strain work and green
+// after it. They exist so that the two structural facts #80's design rests on
+// are guarded by a test rather than by a reading of the source.
+
+// #80's feasibility argument is a claim about the SHIPPED decoders: page-1
+// byte 1 is not read by either of them, so adding a decoder for it cannot move
+// core_temperature or skin_temperature.
+//
+// Swept over all 256 code points rather than spot-checked, and asserted on the
+// DECODERS rather than on the absence of a `p[1]` in the source: a future edit
+// that started consulting byte 1 in either decoder would red here while every
+// existing case in this file stayed green.
+//
+// This pins INDEPENDENCE, not correctness. It says nothing about whether either
+// decoder reads the right bytes -- that is #86's territory and the cases above
+// own it.
+(:test) function test_ct_c0_shippedDecodesIgnoreByte1(logger) {
+    var base     = ctPayload(660, 0x0C8, 3742);
+    var wantCore = CoreTempSensor.decodeCoreC(base);
+    var wantSkin = CoreTempSensor.decodeSkinC(base);
+    var ok = true;
+    if (wantCore == null || wantSkin == null) {
+        logger.error("the baseline payload must decode to a value on both " +
+                     "fields, got core = " + wantCore + ", skin = " + wantSkin);
+        return false;
+    }
+    for (var b = 0; b <= 255; b++) {
+        var p = ctPayload(660, 0x0C8, 3742);
+        p[1] = b;
+        var c = CoreTempSensor.decodeCoreC(p);
+        var s = CoreTempSensor.decodeSkinC(p);
+        if (!ctAlmostEq(c, wantCore)) {
+            logger.error("byte 1 = " + b + " moved decodeCoreC to " + c +
+                         "; the shipped core decode must not read page-1 byte 1");
+            ok = false;
+        }
+        if (!ctAlmostEq(s, wantSkin)) {
+            logger.error("byte 1 = " + b + " moved decodeSkinC to " + s +
+                         "; the shipped skin decode must not read page-1 byte 1");
+            ok = false;
+        }
+        if (!ok) { return false; }
+    }
+    return ok;
+}
+
+// The ct_diag slot key, pinned to its LITERAL indices rather than to its own
+// constants.
+//
+// test_ct_diagSlotIndicesDistinct already proves the indices do not collide and
+// fit the array, but it is invariant under a wholesale RENUMBERING -- permute
+// every index and it stays green while every ct_diag file ever recorded is
+// silently re-labelled. Growing the array (as #80 does, to carry the
+// heat-strain counters) is exactly the edit that could renumber by accident, so
+// the existing twenty-one slots are nailed down here before it happens.
+//
+// A deliberate renumbering must red this case AND bump CT_DIAG_VERSION.
+(:test) function test_ct_c0_diagSlotKeyIsZeroToTwenty(logger) {
+    var got = [$.CT_DIAG_I_VERSION, $.CT_DIAG_I_OPEN_ATTEMPTS, $.CT_DIAG_I_OPEN_OK,
+               $.CT_DIAG_I_OPEN_THROW, $.CT_DIAG_I_MSG_TOTAL, $.CT_DIAG_I_BCAST,
+               $.CT_DIAG_I_SHORT_PAY, $.CT_DIAG_I_PAGE1, $.CT_DIAG_I_PAGE_OTHER,
+               $.CT_DIAG_I_CORE_OK, $.CT_DIAG_I_CORE_SENTINEL, $.CT_DIAG_I_CORE_CLAMP,
+               $.CT_DIAG_I_SKIN_OK, $.CT_DIAG_I_SKIN_SENTINEL, $.CT_DIAG_I_SKIN_CLAMP,
+               $.CT_DIAG_I_CHAN_CLOSED, $.CT_DIAG_I_MAX_FAILS, $.CT_DIAG_I_FLAGS,
+               $.CT_DIAG_I_PAGE_FIRST, $.CT_DIAG_I_PAGE_OTHER_LAST,
+               $.CT_DIAG_I_ACQ_PERIOD];
+    var ok = true;
+    for (var i = 0; i < got.size(); i++) {
+        if (got[i] != i) {
+            logger.error("ct_diag slot " + i + " moved to index " + got[i] +
+                         " -- every file already recorded carries the old key, " +
+                         "so a renumbering needs a CT_DIAG_VERSION bump");
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+}
