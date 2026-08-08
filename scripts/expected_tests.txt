@@ -40,6 +40,8 @@ CoreDrop.test_ctw_c2_nullIsNeverHandedToSetData
 # source/RetryBoundTest.mc -- inside `module RetryBound`, so the names carry the
 # module, for the same fenix6 globals-ceiling reason CoreDrop states above.
 RetryBound.test_rb_c0_onlyTheBurstEverAsksForZeroDelay
+RetryBound.test_rb_c1_aWorkingTimerIsArmedOnceAndNothingReopens
+RetryBound.test_rb_c1_theRetryLostBitIsDistinctAndTheArrayDidNotGrow
 
 # source/CoreFieldGateTest.mc
 test_core_gateFalseWhenSensorNull
