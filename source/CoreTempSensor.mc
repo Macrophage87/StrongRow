@@ -616,6 +616,13 @@ class CoreTempSensor {
         if (mClosed) { return; }
         cancelReopen();
         if (delayMs <= 0) {
+            // The burst, reopening now so discovery keeps exactly the timing it
+            // had before #26. This IS a re-entry into openChannel() from inside
+            // openChannel()'s own catch, and it unwinds only because mFails
+            // rises on every pass and ctBackoffMs stops returning 0 once the
+            // burst is spent -- an ARITHMETIC bound, capped at CT_BURST_TRIES
+            // frames, not a structural one. It therefore has a test standing in
+            // front of it: RetryBound.test_rb_c0_onlyTheBurstEverAsksForZeroDelay.
             openChannel();
             return;
         }
@@ -623,10 +630,59 @@ class CoreTempSensor {
             mRetryTimer = makeRetryTimer();
             mRetryTimer.start(method(:onRetry), delayMs, false);
         } catch (e) {
-            // No timer available: fall back to today's behaviour rather than
-            // silently dropping the retry and leaving CORE dead.
-            mRetryTimer = null;
-            openChannel();
+            // Hand the timer back before dropping the reference -- the rule #18
+            // states for the ANT channel, applied to the other scarce resource
+            // this class allocates. cancelReopen() is where that rule already
+            // lives for timers, so it is REUSED rather than restated, the same
+            // way discardChannel() is shared by close() and #18's failure path.
+            // It matters beyond tidiness: a start() that threw may still have
+            // armed the timer, and `mRetryTimer = null` would leave that
+            // callback live with nothing able to stop it -- including close().
+            cancelReopen();
+
+            // AND DELIBERATELY DO NOT REOPEN. This line used to be
+            // openChannel(), and that was an UNBOUNDED MUTUAL RECURSION:
+            // openChannel()'s catch calls this function, this function called
+            // openChannel() back, and this branch is reachable only at
+            // mFails >= CT_BURST_TRIES where ctBackoffMs never returns 0 again
+            // -- so the ladder could never break the cycle by growing. MEASURED
+            // on fr965 / SDK 9.2.0: the simulator aborts with "Error: Stack
+            // Overflow Error / Details: Failed invoking <symbol>" on a stack
+            // alternating scheduleReopen and openChannel down to initialize().
+            // initialize() is reached from onLayout, so the app DIES at the
+            // start of the row and the recording goes with it. The comment that
+            // stood here reasoned correctly that dropping the retry leaves CORE
+            // dead, and then made the wrong trade: it exchanged a dead heat
+            // sensor for a dead application.
+            //
+            // WHAT IS LOST, stated rather than hidden: this retry, and with it
+            // in practice every later one. When the catch was entered from
+            // openChannel() the channel is already discarded, so no further
+            // CHANNEL_CLOSED can arrive and nothing else re-enters
+            // openChannel(); when it was entered from onChannelClosed() the
+            // search has ended and will not re-arm itself. Either way CORE
+            // temperature, skin temperature and the heat index are absent for
+            // the rest of the app run. That is one row's heat trace against the
+            // whole activity, and the priority order says which way to fall: an
+            // app that does not crash comes first.
+            //
+            // AND IT IS NOT SILENT. CT_DIAG_F_RETRY_LOST is set here and nowhere
+            // else, and read out in slot CT_DIAG_I_FLAGS -- so the file says
+            // "the ladder stopped for want of a timer" rather than leaving a
+            // reader to infer it from an openAttempt that never came. Read it
+            // with the neighbouring counters: with openOk == 0 the channel never
+            // opened at all, and with openOk > 0 and chanClosed > 0 the pod was
+            // being searched for and the search was not re-armed. A bit, not a
+            // new slot, so the array length -- and the createField `:count` that
+            // must match it -- does not move.
+            //
+            // NOT MEASURED, and not claimed: whether Timer.start() ever fails
+            // here on a watch. The one real-row ct_diag readout available (#122)
+            // reached this branch with 22 of 22 opens succeeding, so neither
+            // failing resource has been seen in the field. This is a defensive
+            // fix on a path that is reachable by construction and whose
+            // pre-fix outcome is measured above.
+            mDiagRetryLost = true;
         }
     }
 
