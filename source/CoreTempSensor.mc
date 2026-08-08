@@ -25,6 +25,40 @@ const CT_SKIN_MAX_C = 45.0;
 // +/-102.40. Tested on the raw pattern BEFORE sign extension.
 const CT_SKIN_INVALID = 0x800;
 
+// ---- Heat Strain Index, page 1 byte 1 (#80) --------------------------------
+//
+// EVIDENCE CLASS FIRST, because it governs what may be written about this
+// field anywhere in the repository.
+//
+// The offset, the 0.1 scale and the 0xFF invalid code point are DOCUMENT
+// AGREEMENT, not measurement. They come from greenTEG's own condensed page
+// table plus three independent third-party decoders (one Python, one C++, one
+// Monkey C) that agree exactly -- but all three trace back to that same vendor
+// document, so it is one source corroborated three times, not three
+// observations of the air. The formally authoritative ANT+ device profile is
+// behind an adopter login and was NOT read. NO CORE POD WAS INVOLVED IN ANY OF
+// THIS. #81 is the capture that would upgrade it, and until that capture
+// exists no comment here or downstream may state what a pod transmits or what
+// a decoder renders -- only what this code READS.
+//
+// SIGNEDNESS IS UNRESOLVED IN THE VENDOR DOCUMENT ITSELF, and this file does
+// not resolve it: the value column of the row says "Signed Integer 1 Byte
+// (SINT8)" while the range column of the SAME row says "0 to 25.4", which
+// needs an unsigned byte. The two readings agree over 0x00..0x7F and diverge
+// only above it. Read unsigned here, matching all three implementations and
+// the vendor's own BLE typing of the identical field -- but that is a CHOICE
+// among two documented readings, not a fact, and #81 question 4 is what would
+// settle it.
+//
+// NO PLAUSIBILITY CLAMP IS POSSIBLE, and that is a real difference from core
+// and skin rather than an omission. Every code point except the invalid marker
+// maps into the documented 0.0..25.4 range by construction, so there is no
+// out-of-domain value a clamp could reject -- a decode reading the WRONG BYTE
+// would produce an in-range, plausible-looking strain index and nothing here
+// could tell. The invalid marker is the only guard this field has.
+const CT_HSI_INVALID = 0xFF;      // documented "invalid" code point
+const CT_HSI_SCALE   = 0.1;       // documented units, a.u.
+
 // Retry pacing for the ANT search. Wired up at the #26 commit; the ladder
 // itself is a pure function so it is (:test)-able on its own.
 const CT_BURST_TRIES     = 4;     // back-to-back searches before backoff starts
@@ -68,13 +102,21 @@ const CT_BACKOFF_MAX_MS  = 300000;
 // 65535 messages is ~4.6 h at PERIOD_B, ~9.1 h at PERIOD_A. Only quantitative
 // ratios degrade there; every discrimination below turns on zero versus
 // non-zero, which survives any session length.
-const CT_DIAG_SLOTS   = 21;
+const CT_DIAG_SLOTS   = 24;
 const CT_DIAG_MAX     = 65535;    // UINT16 ceiling; readout clamps, not the counter
 const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
 
 // Slot indices. These ARE the wire format: renumbering one without bumping
 // CT_DIAG_VERSION silently mis-labels every field already recorded.
-const CT_DIAG_VERSION = 1;        // value stored in slot CT_DIAG_I_VERSION
+//
+// VERSION 2 (#80) adds slots 21-23 for the heat-strain index and changes
+// NOTHING about slots 0-20 -- test_ct_c0_diagSlotKeyIsZeroToTwenty nails those
+// to their literal indices, so a v1 reader's key still applies to the prefix of
+// a v2 array. The version bump is what tells a reader the array is 24 long
+// rather than 21; the growth is why $.CT_DIAG_SLOTS must remain the single
+// constant BOTH diagSnapshot() and the createField `:count` read (a setData
+// array longer than :count is an uncatchable System Error at save time).
+const CT_DIAG_VERSION = 2;        // value stored in slot CT_DIAG_I_VERSION
 
 const CT_DIAG_I_VERSION       = 0;
 const CT_DIAG_I_OPEN_ATTEMPTS = 1;   // openChannel() entries
@@ -100,6 +142,23 @@ const CT_DIAG_I_FLAGS         = 17;  // see CT_DIAG_F_* below
 const CT_DIAG_I_PAGE_FIRST    = 18;  // first page byte ever observed
 const CT_DIAG_I_PAGE_OTHER_LAST = 19; // most recent page byte != 0x01
 const CT_DIAG_I_ACQ_PERIOD    = 20;  // mPeriod at the FIRST broadcast frame (#84)
+// ---- v2, #80: the heat-strain index -----------------------------------------
+// These three exist because the heat-strain feature's central open question --
+// does a real pod put anything in page-1 byte 1? -- is otherwise invisible in a
+// saved activity. A never-populated heat_strain_index field says "no value was
+// ever written" but cannot say whether that is because the pod withheld it or
+// because nothing was ever fresh at a record boundary. These slots separate the
+// two from the file alone, with no ANT sniffer.
+const CT_DIAG_I_HSI_OK        = 21;  // decodeHsi returned a value
+const CT_DIAG_I_HSI_INVALID   = 22;  // rejected: byte 1 == CT_HSI_INVALID
+// HIGHEST raw byte-1 code point ACCEPTED (so 0xFF is excluded by construction),
+// or CT_DIAG_NONE when none ever was. Two questions in one slot:
+//   * CT_DIAG_NONE with page1 > 0 means byte 1 was the invalid marker on every
+//     page-1 frame -- the "this pod does not broadcast HSI" answer;
+//   * a value above 0x7F is the only evidence that could settle the vendor
+//     document's SINT8-versus-range contradiction (#81 question 4). Its ABSENCE
+//     settles nothing and must not be read as evidence of signedness.
+const CT_DIAG_I_HSI_MAX_RAW   = 23;
 // Slot 20 answers #84 in the AFFIRMATIVE ONLY. PERIOD_A is always tried first,
 // so 16384 proves nothing about the fallback; only 8192 is evidence that
 // PERIOD_B can acquire. And it reads 0 on precisely the zero-frame rows where
@@ -129,9 +188,16 @@ class CoreTempSensor {
     hidden var mPeriod;
     hidden var mCore;
     hidden var mSkin;
+    // #80. NULL, not 0.0, and that is the whole difference between this field
+    // and the two above it. 0.0 is an ordinary Heat Strain Index meaning "no
+    // thermal strain", so there is no in-domain value that can stand for "no
+    // reading" -- a zero default would be indistinguishable from a real
+    // measurement of zero strain at every layer that touched it.
+    hidden var mHsi;
     hidden var mLastMs;
     hidden var mCoreMs;
     hidden var mSkinMs;
+    hidden var mHsiMs;
     hidden var mEverSeen;
     hidden var mFails;
     hidden var mClosed;
@@ -160,6 +226,9 @@ class CoreTempSensor {
     hidden var mDiagPageFirst;
     hidden var mDiagPageOtherLast;
     hidden var mDiagAcqPeriod;
+    hidden var mDiagHsiOk;
+    hidden var mDiagHsiInvalid;
+    hidden var mDiagHsiMaxRaw;
     // Flags latched at close(), because shutdown() calls close() BEFORE
     // stopAndSave() (StrongRowView.shutdown) -- reading the live channel state
     // at readout would therefore always report "released, closed" and say
@@ -172,9 +241,11 @@ class CoreTempSensor {
         mPeriod     = PERIOD_A;
         mCore       = 0.0;
         mSkin       = 0.0;
+        mHsi        = null;      // #80: never 0.0 -- see the field declaration
         mLastMs     = 0;
         mCoreMs     = 0;
         mSkinMs     = 0;
+        mHsiMs      = 0;
         mEverSeen   = false;
         mFails      = 0;
         mClosed     = false;
@@ -209,6 +280,9 @@ class CoreTempSensor {
         mDiagPageFirst     = $.CT_DIAG_NONE;
         mDiagPageOtherLast = $.CT_DIAG_NONE;
         mDiagAcqPeriod     = 0;
+        mDiagHsiOk         = 0;
+        mDiagHsiInvalid    = 0;
+        mDiagHsiMaxRaw     = $.CT_DIAG_NONE;
         mDiagFlags         = -1;
     }
 
@@ -276,6 +350,41 @@ class CoreTempSensor {
         var t = raw * 0.01;
         if (t < $.CT_CORE_MIN_C || t > $.CT_CORE_MAX_C) { return null; }
         return t;
+    }
+
+    // The raw Heat Strain Index code point: page-1 byte 1, masked to eight
+    // bits. Extracted for the same reason coreRaw16 was -- the decoder and the
+    // diagnostic classifier must read the SAME expression, because two
+    // hand-copied assemblies are exactly how the two drift apart.
+    //
+    // `& 0xFF` rather than a sign-extending read: see the CT_HSI_* block for
+    // why that is a documented CHOICE between two readings of a self-
+    // contradictory vendor table and not a settled fact.
+    static function hsiRaw8(p) {
+        return p[1] & 0xFF;
+    }
+
+    // Heat Strain Index in a.u. from a page-1 payload, or null when the frame
+    // carries no usable value.
+    //
+    // This states what the code READS -- byte 1, tenths of an arbitrary unit,
+    // with 0xFF as the invalid marker. It states nothing about what a pod
+    // transmits; nothing here has been measured on air (#81).
+    //
+    // NULL, never a number, for the invalid case. The scale's whole domain is
+    // legal: 0.0 means "no thermal strain", so the usual trick of returning a
+    // physiologically impossible number as an in-band sentinel is unavailable.
+    // Every caller therefore has to carry the absent case explicitly.
+    //
+    // The marker is tested BEFORE the scale is applied, mirroring
+    // decodeSkinC's ordering. Here that ordering is not merely tidy: 0xFF * 0.1
+    // is 25.5, which sits just outside the documented range and would be an
+    // entirely plausible-looking reading -- the exact defect one of the
+    // published implementations ships.
+    static function decodeHsi(p) {
+        var raw = hsiRaw8(p);
+        if (raw == $.CT_HSI_INVALID) { return null; }
+        return raw * $.CT_HSI_SCALE;
     }
 
     // ---- #102 diagnostic helpers -------------------------------------------
@@ -647,6 +756,13 @@ class CoreTempSensor {
 
     hidden function coreFreshAt(nowMs) { return ctIsFresh(nowMs, mCoreMs, $.CT_FRESH_MS); }
     hidden function skinFreshAt(nowMs) { return ctIsFresh(nowMs, mSkinMs, $.CT_FRESH_MS); }
+    // #80. Its OWN stamp and the SAME window, for the reason #17 gives for the
+    // core/skin split: a shared clock advanced by either field would let a
+    // valid core frame keep republishing a stale heat index as current every
+    // time byte 1 was withheld. And the window is CT_FRESH_MS, the one #19
+    // unified, so the getter and any indicator built on it can never disagree
+    // about what "current" means.
+    hidden function hsiFreshAt(nowMs) { return ctIsFresh(nowMs, mHsiMs, $.CT_FRESH_MS); }
 
     hidden function coreTempAt(nowMs) {
         return coreFreshAt(nowMs) ? mCore : 0.0;
@@ -654,6 +770,17 @@ class CoreTempSensor {
 
     hidden function skinTempAt(nowMs) {
         return skinFreshAt(nowMs) ? mSkin : 0.0;
+    }
+
+    // #80. Returns NULL when there is no current heat index -- deliberately not
+    // the 0.0 that coreTempAt/skinTempAt return, and the divergence is the
+    // point rather than an inconsistency to tidy away. 0.0 C is impossible, so
+    // a temperature getter can use it as an out-of-band "nothing here"; 0.0
+    // a.u. is an ordinary reading, so the same shape here would emit a
+    // fabricated "no thermal strain" for every dropout and for every podless
+    // row. Null is the only absence this scale has.
+    hidden function heatIndexAt(nowMs) {
+        return hsiFreshAt(nowMs) ? mHsi : null;
     }
 
     // ONE freshness definition, shared with the getters. This used to test a
@@ -677,9 +804,17 @@ class CoreTempSensor {
 
     function coreFresh() { return coreFreshAt(System.getTimer()); }
     function skinFresh() { return skinFreshAt(System.getTimer()); }
+    function hsiFresh()  { return hsiFreshAt(System.getTimer()); }
 
     function coreTemp() { return coreTempAt(System.getTimer()); }
     function skinTemp() { return skinTempAt(System.getTimer()); }
+    // #80. DELIBERATELY NOT folded into isFresh() above: that predicate means
+    // "this pod's TEMPERATURE data is current" and is what the CT indicator
+    // renders. Heat strain is a separate quantity that the same frame can carry
+    // or withhold independently, so widening isFresh() would make one indicator
+    // answer two questions and leave neither answerable. The heat-strain
+    // indicator reads this getter instead.
+    function heatIndex() { return heatIndexAt(System.getTimer()); }
     function isFresh()  { return isFreshAt(System.getTimer()); }
 
     function everSeen() { return mEverSeen; }
@@ -777,6 +912,9 @@ class CoreTempSensor {
         a[$.CT_DIAG_I_PAGE_FIRST]      = ctDiagClamp(mDiagPageFirst);
         a[$.CT_DIAG_I_PAGE_OTHER_LAST] = ctDiagClamp(mDiagPageOtherLast);
         a[$.CT_DIAG_I_ACQ_PERIOD]      = ctDiagClamp(mDiagAcqPeriod);
+        a[$.CT_DIAG_I_HSI_OK]          = ctDiagClamp(mDiagHsiOk);
+        a[$.CT_DIAG_I_HSI_INVALID]     = ctDiagClamp(mDiagHsiInvalid);
+        a[$.CT_DIAG_I_HSI_MAX_RAW]     = ctDiagClamp(mDiagHsiMaxRaw);
         return a;
     }
 

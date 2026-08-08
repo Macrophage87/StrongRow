@@ -123,6 +123,13 @@ class CoreProbe extends CoreTempSensor {
     function coreFreshAtT(nowMs){ return coreFreshAt(nowMs); }
     function skinFreshAtT(nowMs){ return skinFreshAt(nowMs); }
 
+    // #80 seams. stampHsiAt writes the pair directly so a freshness case never
+    // has to go through a decode, which keeps "the window is CT_FRESH_MS" and
+    // "the decode works" as two separately falsifiable claims.
+    function hsiFreshAtT(nowMs)  { return hsiFreshAt(nowMs); }
+    function heatIndexAtT(nowMs) { return heatIndexAt(nowMs); }
+    function stampHsiAt(tsMs, v) { mHsi = v; mHsiMs = tsMs; }
+
     function feed(p)     { onBroadcast(p); }
     function closeEvent(){ onChannelClosed(); }
 
@@ -697,8 +704,12 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
 // value already recorded in a FIT file is interpreted through this key.
 (:test) function test_ct_diagLayoutConstants(logger) {
     var ok = true;
-    if ($.CT_DIAG_SLOTS != 21)      { logger.error("CT_DIAG_SLOTS changed to " + $.CT_DIAG_SLOTS + " -- bump CT_DIAG_VERSION and the field's :count together"); ok = false; }
-    if ($.CT_DIAG_VERSION != 1)     { logger.error("CT_DIAG_VERSION changed to " + $.CT_DIAG_VERSION); ok = false; }
+    // 24 / v2 since #80 added the three heat-strain slots. The pair moves
+    // TOGETHER, which is the whole content of this case: a length change with
+    // no version bump leaves every already-recorded file unreadable-by-key, and
+    // a :count that lags the length is an uncatchable System Error at save.
+    if ($.CT_DIAG_SLOTS != 24)      { logger.error("CT_DIAG_SLOTS changed to " + $.CT_DIAG_SLOTS + " -- bump CT_DIAG_VERSION and the field's :count together"); ok = false; }
+    if ($.CT_DIAG_VERSION != 2)     { logger.error("CT_DIAG_VERSION changed to " + $.CT_DIAG_VERSION); ok = false; }
     if ($.CT_DIAG_MAX != 65535)     { logger.error("CT_DIAG_MAX must be the UINT16 ceiling, got " + $.CT_DIAG_MAX); ok = false; }
     if ($.CT_DIAG_NONE != 0xFFFF)   { logger.error("CT_DIAG_NONE changed to " + $.CT_DIAG_NONE); ok = false; }
     return ok;
@@ -716,7 +727,8 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
                $.CT_DIAG_I_SKIN_OK, $.CT_DIAG_I_SKIN_SENTINEL, $.CT_DIAG_I_SKIN_CLAMP,
                $.CT_DIAG_I_CHAN_CLOSED, $.CT_DIAG_I_MAX_FAILS, $.CT_DIAG_I_FLAGS,
                $.CT_DIAG_I_PAGE_FIRST, $.CT_DIAG_I_PAGE_OTHER_LAST,
-               $.CT_DIAG_I_ACQ_PERIOD];
+               $.CT_DIAG_I_ACQ_PERIOD,
+               $.CT_DIAG_I_HSI_OK, $.CT_DIAG_I_HSI_INVALID, $.CT_DIAG_I_HSI_MAX_RAW];
     var ok = true;
     if (idx.size() != $.CT_DIAG_SLOTS) {
         logger.error("this test lists " + idx.size() + " indices but CT_DIAG_SLOTS is " +
@@ -1180,6 +1192,7 @@ function ctSlot(p, i) {
     return ok;
 }
 
+
 // ---------------------------------------------------------------------------
 // EVERYTHING #80 ADDS TO THIS FILE LIVES IN `module Hsi`, and that is a
 // hard constraint rather than a taste. MEASURED, SDK 9.2.0: a --unit-test
@@ -1191,7 +1204,6 @@ function ctSlot(p, i) {
 // runner prints. See the note in scripts/list_tests.py.
 // ---------------------------------------------------------------------------
 module Hsi {
-
 // ============================================================================
 // #80 -- Heat Strain Index. c0 characterization pins.
 // ============================================================================
@@ -1269,6 +1281,209 @@ module Hsi {
                          "so a renumbering needs a CT_DIAG_VERSION bump");
             ok = false;
         }
+    }
+    return ok;
+}
+
+
+}
+
+module Hsi {
+// ============================================================================
+// #80 -- Heat Strain Index. c1: the pure decoder and the getters.
+// ============================================================================
+// Green from the commit that adds decodeHsi/heatIndexAt onward. The WIRING --
+// onBroadcast stamping the value, the diagnostic counters, the FIT write, the
+// indicator -- lands later and its differentials are in the c2 section below
+// this one.
+//
+// WHAT THESE CASES ARE AND ARE NOT, stated here rather than per case. They feed
+// bytes this file chose to a decoder this branch wrote. If both encode the same
+// assumed offset, they restate the assumption; they do not verify it. NOTHING
+// IN CI TOUCHES AN ANT RADIO OR A CORE POD, so no case below is evidence about
+// the wire. They are a regression guard on intent -- the same statement
+// DspTimeBaseTest.mc makes about its own synthetic batches -- and #81 is the
+// capture that would be evidence.
+
+// A page-1 payload carrying an explicit heat-strain code point. Separate from
+// ctPayload rather than a widened signature: ctPayload has many callers that
+// say nothing about byte 1, and they must keep saying nothing about it.
+function ctPayloadHsi(hsiRaw, skinRaw12, reserved12, coreRaw) {
+    var p = ctPayload(skinRaw12, reserved12, coreRaw);
+    p[1] = hsiRaw & 0xFF;
+    return p;
+}
+
+// The extraction, on its own: byte 1, masked to eight bits.
+(:test) function test_ct_hsiRaw8Assembly(logger) {
+    var cases = [[0x00, 0], [0x01, 1], [0x27, 39], [0x7F, 127],
+                 [0x80, 128], [0xFE, 254], [0xFF, 255]];
+    var ok = true;
+    for (var i = 0; i < cases.size(); i++) {
+        var got = CoreTempSensor.hsiRaw8(ctPayloadHsi(cases[i][0], 660, 0x0C8, 3742));
+        if (got != cases[i][1]) {
+            logger.error("hsiRaw8(byte1 = " + cases[i][0] + ") = " + got +
+                         ", expected " + cases[i][1]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// The scale, at the code points the vendor zone table turns on plus both ends
+// of the documented range.
+//
+// 0x27 -> 3.9 is the vendor worked example. 0x09/0x1D/0x45/0x46 are the four
+// zone boundaries (0.9 / 2.9 / 6.9 / 7.0); they are included because a scale
+// error of any size moves at least one of them across a zone edge, which a
+// mid-range spot check can miss.
+(:test) function test_ct_hsiDecodeTable(logger) {
+    var raws = [0x00, 0x09, 0x1D, 0x27, 0x45, 0x46, 0x7F, 0x80, 0xFE];
+    var exps = [0.0,  0.9,  2.9,  3.9,  6.9,  7.0,  12.7, 12.8, 25.4];
+    var ok = true;
+    for (var i = 0; i < raws.size(); i++) {
+        var got = CoreTempSensor.decodeHsi(ctPayloadHsi(raws[i], 660, 0x0C8, 3742));
+        if (!ctAlmostEq(got, exps[i])) {
+            logger.error("decodeHsi(byte1 = " + raws[i] + ") = " + got +
+                         ", expected " + exps[i]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// The invalid marker, and the specific wrong answer it protects against.
+//
+// 0xFF * 0.1 is 25.5 -- just outside the documented 0..25.4 range and entirely
+// plausible-looking as a reading. One of the three published implementations
+// this decode was derived from ships exactly that, with no invalid guard at
+// all, so the failure mode is real rather than hypothetical.
+(:test) function test_ct_hsiInvalidIsNullNotTwentyFivePointFive(logger) {
+    var got = CoreTempSensor.decodeHsi(ctPayloadHsi(0xFF, 660, 0x0C8, 3742));
+    if (got != null) {
+        logger.error("decodeHsi(0xFF) = " + got + ", expected null; a withheld " +
+                     "heat index must not decode to 25.5");
+        return false;
+    }
+    return true;
+}
+
+// The distinction the whole feature turns on: a real zero and an absence are
+// different answers, and the decoder must not conflate them.
+(:test) function test_ct_hsiZeroIsAValueNotAbsence(logger) {
+    var zero = CoreTempSensor.decodeHsi(ctPayloadHsi(0x00, 660, 0x0C8, 3742));
+    var none = CoreTempSensor.decodeHsi(ctPayloadHsi(0xFF, 660, 0x0C8, 3742));
+    var ok = true;
+    if (zero == null) {
+        logger.error("a raw 0x00 is a legal Heat Strain Index of 0.0 -- 'no " +
+                     "thermal strain' -- and must not decode as absent");
+        ok = false;
+    }
+    if (!ctAlmostEq(zero, 0.0)) {
+        logger.error("decodeHsi(0x00) = " + zero + ", expected 0.0");
+        ok = false;
+    }
+    if (none != null) {
+        logger.error("decodeHsi(0xFF) = " + none + ", expected null");
+        ok = false;
+    }
+    return ok;
+}
+
+// The mirror of test_ct_c0_shippedDecodesIgnoreByte1: the heat-strain decode
+// must read byte 1 and nothing else, so that a change to the temperature bytes
+// cannot move it either. Both directions are needed -- one alone leaves the
+// pair coupled in the untested direction.
+(:test) function test_ct_hsiIgnoresEveryOtherByte(logger) {
+    var want = CoreTempSensor.decodeHsi(ctPayloadHsi(0x27, 660, 0x0C8, 3742));
+    var alt  = [CoreTempSensor.decodeHsi(ctPayloadHsi(0x27, 512, 0x0C8, 3742)),
+                CoreTempSensor.decodeHsi(ctPayloadHsi(0x27, 660, 0x000, 3742)),
+                CoreTempSensor.decodeHsi(ctPayloadHsi(0x27, 660, 0x0C8, 0xFFFF)),
+                CoreTempSensor.decodeHsi(ctPayloadHsi(0x27, 0x800, 0x800, 0x8000))];
+    var ok = true;
+    for (var i = 0; i < alt.size(); i++) {
+        if (!ctAlmostEq(alt[i], want)) {
+            logger.error("variant " + i + " moved decodeHsi to " + alt[i] +
+                         ", expected " + want + "; only byte 1 may reach it");
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// A sensor that has decoded nothing reports NO heat index. Not 0.0, which is a
+// reading -- this is the state a podless row and a pod withholding byte 1 both
+// sit in for the whole session, and it is the state the fail-safe requirement
+// is about.
+(:test) function test_ct_freshSensorHasNoHeatIndex(logger) {
+    var s = new CoreProbe();
+    var ok = true;
+    if (s.heatIndexAtT(1000) != null) {
+        logger.error("a sensor that has decoded nothing reported heat index " +
+                     s.heatIndexAtT(1000) + ", expected null");
+        ok = false;
+    }
+    if (s.hsiFreshAtT(1000) != false) {
+        logger.error("hsiFresh must be false before anything has been decoded");
+        ok = false;
+    }
+    return ok;
+}
+
+// The freshness window, driven through the stamp rather than through a decode.
+//
+// Both edges, and the far side of the boundary is the load-bearing one: a stale
+// reading must go back to NULL, never to 0.0 and never to the last value. The
+// window is CT_FRESH_MS, shared with core and skin, so no indicator built on
+// this can disagree with the FIT write about what "current" means (#19).
+(:test) function test_ct_hsiStalenessReturnsToNull(logger) {
+    var s = new CoreProbe();
+    s.stampHsiAt(100000, 3.9);
+    var ok = true;
+    if (!ctAlmostEq(s.heatIndexAtT(100000 + $.CT_FRESH_MS - 1), 3.9)) {
+        logger.error("just inside the window the reading must survive, got " +
+                     s.heatIndexAtT(100000 + $.CT_FRESH_MS - 1));
+        ok = false;
+    }
+    if (s.heatIndexAtT(100000 + $.CT_FRESH_MS) != null) {
+        logger.error("at exactly CT_FRESH_MS the reading must be absent, got " +
+                     s.heatIndexAtT(100000 + $.CT_FRESH_MS));
+        ok = false;
+    }
+    // The trap this exists for: a stale ZERO must read as absent, not as a
+    // measured zero strain.
+    s.stampHsiAt(100000, 0.0);
+    if (s.heatIndexAtT(100000 + $.CT_FRESH_MS) != null) {
+        logger.error("a stale 0.0 must read as absent, got " +
+                     s.heatIndexAtT(100000 + $.CT_FRESH_MS));
+        ok = false;
+    }
+    if (!ctAlmostEq(s.heatIndexAtT(100000), 0.0)) {
+        logger.error("a FRESH 0.0 must read as 0.0, got " + s.heatIndexAtT(100000));
+        ok = false;
+    }
+    return ok;
+}
+
+// The heat-strain slots of a snapshot nothing has fed: two zero counters and an
+// explicitly "never observed" maximum. CT_DIAG_NONE is 0xFFFF and an accepted
+// raw can only be 0x00..0xFE, so the marker cannot collide with a reading.
+(:test) function test_ct_diagHsiSlotsStartUnobserved(logger) {
+    var p = new CoreProbe();
+    p.diagReset();
+    var a = p.diagSnapshot();
+    var ok = true;
+    if (a[$.CT_DIAG_I_HSI_OK] != 0)      { logger.error("hsiOk = " + a[$.CT_DIAG_I_HSI_OK] + ", expected 0"); ok = false; }
+    if (a[$.CT_DIAG_I_HSI_INVALID] != 0) { logger.error("hsiInvalid = " + a[$.CT_DIAG_I_HSI_INVALID] + ", expected 0"); ok = false; }
+    if (a[$.CT_DIAG_I_HSI_MAX_RAW] != $.CT_DIAG_NONE) {
+        logger.error("hsiMaxRaw = " + a[$.CT_DIAG_I_HSI_MAX_RAW] +
+                     ", expected CT_DIAG_NONE (" + $.CT_DIAG_NONE + ")");
+        ok = false;
+    }
+    if ($.CT_DIAG_NONE <= 0xFE) {
+        logger.error("CT_DIAG_NONE must be outside the 0x00..0xFE range an " +
+                     "accepted raw can take, got " + $.CT_DIAG_NONE);
+        ok = false;
     }
     return ok;
 }

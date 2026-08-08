@@ -93,6 +93,11 @@ class LifeCoreSensor {
     function everSeen() { return false; }
     function coreTemp() { return 0.0; }
     function skinTemp() { return 0.0; }
+    // #80. NULL, matching the shipping sensor's own absent state -- a stand-in
+    // returning 0.0 would let a test pass against a view that treated absence
+    // as a reading, which is the one thing this field must never do.
+    function hsiFresh()  { return false; }
+    function heatIndex() { return null; }
 }
 
 // -- Probe --------------------------------------------------------------------
@@ -206,6 +211,13 @@ class LifeProbe extends StrongRowView {
     }
     function coreFieldHandle() { return mFitCore; }
     function skinFieldHandle() { return mFitSkin; }
+
+    // #80. Armed SEPARATELY from the pair above, deliberately: the invariant
+    // this file pins is "field handle non-null implies mCoreSensor non-null",
+    // and arming all three together would let a case pass because the other two
+    // were cleared. Each handle has to be shown cleared on its own.
+    function armHsiField()   { mFitHsi = new LifeField(); }
+    function hsiFieldHandle() { return mFitHsi; }
 
     function saveCount()          { return (saves == null) ? 0 : saves; }
     function sensorLiveAtSave()   { return sensorAtSave == true; }

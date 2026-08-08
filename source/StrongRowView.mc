@@ -221,6 +221,78 @@ const HRZ_BELOW = 0;
 const HRZ_IN    = 1;
 const HRZ_ABOVE = 2;
 
+// ---- #80: the status row and the heat-strain pip ----------------------------
+//
+// MEASURED FIRST, because the design that #80's own text proposed does not
+// survive measurement and the numbers are the reason this row is laid out the
+// way it is.
+//
+// Method: dc.getTextDimensions and dc.getFontHeight called from a throwaway
+// app under SDK 9.2.0, on ALL TWELVE manifest devices. Every one of them
+// reports screenShape == SCREEN_SHAPE_ROUND with w == h, so the visible area is
+// the circle inscribed in the display box and the row's usable width at height
+// y is a chord, not w. The method reproduces a figure this file already
+// records ("-:--/500m  12.5m/str" at 277 px on the 454 px devices) to the
+// pixel, which is the cross-check that it is measuring the same thing earlier
+// work did.
+//
+// THE STATUS ROW IS ALREADY FULL. At the row's text-box top the chord runs from
+// 0.2927w to 0.7073w -- 188.1 px on a 454 px device, 172.5 on fenix843mm,
+// 99.5 on fenix6spro -- and today's three labels leave the following clearance
+// to it:
+//
+//   device          GPS left   CT right      (px, box corner to the circle)
+//   454 px family      1.04       1.97
+//   fenix843mm         0.55       1.60
+//   epix2pro47mm       7.55       5.60
+//   fenix7/7pro/6/6pro 3.85       3.30
+//   fenix6spro         2.55       2.35
+//   fenix6xpro         5.15       4.65
+//
+// So #80 section 4's proposal -- "a fourth pip at ~w*0.80 fits the existing row
+// with no layout rework" -- IS FALSE, and not marginally: 0.80w is outside the
+// display entirely at this height on every device. That claim is retracted
+// here rather than quietly not implemented.
+//
+// FOUR TEXT PIPS DO NOT FIT EITHER. Laying "GPS RR CT HS" out with equal gaps
+// across the whole chord leaves 2.5 px between labels on fenix843mm and 5.8 px
+// on fenix6spro, against 21.6 px and 15.6 px today; lowering the row to the
+// last pixel the h*0.13 title allows buys 1.4 px more. A one-character label
+// ("H") reaches 8.2 px on the worst device. None of that is a spacing this row
+// can carry, so the heat-strain indicator is NOT a text pip.
+//
+// WHAT SHIPS: a small circular mark, right-aligned against the chord, with the
+// CT label moved left just enough to make room. Its cost, measured, is the
+// RR-to-CT gap:
+//
+//   device        gap today   gap after
+//   454 px family    25.0        9.0
+//   fenix843mm       22.3        9.9
+//   epix2pro47mm     22.3       21.9
+//   fenix7/7pro/6/6pro 15.6     12.7
+//   fenix6spro       15.6        7.2
+//   fenix6xpro       15.6       12.9
+//
+// The CT label itself gains bezel clearance (it moves inward); the mark takes
+// the tight end. Nothing here says how any of it looks on a wrist.
+const PIP_ROW_Y_FRAC = 0.045;   // top of the status row's text box, in h
+
+// Upper BOUND on the rendered width of the "CT" label, in w. MEASURED at
+// FONT_XTINY on all twelve devices: 39/454, 36/416 (fenix843mm), 28/416
+// (epix2pro47mm), 18/280, 18/260, 18/240 -- the largest is 0.0865w. Used as a
+// bound rather than a value on purpose: the label is centre-justified, so
+// over-estimating its width can only move it further from the bezel, and that
+// keeps this a compile-time constant instead of a per-frame text measurement.
+const PIP_CT_W_FRAC = 0.09;
+
+// The heat-strain mark. Fractions of display width with integer floors, the
+// same shape every arc dimension in this file uses, so the smallest display
+// still draws something rather than collapsing to nothing.
+const PIP_DOT_R_FRAC = 0.014;
+const PIP_DOT_R_MIN  = 3;
+const PIP_GAP_FRAC   = 0.009;   // between the CT label and the mark
+const PIP_GAP_MIN    = 2;
+
 class StrongRowView extends Ui.View {
 
     // step types
@@ -385,6 +457,7 @@ class StrongRowView extends Ui.View {
     hidden var mFitSkin;
     hidden var mFitMaxCore;
     hidden var mFitCtDiag;
+    hidden var mFitHsi;
     hidden var mMaxCore;
     hidden var mStartMs;
 
@@ -429,6 +502,7 @@ class StrongRowView extends Ui.View {
         mFitSkin    = null;
         mFitMaxCore = null;
         mFitCtDiag  = null;
+        mFitHsi     = null;
         mMaxCore    = 0.0;
         mHrBpm      = 0;
         mLastHrMs   = 0;
@@ -1196,6 +1270,78 @@ class StrongRowView extends Ui.View {
     // more thing that would need updating and did in fact go stale once.
     static function coreFieldsWanted(sensor) {
         return sensor != null;
+    }
+
+    // ---- #80: heat-strain plumbing, as pure decisions -----------------------
+    // Same seam as coreFieldsWanted/rateColour/footState above: the decision is
+    // reachable from a (:test) with no Dc, no Session and no ANT channel.
+
+    // May this heat-strain reading be written to the FIT?
+    //
+    // Exists to be ONE line, and specifically to be the one line a future
+    // "tidy-up" has to red before it can turn this into `v > 0.0`. That guard
+    // is correct for max_core_temperature (0 C is impossible) and CATASTROPHIC
+    // here: 0.0 a.u. means "no thermal strain", so suppressing it would delete
+    // every genuine low-strain sample and leave the field carrying only the
+    // hard parts of the row, with nothing in the file to say so.
+    //
+    // Null is the only absence the scale has, so null is the only rejection.
+    static function hsiWritable(v) {
+        return v != null;
+    }
+
+    // The rightmost x a mark may occupy at height `yTop`, for a display whose
+    // visible area is the circle inscribed in `w` x `h`.
+    //
+    // MEASURED PREMISE, not an assumption: all twelve manifest devices report
+    // SCREEN_SHAPE_ROUND with w == h under SDK 9.2.0. On any other shape the
+    // inscribed circle is contained in the visible area, so this stays a valid
+    // (merely conservative) bound rather than becoming wrong.
+    //
+    // Computed rather than tabulated as a fraction so it cannot drift from the
+    // row's actual y: change PIP_ROW_Y_FRAC and the bound follows.
+    static function pipChordXMax(w, h, yTop) {
+        var r  = (w < h) ? w / 2.0 : h / 2.0;
+        var dy = h / 2.0 - yTop;
+        if (dy < 0)  { dy = -dy; }
+        if (dy >= r) { return w / 2.0; }
+        return w / 2.0 + Math.sqrt(r * r - dy * dy);
+    }
+
+    static function pipDotR(w) {
+        var r = (w * $.PIP_DOT_R_FRAC).toNumber();
+        return (r < $.PIP_DOT_R_MIN) ? $.PIP_DOT_R_MIN : r;
+    }
+
+    static function pipGap(w) {
+        var g = (w * $.PIP_GAP_FRAC).toNumber();
+        return (g < $.PIP_GAP_MIN) ? $.PIP_GAP_MIN : g;
+    }
+
+    // x of the heat-strain mark's centre: hard against the row's right-hand
+    // chord limit, one pixel inside it. The mark takes the tight end because it
+    // is the element whose width this code controls exactly; the label, whose
+    // width is a measured bound rather than a value, is given the slack.
+    static function pipDotCx(w, h) {
+        return pipChordXMax(w, h, $.PIP_ROW_Y_FRAC * h) - 1 - pipDotR(w);
+    }
+
+    // x of the CT label's centre, once the mark has taken the row's right end.
+    // Uses the WIDTH BOUND, so the true label always sits at or inside this.
+    static function pipCtCx(w, h) {
+        return pipDotCx(w, h) - pipDotR(w) - pipGap(w) - (w * $.PIP_CT_W_FRAC) / 2.0;
+    }
+
+    // y of the mark's centre: the middle of the label's text box.
+    //
+    // This is what makes pipDotCx's bound conservative rather than merely
+    // approximate. The bound is taken at the box TOP, where the chord is
+    // narrowest in this row; the mark's own topmost pixel is fontH/2 - r BELOW
+    // that, and fontH/2 exceeds r on every manifest device (smallest fontH is
+    // 19 px where r is 3), so the mark sits strictly inside the width the bound
+    // allowed.
+    static function pipDotCy(h, fontH) {
+        return $.PIP_ROW_Y_FRAC * h + fontH / 2.0;
     }
 
     // Pure: the colour of the big stroke-rate numeral, extracted verbatim from
