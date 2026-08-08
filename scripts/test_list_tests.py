@@ -316,6 +316,71 @@ def _():
         (0, ["A.mc:2:Mod.test_line2"])
 
 
+# ------------------------------------------- module scope: depth and lexing --
+# The seven cases above pin one and two levels of nesting and the brace walk.
+# The five below pin the two things #140's acceptance criteria name that nothing
+# yet held: ANY nesting depth, and that a `module` keyword which is only TEXT --
+# inside a comment or a string literal -- opens no scope.
+#
+# THESE WERE GREEN ON ARRIVAL. The behaviour they pin already exists: it falls
+# out of running the scope walk over strip_comments' output rather than over the
+# raw text, which 3460b27 chose deliberately. So they are pins, not
+# differentials, and neither can be shown red against the extractor as it
+# stands. What makes them load-bearing is the mutant: point the walk at the raw
+# text and the three text-only cases red while every other case in this file
+# stays green. Recorded here so a later reader does not mistake a pin for a
+# regression test that once failed.
+
+@case("three module levels qualify with the whole path")
+def _():
+    # MEASURED, not assumed: fr965 / SDK 9.2.0 ran a throwaway probe with one
+    # (:test) at file scope and one at each of three nesting depths, and the
+    # RESULTS table printed
+    #     test_zzp_atFileScope                     PASS
+    #     ZzpA.test_zzp_oneDeep                    PASS
+    #     ZzpA.ZzpB.test_zzp_twoDeep               PASS
+    #     ZzpA.ZzpB.ZzpC.test_zzp_threeDeep        PASS
+    # -- so the full dotted path at every depth is the name the runner prints,
+    # and the pin has to carry it. Before this the two-level expectation was
+    # asserted from the one-level observation.
+    src = ("module Aa {\nmodule Bb {\nmodule Cc {\n" + decl("test_deep3")
+           + "}\n}\n}\n")
+    return run_extractor({"A.mc": src}), (0, ["Aa.Bb.Cc.test_deep3"])
+
+
+@case("an inner module closes back to the outer one, not to file scope")
+def _():
+    # An off-by-one in the pop -- popping to empty, or popping one frame too
+    # many -- leaves the middle declaration reading `test_outer` instead of
+    # `Aa.test_outer` while both the nesting case above and the single-module
+    # case stay green. Three declarations, three different depths, one file.
+    src = ("module Aa {\nmodule Bb {\n" + decl("test_inner") + "}\n"
+           + decl("test_outer") + "}\n" + decl("test_fileScope"))
+    return run_extractor({"A.mc": src}), \
+        (0, ["Aa.Bb.test_inner", "Aa.test_outer", "test_fileScope"])
+
+
+@case("a module keyword inside a line comment opens no scope")
+def _():
+    src = "// module Fake {\n" + decl("test_notInAModule")
+    return run_extractor({"A.mc": src}), (0, ["test_notInAModule"])
+
+
+@case("a module keyword inside a block comment opens no scope")
+def _():
+    # The unbalanced `{` matters as much as the keyword: a walk that saw this
+    # text would both qualify the declaration wrongly AND leave the stack one
+    # frame deep for the rest of the file.
+    src = "/* module Fake { */\n" + decl("test_notInAModule")
+    return run_extractor({"A.mc": src}), (0, ["test_notInAModule"])
+
+
+@case("a module keyword inside a string literal opens no scope")
+def _():
+    src = 'var s = "module Fake {";\n' + decl("test_notInAModule")
+    return run_extractor({"A.mc": src}), (0, ["test_notInAModule"])
+
+
 def main():
     failures = 0
     for name, fn in CASES:

@@ -61,6 +61,20 @@ DECL_RE = re.compile(_DECL_SRC)
 # missing" AND "unexpected" for the same test. That is the same unfixable
 # deadlock the module docstring above describes, reached from a new direction.
 #
+# DEPTH IS MEASURED, not extrapolated. The dotted path was first confirmed at
+# ONE level only, and the two-level expectation was then asserted from it. On
+# fr965 / SDK 9.2.0 a throwaway probe carrying one (:test) at file scope and one
+# at each of three depths printed
+#
+#     test_zzp_atFileScope                                 PASS
+#     ZzpA.test_zzp_oneDeep                                PASS
+#     ZzpA.ZzpB.test_zzp_twoDeep                           PASS
+#     ZzpA.ZzpB.ZzpC.test_zzp_threeDeep                    PASS
+#
+# so the FULL path, every segment, at every depth, is what the runner prints --
+# which is what the brace walk below builds. Pinned in test_list_tests.py by
+# "three module levels qualify with the whole path".
+#
 # WHY ANY OF THIS MATTERS RATHER THAN BEING A STYLE OPTION. MEASURED, SDK 9.2.0:
 # a --unit-test build of this repository for the fenix6 family (fenix6, 6pro,
 # 6spro, 6xpro) fails with
