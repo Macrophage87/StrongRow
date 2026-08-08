@@ -77,11 +77,18 @@ laps.)
   Core Body Temperature profile — Connect IQ has no built-in support for it,
   and a watch app can't host the official CORE data field) and logs core and
   skin temperature. A **CT indicator** joins GPS/RR and turns green while pod
-  data is fresh. A row with no pod records no errors, but it does **not**
-  record nothing: since #75 the core/skin fields are declared on every row, so
-  a podless row logs `0.0` for both, and the diagnostic field below is written
-  unconditionally. `max_core_temperature` is still suppressed when no reading
-  was ever accepted.
+  data is fresh. A row with no pod records no errors and, since #13, no
+  fabricated readings either: the core/skin fields are still declared on every
+  row (#75), but nothing is written to them until the first current reading of
+  the session, so a podless row leaves both **unwritten** rather than logging
+  `0.0` for every record. Once a real reading has been written, a later dropout
+  **does** log `0.0` — deliberately, as an out-of-band marker. Skipping would be
+  worse: FIT record fields latch, so a skipped write republishes the last
+  reading as though the pod were still on. `0.0` is impossible as a measurement
+  (the accepted bands are 25–45 °C core, 15–45 °C skin) so it cannot be mistaken
+  for one, but it will still show as a drop to zero in a chart. The diagnostic
+  field below is written unconditionally, and `max_core_temperature` is still
+  suppressed when no reading was ever accepted.
 - **Heat Strain Index**: the same CORE broadcast carries greenTEG's 0–10 heat
   strain figure, and StrongRow decodes it into a record-level
   `heat_strain_index` field. A small **mark next to the CT indicator** shows
