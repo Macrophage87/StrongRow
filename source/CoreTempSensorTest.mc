@@ -704,12 +704,21 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
 // value already recorded in a FIT file is interpreted through this key.
 (:test) function test_ct_diagLayoutConstants(logger) {
     var ok = true;
-    // 24 / v2 since #80 added the three heat-strain slots. The pair moves
-    // TOGETHER, which is the whole content of this case: a length change with
-    // no version bump leaves every already-recorded file unreadable-by-key, and
-    // a :count that lags the length is an uncatchable System Error at save.
+    // 24 slots since #80 added the three heat-strain slots; v3 since the retry
+    // path gained the CT_DIAG_F_RETRY_LOST bit in CT_DIAG_I_FLAGS. The pair
+    // moves TOGETHER, which is the whole content of this case: a length change
+    // with no version bump leaves every already-recorded file
+    // unreadable-by-key, and a :count that lags the length is an uncatchable
+    // System Error at save.
+    //
+    // v2 -> v3 moved the version WITHOUT moving the length, and that is the
+    // point of the pair being asserted separately rather than as one tuple: the
+    // new bit extends the KEY for slot 17 while the array, and therefore the
+    // createField `:count`, is untouched.
+    // RetryBound.test_rb_c1_theRetryLostBitIsDistinctAndTheArrayDidNotGrow
+    // states that invariant from the other side.
     if ($.CT_DIAG_SLOTS != 24)      { logger.error("CT_DIAG_SLOTS changed to " + $.CT_DIAG_SLOTS + " -- bump CT_DIAG_VERSION and the field's :count together"); ok = false; }
-    if ($.CT_DIAG_VERSION != 2)     { logger.error("CT_DIAG_VERSION changed to " + $.CT_DIAG_VERSION); ok = false; }
+    if ($.CT_DIAG_VERSION != 3)     { logger.error("CT_DIAG_VERSION changed to " + $.CT_DIAG_VERSION); ok = false; }
     if ($.CT_DIAG_MAX != 65535)     { logger.error("CT_DIAG_MAX must be the UINT16 ceiling, got " + $.CT_DIAG_MAX); ok = false; }
     if ($.CT_DIAG_NONE != 0xFFFF)   { logger.error("CT_DIAG_NONE changed to " + $.CT_DIAG_NONE); ok = false; }
     return ok;

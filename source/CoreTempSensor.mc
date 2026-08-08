@@ -116,7 +116,18 @@ const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
 // rather than 21; the growth is why $.CT_DIAG_SLOTS must remain the single
 // constant BOTH diagSnapshot() and the createField `:count` read (a setData
 // array longer than :count is an uncatchable System Error at save time).
-const CT_DIAG_VERSION = 2;        // value stored in slot CT_DIAG_I_VERSION
+//
+// VERSION 3 ADDS NO SLOT. CT_DIAG_SLOTS stays 24 and every index below keeps
+// its number, so the createField `:count` is untouched and the uncatchable
+// too-long-array failure above is not in play. What changed is that
+// CT_DIAG_I_FLAGS carries one more bit -- CT_DIAG_F_RETRY_LOST, "a deferred
+// retry was dropped for want of a Timer". Every v2 bit keeps its meaning, so a
+// v2 key applied to a v3 array still answers every question it could answer
+// before; the bump exists so that a reader who sees bit 3 set knows it is a
+// documented signal rather than residue, and so that this decision is visible
+// in the file rather than only here (test_ct_diagLayoutConstants is the pin
+// that forces it to be deliberate).
+const CT_DIAG_VERSION = 3;        // value stored in slot CT_DIAG_I_VERSION
 
 const CT_DIAG_I_VERSION       = 0;
 const CT_DIAG_I_OPEN_ATTEMPTS = 1;   // openChannel() entries
@@ -170,6 +181,17 @@ const CT_DIAG_I_HSI_MAX_RAW   = 23;
 const CT_DIAG_F_CHANNEL_HELD = 1;   // a channel handle was still held at readout
 const CT_DIAG_F_CLOSED       = 2;   // close() had run
 const CT_DIAG_F_EVER_SEEN    = 4;   // a reading was accepted at some point
+// v3: a deferred retry was DROPPED because no Timer could be armed. Set in
+// exactly one place -- scheduleReopen's catch -- and never cleared, so it means
+// "this happened at least once this session", not "it is happening now". Sticky
+// is the only form that survives the latch close() takes (see mDiagFlags).
+//
+// It is the ONLY thing in this array that separates "the ladder is waiting for a
+// retry that will arrive" from "the ladder stopped and nothing will re-enter
+// openChannel() again". Those two differ otherwise by one openAttempt that has
+// not happened YET -- an absence, and a diagnosis resting on an absence is
+// exactly what #102 exists to stop.
+const CT_DIAG_F_RETRY_LOST   = 8;
 
 // Listens for a CORE (greenTEG) body-temperature pod over a generic ANT+
 // channel (ANT+ Core Body Temperature profile, device type 127). Connect IQ's
@@ -229,6 +251,11 @@ class CoreTempSensor {
     hidden var mDiagHsiOk;
     hidden var mDiagHsiInvalid;
     hidden var mDiagHsiMaxRaw;
+    // Set once and never cleared when scheduleReopen could not arm a retry
+    // timer; read out as CT_DIAG_F_RETRY_LOST. A plain Boolean rather than a
+    // counter: one more slot would be a wire-format growth, and the question
+    // this answers ("did the ladder stop?") is a yes/no.
+    hidden var mDiagRetryLost;
     // Flags latched at close(), because shutdown() calls close() BEFORE
     // stopAndSave() (StrongRowView.shutdown) -- reading the live channel state
     // at readout would therefore always report "released, closed" and say
@@ -283,6 +310,7 @@ class CoreTempSensor {
         mDiagHsiOk         = 0;
         mDiagHsiInvalid    = 0;
         mDiagHsiMaxRaw     = $.CT_DIAG_NONE;
+        mDiagRetryLost     = false;
         mDiagFlags         = -1;
     }
 
@@ -567,6 +595,19 @@ class CoreTempSensor {
         }
     }
 
+    // Allocation split out so a test can substitute a timer it controls --
+    // exactly the seam makeChannel() above is, and for a sharper reason than
+    // symmetry. CoreProbe (CoreTempSensorTest.mc) overrides scheduleReopen
+    // wholesale, and its own comment says why: "a real Timer breaks that cycle
+    // by deferring". That holds whenever the Timer WORKS, which is precisely
+    // why no existing test can reach the catch that runs when it does not --
+    // nothing in this repository can make Timer.start() fail, and a test that
+    // let the real Timer arm would leave a live callback firing back into
+    // openChannel() thirty seconds later, in the middle of some other suite.
+    hidden function makeRetryTimer() {
+        return new Timer.Timer();
+    }
+
     // Re-open the channel after `delayMs`. A zero delay reopens synchronously,
     // which is what the first CT_BURST_TRIES searches do, so discovery keeps
     // exactly today's timing. A non-zero delay defers via a one-shot timer,
@@ -575,17 +616,81 @@ class CoreTempSensor {
         if (mClosed) { return; }
         cancelReopen();
         if (delayMs <= 0) {
+            // The burst, reopening now so discovery keeps exactly the timing it
+            // had before #26. This IS a re-entry into openChannel() from inside
+            // openChannel()'s own catch, and it unwinds only because mFails
+            // rises on every pass and ctBackoffMs stops returning 0 once the
+            // burst is spent -- an ARITHMETIC bound, capped at CT_BURST_TRIES
+            // frames, not a structural one. It therefore has a test standing in
+            // front of it: RetryBound.test_rb_c0_onlyTheBurstEverAsksForZeroDelay.
             openChannel();
             return;
         }
         try {
-            mRetryTimer = new Timer.Timer();
+            mRetryTimer = makeRetryTimer();
             mRetryTimer.start(method(:onRetry), delayMs, false);
         } catch (e) {
-            // No timer available: fall back to today's behaviour rather than
-            // silently dropping the retry and leaving CORE dead.
-            mRetryTimer = null;
-            openChannel();
+            // Hand the timer back before dropping the reference -- the rule #18
+            // states for the ANT channel, applied to the other scarce resource
+            // this class allocates. cancelReopen() is where that rule already
+            // lives for timers, so it is REUSED rather than restated, the same
+            // way discardChannel() is shared by close() and #18's failure path.
+            // It matters beyond tidiness: a start() that threw may still have
+            // armed the timer, and `mRetryTimer = null` would leave that
+            // callback live with nothing able to stop it -- including close().
+            cancelReopen();
+
+            // AND DELIBERATELY DO NOT REOPEN. This line used to be
+            // openChannel(), and that was an UNBOUNDED MUTUAL RECURSION:
+            // openChannel()'s catch calls this function, this function called
+            // openChannel() back, and this branch is reachable only at
+            // mFails >= CT_BURST_TRIES where ctBackoffMs never returns 0 again
+            // -- so the ladder could never break the cycle by growing. MEASURED
+            // on fr965 / SDK 9.2.0: the simulator aborts with "Error: Stack
+            // Overflow Error / Details: Failed invoking <symbol>" on a stack
+            // alternating scheduleReopen and openChannel down to initialize().
+            // initialize() is reached from onLayout, so the app DIES at the
+            // start of the row and the recording goes with it. The comment that
+            // stood here reasoned correctly that dropping the retry leaves CORE
+            // dead, and then made the wrong trade: it exchanged a dead heat
+            // sensor for a dead application.
+            //
+            // WHAT IS LOST, stated rather than hidden: this retry, and with it
+            // in practice every later one. When the catch was entered from
+            // openChannel() the channel is already discarded, so no further
+            // CHANNEL_CLOSED can arrive and nothing else re-enters
+            // openChannel(); when it was entered from onChannelClosed() the
+            // search has ended and will not re-arm itself. Either way CORE
+            // temperature, skin temperature and the heat index are absent for
+            // the rest of the app run. That is one row's heat trace against the
+            // whole activity, and the priority order says which way to fall: an
+            // app that does not crash comes first.
+            //
+            // AND IT IS NOT SILENT. CT_DIAG_F_RETRY_LOST is set here and nowhere
+            // else, and diagSnapshot() ORs it into slot CT_DIAG_I_FLAGS -- so a
+            // reader gets "the ladder stopped for want of a timer" as positive
+            // evidence instead of inferring it from an openAttempt that never
+            // came. Read it with the neighbouring counters: with openOk == 0 the
+            // channel never opened at all, and with openOk > 0 and
+            // chanClosed > 0 the pod was being searched for and the search was
+            // not re-armed. A bit, not a new slot, so the array length -- and
+            // the createField `:count` that must match it -- does not move.
+            //
+            // Scope of that claim, because this file is strict about it: what is
+            // asserted here is what the CODE WRITES. That slot 17 reaches a
+            // saved file at all is the simulator measurement recorded in the
+            // CT_DIAG_* block above (fr965 / SDK 9.2.0, decoded with fitparse);
+            // this particular bit has never been seen in a decoded file, and
+            // whether a real watch agrees is #77's question, not an assumption
+            // made here.
+            //
+            // NOT MEASURED, and not claimed: whether Timer.start() ever fails
+            // here on a watch. The one real-row ct_diag readout available (#122)
+            // reached this branch with 22 of 22 opens succeeding, so neither
+            // failing resource has been seen in the field. This is a defensive
+            // fix on a path that is reachable by construction and whose
+            // pre-fix outcome is measured above.
+            mDiagRetryLost = true;
         }
     }
 
@@ -867,6 +972,9 @@ class CoreTempSensor {
         if (mChannel != null) { f |= $.CT_DIAG_F_CHANNEL_HELD; }
         if (mClosed)          { f |= $.CT_DIAG_F_CLOSED; }
         if (mEverSeen)        { f |= $.CT_DIAG_F_EVER_SEEN; }
+        // Unlike the three above, this one is not a live reading of state: it
+        // is already sticky, so latching it at close() loses nothing.
+        if (mDiagRetryLost)   { f |= $.CT_DIAG_F_RETRY_LOST; }
         return f;
     }
 
