@@ -15,19 +15,25 @@ using Toybox.Test;
 // and a rest cell reading 0.0 m/str is a claim about the interval, not an
 // absence. drawSetGrid renders a dash for null.
 //
-// SCOPE: these pin the PREDICATES, not the call site. That drawSetGrid calls
-// them, that latchWorkAccum fires at the right boundary, and that
-// beginWorkAccum is wired to BOTH startWorkout and advanceStep are covered by
-// review only here.
+// SCOPE: these pin the PREDICATES. The CALL SITE is pinned in
+// source/SetGridLayoutTest.mc, which #131 added: it renders the grid through
+// the shipping onUpdate against HrGeoDc, so that drawSetGrid is reached on REST
+// and GATE and NOT on COOL or DONE, that the sub row stands down for the LATCH
+// rather than for the step type, and that latchWorkAccum freezes totals these
+// statics can derive a value from, are all held by a test now.
 //
-// NOT COVERED, WHICH IS NOT THE SAME AS NOT REACHABLE -- and an earlier version
-// of this note said the wrong one. HrProbe.runUpdate drives the shipping
-// onUpdate against HrGeoDc, a FAKE Dc that records every drawText, and it
-// already renders GATE, WARM, COOL and DONE in CI today; #121's segfault is
-// about a real graphics Dc and does not apply. The grid branch is simply
-// unreached, because HrProbe has no way to latch a set. That is the seam that
-// would have caught the two display regressions this PR went through, and it
-// is filed rather than left implied.
+// STILL REVIEW-ONLY, stated exactly so the covered list does not read as larger
+// than it is: that latchWorkAccum fires at the right BOUNDARY, and that
+// beginWorkAccum is wired to BOTH startWorkout and advanceStep. HrProbe.latchSet
+// seeds the accumulator itself, so it exercises the latch without exercising
+// WHEN advanceStep calls it.
+//
+// An earlier version of this note called the grid branch "not reachable from a
+// (:test)". It was UNCOVERED, not unreachable, and the wrong word is retracted
+// here rather than quietly edited away: #121's segfault is about obtaining a
+// REAL graphics Dc and never applied to a hand-written mock, and HrProbe.runUpdate
+// has been driving the shipping onUpdate against HrGeoDc -- rendering GATE, WARM,
+// COOL and DONE in CI -- the whole time.
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator
 // on every PR, with the names pinned in scripts/expected_tests.txt -- update

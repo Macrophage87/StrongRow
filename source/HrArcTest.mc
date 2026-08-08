@@ -282,6 +282,54 @@ class HrProbe extends StrongRowView {
         return (mFakeDist == null) ? 0.0 : mFakeDist;
     }
 
+    // #131: latch a completed work interval, so a case can render the REST /
+    // GATE grid. Without this seam the whole
+    // `(type == STEP_REST || type == STEP_GATE) && mLastSetValid` branch is
+    // unreached by every (:test) in the repository -- UNREACHED, not
+    // unreachable, which is the correction #131 exists to record.
+    //
+    // DRIVES THE SHIPPING LATCH rather than assigning the seven mLastSet*
+    // fields by hand, and that is the difference between a seam and a
+    // transcription. Hand-assignment would keep every grid case below green
+    // after an edit that changed WHAT latchWorkAccum freezes, because the test
+    // would be asserting against its own copy of the answer. Seeding the
+    // accumulator and calling the real function is the same `hidden`-piercing
+    // this class already does for setHrState and setDist -- `hidden` is
+    // protected in Monkey C -- and it puts latchWorkAccum under a test for the
+    // first time. What it still does NOT reach is WHEN advanceStep calls that
+    // function, because this seeds the accumulator itself; SetSummaryTest.mc:25-30
+    // keeps that boundary on the review-only list rather than letting it be read
+    // as covered.
+    //
+    // RETURNS WHETHER THE LATCH TOOK. latchWorkAccum returns early when
+    // mSetNum <= 0, and a silent no-op there would make every grid case vacuous
+    // in the SAFE direction -- "the grid is absent" would hold, and hold for
+    // the wrong reason. Every caller checks the answer.
+    //
+    // CALL BEFORE enterStep / setNarrowSession. It moves mStepStartMs,
+    // mStrokeCount and the fake distance; those two restore all three, which is
+    // also the real order of events (the interval ends, then the next step
+    // begins).
+    function latchSet(num, sec, dist, strokes, hrSum, hrN) {
+        mSetNum        = num;
+        mSetDistBase   = 0.0;
+        mSetPausedDist = 0.0;
+        mSetStrokeBase = 0;
+        mSetHrSum      = hrSum;
+        mSetHrN        = hrN;
+        mStrokeCount   = strokes;
+        setDist(dist);
+        // A SUBTRACTION from the device clock, never a value derived from its
+        // magnitude. System.getTimer() counts from device start, so CI's
+        // seconds-old simulator and a desktop's hours-old one give the same
+        // elapsed span here; enterStep above uses the identical form. A test
+        // that synthesised an absolute stamp from it would pass locally and red
+        // in CI.
+        mStepStartMs   = System.getTimer() - (sec * 1000.0).toNumber();
+        latchWorkAccum();
+        return mLastSetValid;
+    }
+
     // Every string this view can draw is DATA-DEPENDENT, and a layout case that
     // renders only one instance of each measures the narrowest screen the app
     // can produce rather than the widest. These push each one to its practical

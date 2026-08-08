@@ -2498,37 +2498,6 @@ class StrongRowView extends Ui.View {
         alert(t);
     }
 
-    // #74: these are the SAME two SDK calls on the SAME handle that
-    // startSession guards, and they were left bare here. Leaving them bare
-    // would have had the file making two contradictory claims about whether
-    // ActivityRecording.start() can throw -- defended in one place, unprotected
-    // eighty lines away.
-    //
-    // And here the consequence is worse than the bug #74 is about. There is no
-    // try/catch anywhere in the frames above this one -- togglePause is reached
-    // from onPrimary, which is called from StrongRowDelegate.onSelect -- so a
-    // throw terminates the app, and stopAndSave() is the ONLY caller of
-    // mSession.save(). #74 loses a row that never started; an unguarded throw
-    // here loses a REAL row, mid-piece, with every field already recorded.
-    //
-    // Swallowed rather than surfaced: a throw here must not cost the row.
-    //
-    // BUT mPaused IS DERIVED FROM THE RECORDER, NOT FROM THE BUTTON, and that
-    // distinction is the whole of #74. An earlier revision of this function
-    // swallowed the throw and then set mPaused from the keypress anyway,
-    // justifying it as "the view stays consistent with what the athlete
-    // pressed". That re-created this issue's exact lie in a new place: a resume
-    // that threw left mStarted true, mPaused false and mRecFailed false, which
-    // footState reads as FOOT_REC -- a red REC row over a session that is not
-    // recording, and onTick writing into it for the rest of the piece.
-    //
-    // The failed STOP direction is just as bad and less obvious: a stop that
-    // did not take leaves the session emitting records while onTick's
-    // `!mPaused` gate gives up writing, and record-scope fields LATCH, so every
-    // record for the rest of the stall re-emits the last live value. Stale data
-    // that decodes as real is worse than a gap.
-    //
-    // So both branches ask isRecording() and set the flags from the answer.
     // ---- #109 accumulator lifecycle --------------------------------------
 
     // A new RECORDING begins. Clears the session-scoped stroke count (#126) and
@@ -2607,6 +2576,39 @@ class StrongRowView extends Ui.View {
         mSetNum         = 0;
     }
 
+    // ---- #74 pause / resume ----------------------------------------------
+
+    // #74: these are the SAME two SDK calls on the SAME handle that
+    // startSession guards, and they were left bare here. Leaving them bare
+    // would have had the file making two contradictory claims about whether
+    // ActivityRecording.start() can throw -- defended in one place, unprotected
+    // eighty lines away.
+    //
+    // And here the consequence is worse than the bug #74 is about. There is no
+    // try/catch anywhere in the frames above this one -- togglePause is reached
+    // from onPrimary, which is called from StrongRowDelegate.onSelect -- so a
+    // throw terminates the app, and stopAndSave() is the ONLY caller of
+    // mSession.save(). #74 loses a row that never started; an unguarded throw
+    // here loses a REAL row, mid-piece, with every field already recorded.
+    //
+    // Swallowed rather than surfaced: a throw here must not cost the row.
+    //
+    // BUT mPaused IS DERIVED FROM THE RECORDER, NOT FROM THE BUTTON, and that
+    // distinction is the whole of #74. An earlier revision of this function
+    // swallowed the throw and then set mPaused from the keypress anyway,
+    // justifying it as "the view stays consistent with what the athlete
+    // pressed". That re-created this issue's exact lie in a new place: a resume
+    // that threw left mStarted true, mPaused false and mRecFailed false, which
+    // footState reads as FOOT_REC -- a red REC row over a session that is not
+    // recording, and onTick writing into it for the rest of the piece.
+    //
+    // The failed STOP direction is just as bad and less obvious: a stop that
+    // did not take leaves the session emitting records while onTick's
+    // `!mPaused` gate gives up writing, and record-scope fields LATCH, so every
+    // record for the rest of the stall re-emits the last live value. Stale data
+    // that decodes as real is worse than a gap.
+    //
+    // So both branches ask isRecording() and set the flags from the answer.
     hidden function togglePause() {
         var now = System.getTimer();
         if (mPaused) {
