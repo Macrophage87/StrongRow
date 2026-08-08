@@ -32,20 +32,26 @@ using Toybox.Test;
 // THIS SUITE LIVES IN `module Foot`, and the reason is a measured ceiling, not
 // taste. MEASURED, SDK 9.2.0, by bisecting throwaway file-scope (:test)
 // functions against `monkeyc -d fenix6 --unit-test` (the compiler prints the
-// count only once it is already over): this repository stood at
+// count only once it is already over):
 //
-//     252 of the 253 members module 'globals' allows
+//     CEILING 2b23b03 fenix6-family: 252 used of 253, 1 free -- the 1st file-scope (:test) added reds
+//     CEILING post-move fenix6-family: 238 used of 253, 15 free -- the 16th file-scope (:test) added reds
 //
-// on 2b23b03 -- ONE slot for the whole repository, so the next (:test) added
-// anywhere at file scope red the compile-unit-test check on fenix6, fenix6pro,
-// fenix6spro and fenix6xpro, with an error naming neither the test nor the
-// file. release-build was unaffected (tests are stripped) and run-tests uses
-// fr965, which compiles clean -- so a green local run proved nothing.
+// Those two lines are the machine-readable record; scripts/list_tests.py
+// carries the same two verbatim and scripts/check_ceiling_notes.py fails if
+// the copies drift apart or if the arithmetic stops closing.
+//
+// On 2b23b03 that was ONE slot for the whole repository, so the next (:test)
+// added anywhere at file scope red the compile-unit-test check on fenix6,
+// fenix6pro, fenix6spro and fenix6xpro, with an error naming neither the test
+// nor the file. release-build was unaffected (tests are stripped) and
+// run-tests uses fr965, which compiles clean -- so a green local run proved
+// nothing.
 //
 // Every file-scope function and class costs one member. A `module { }` block
 // costs ONE, and everything inside it leaves 'globals' entirely. These fifteen
-// cases therefore cost one member between them instead of fifteen. Re-measured
-// after the move: 238 of 253, fourteen slots freed.
+// cases therefore cost one member between them instead of fifteen: fourteen
+// slots freed.
 //
 // The declarations below are NOT re-indented, matching the `module Hsi` blocks
 // in CoreTempSensorTest.mc and PipLayoutTest.mc: the win is the brace, and

@@ -88,10 +88,16 @@ DECL_RE = re.compile(_DECL_SRC)
 # The count is only printed once it is ALREADY over, so it has to be probed:
 # drop N throwaway file-scope (:test) functions into source/, compile for
 # fenix6 --unit-test, and read N back out of the reported total. Measured that
-# way, and both figures are of the whole repository, not of one file:
+# way, and both figures are of the whole repository, not of one file. The two
+# lines below are the machine-readable form scripts/check_ceiling_notes.py
+# checks -- its arithmetic, and that source/FootStateTest.mc's copies of them
+# are identical, so the two records can no longer drift apart:
 #
-#     2b23b03 (main, before this work)   252 of 253   -- ONE slot
-#     this branch, FootStateTest moved   238 of 253   -- fourteen freed
+#     CEILING 2b23b03 fenix6-family: 252 used of 253, 1 free -- the 1st file-scope (:test) added reds
+#     CEILING post-move fenix6-family: 238 used of 253, 15 free -- the 16th file-scope (:test) added reds
+#
+# (`2b23b03` is main before this work; `post-move` is this branch with
+# FootStateTest inside `module Foot`.)
 #
 # At 252 the next (:test) added anywhere at file scope red the required
 # compile-unit-test check on four devices with an error naming neither the test

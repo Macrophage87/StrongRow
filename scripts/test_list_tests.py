@@ -30,12 +30,27 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "list_tests.py")
 
-CASES = []
+# When set, invoke() runs THIS script instead of the real one. Only the mutant
+# runner at the foot of this file sets it, and only around a replay of CASES;
+# it is restored in a finally so a mutant that raises cannot leak into the
+# cases that follow.
+_SCRIPT_OVERRIDE = None
+
+CASES = []           # the corpus: one behaviour of the extractor per case
+DIFFERENTIALS = []   # what each mutant reds -- these REPLAY the corpus, so
+                     # they must never be part of it (that would recurse)
 
 
 def case(name):
     def deco(fn):
         CASES.append((name, fn))
+        return fn
+    return deco
+
+
+def differential(name):
+    def deco(fn):
+        DIFFERENTIALS.append((name, fn))
         return fn
     return deco
 
@@ -47,7 +62,7 @@ def invoke(root=None, where=False, cwd=None):
     The timeout is load-bearing, not hygiene: two of this suite's guards fail
     by HANGING when deleted (a directory-symlink cycle under followlinks, a
     FIFO reaching open()), and a suite that hangs reports nothing."""
-    cmd = [sys.executable, SCRIPT]
+    cmd = [sys.executable, _SCRIPT_OVERRIDE or SCRIPT]
     if root is not None:
         cmd += ["--root", root]
     if where:
@@ -381,9 +396,117 @@ def _():
     return run_extractor({"A.mc": src}), (0, ["test_notInAModule"])
 
 
+# ------------------------------------------------------------- differentials --
+# EXECUTED, not described. A one-edit mutant is applied to a COPY of the real
+# list_tests.py, the whole corpus above is replayed against that copy, and the
+# case names that flip from green to red are compared against a pinned set.
+#
+# This exists because a mutant's blast radius written as prose goes stale and
+# cannot be checked: the previous version of this section claimed the raw-text
+# mutant red "the three text-only cases while every other case in this file
+# stays green", and the true figure is eight. A maintainer who re-ran it saw
+# five reds the comment did not predict and no way to tell a documented
+# consequence from a regression they had just caused.
+#
+# WHY A NAME SET AND NOT A PASS FRACTION. "23/32" is not portable: the symlink
+# case needs a privilege Windows withholds from an unelevated shell (#113), so
+# it is red on a Windows checkout and green on CI, and every fraction derived
+# from the run shifts by one. The flip SET is stable because a case red under
+# both the real script and the mutant is not attributed to the mutant.
+
+
+def _replay(script_path):
+    """Verdict per corpus case ({name: passed}) with invoke() pointed at
+    script_path (None = the real script)."""
+    global _SCRIPT_OVERRIDE
+    saved = _SCRIPT_OVERRIDE
+    _SCRIPT_OVERRIDE = script_path
+    try:
+        verdicts = {}
+        for name, fn in CASES:
+            try:
+                got, want = fn()
+                verdicts[name] = (got == want)
+            except Exception:                 # a raise (or a timeout) is a fail
+                verdicts[name] = False
+        return verdicts
+    finally:
+        _SCRIPT_OVERRIDE = saved
+
+
+_REAL_VERDICTS = None
+
+
+def _real_verdicts():
+    global _REAL_VERDICTS
+    if _REAL_VERDICTS is None:
+        _REAL_VERDICTS = _replay(None)
+    return _REAL_VERDICTS
+
+
+def flipped_by(old, new):
+    """Sorted names of corpus cases that PASS against the real extractor and
+    FAIL against a copy of it with `old` replaced by `new`.
+
+    The single-occurrence assertion is the load-bearing part: if a later
+    refactor moves or reshapes the seam, this raises instead of silently
+    measuring a mutant that was never applied."""
+    with open(SCRIPT, "r", encoding="utf-8") as fh:
+        src = fh.read()
+    hits = src.count(old)
+    if hits != 1:
+        raise AssertionError(
+            "mutant seam %r occurs %d times in list_tests.py, expected exactly 1"
+            % (old, hits))
+    real = _real_verdicts()
+    with tempfile.TemporaryDirectory() as td:
+        mutant = os.path.join(td, "list_tests.py")
+        with open(mutant, "w", encoding="utf-8") as fh:
+            fh.write(src.replace(old, new))
+        mutated = _replay(mutant)
+    return sorted(n for n, ok in mutated.items() if real.get(n) and not ok)
+
+
+@differential("M5 raw-text walk reds exactly the three text-only pins")
+def _():
+    # The claim as scripts/test_list_tests.py ships it today, made executable:
+    # "point the walk at the raw text and the three text-only cases red while
+    # every other case in this file stays green."
+    return flipped_by("stripped = strip_comments(raw)",
+                      "stripped = raw"), [
+        "a module keyword inside a block comment opens no scope",
+        "a module keyword inside a line comment opens no scope",
+        "a module keyword inside a string literal opens no scope",
+    ]
+
+
+@differential("M6b capping the module path at two levels reds exactly the depth pin")
+def _():
+    # The differential that makes "three module levels qualify with the whole
+    # path" load-bearing. It is NOT in M5's flip set -- that pin comes from the
+    # brace stack in qualified_decls, not from strip_comments -- so without
+    # this mutant the depth pin looks redundant with the two-level case.
+    return flipped_by("path = [s for s in stack if s is not None]",
+                      "path = [s for s in stack if s is not None][:2]"), [
+        "three module levels qualify with the whole path",
+    ]
+
+
+@differential("M8 an extra pop on close reds exactly the two brace-stack pins")
+def _():
+    # Popping one frame too many on `}`. The single-module and nesting cases
+    # stay green (they close at end of file, where over-popping is invisible);
+    # only the two cases that keep declaring AFTER a close can see it.
+    pop = "            if stack:\n                stack.pop()"
+    return flipped_by(pop, pop + "\n" + pop), [
+        "an inner module closes back to the outer one, not to file scope",
+        "braces that are not scopes do not disturb qualification",
+    ]
+
+
 def main():
     failures = 0
-    for name, fn in CASES:
+    for name, fn in CASES + DIFFERENTIALS:
         try:
             got, want = fn()
             ok = got == want
@@ -395,9 +518,10 @@ def main():
         print("%-4s %s" % ("OK" if ok else "FAIL", name))
         if not ok:
             failures += 1
-            print("      ! expected (rc, lines) = %r" % (want,))
-            print("      !      got (rc, lines) = %r" % (got,))
-    print("\n%d/%d extractor tests passed." % (len(CASES) - failures, len(CASES)))
+            print("      ! expected = %r" % (want,))
+            print("      !      got = %r" % (got,))
+    total = len(CASES) + len(DIFFERENTIALS)
+    print("\n%d/%d extractor tests passed." % (total - failures, total))
     return 1 if failures else 0
 
 
