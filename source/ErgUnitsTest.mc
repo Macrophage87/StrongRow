@@ -1067,33 +1067,47 @@ class ErgTimer {
     return true;
 }
 
-// THE INTERVAL WORK IS INTEGRATED FROM THE TICKS, AND ONLY FROM THE WORK
-// TICKS.
+// THE INTERVAL WORK IS INTEGRATED FROM THE TICKS, AND ONLY FROM THE TICKS OF
+// THE INTERVAL IT DESCRIBES.
 //
-// Four legs on one accumulator, in the order the shipping code meets them:
-//   1. ticks OUTSIDE any interval (mSetNum == 0) -- must contribute nothing,
-//      which is what excludes rest and gate samples for the same reason
-//      mSetHrSum excludes them;
-//   2. the interval opens (the real beginWorkAccum), which must CLEAR whatever
-//      leg 1 left;
-//   3. PAUSED ticks -- must contribute nothing;
-//   4. live ticks -- 40 at 100 W is 1000 J.
+// TWO intervals, because ONE cannot tell the difference. An earlier shape of
+// this case drove pre-interval ticks, paused ticks and live ticks into a single
+// interval and asserted the total -- and MUTATION TESTING SHOWED IT PINNED
+// NOTHING ABOUT THE RESET: deleting both reset lines from beginWorkAccum left
+// all 308 cases green, because the pre-interval ticks were already stopped by
+// the `mSetNum > 0` gate, so there was never anything for the reset to clear.
+// The two guards masked each other and the case was credited with coverage it
+// did not have. That is the exact failure `test_dps_brokenTrackSegmentsAreDrawable`
+// records one file over, reached from a new direction.
+//
+// A SECOND INTERVAL IS WHAT SEPARATES THEM, and it is powerless on purpose so
+// that BOTH halves of the reset are differentiated: without the joules reset it
+// latches the first interval's 1000 J, and without the flag reset it latches
+// the first interval's claim that a measurement was taken -- which would render
+// 1.0 kJ for an interval rowed with no power meter at all.
+//
+// WHAT IS STILL NOT DIFFERENTIATED, stated rather than implied: the
+// `mSetNum > 0` gate itself. Given that beginWorkAccum resets, no reachable
+// state distinguishes gating from not gating -- anything a rest tick adds is
+// cleared before the next interval reads it. The gate is redundant defence that
+// mirrors mSetHrSum's, it is documented as such at the call site, and no case
+// here claims to pin it.
 (:test) function test_erg_c2_onlyWorkTicksReachTheIntervalAccumulator(logger) {
     var p = EgCase.onErg();
     p.enterStepLive(p.kindWork(), false);
     p.setPower(1000.0);
-    for (var i = 0; i < 20; i++) { p.runTick(); }      // leg 1: no interval open
+    for (var i = 0; i < 20; i++) { p.runTick(); }      // no interval open
 
-    p.beginWork(1);                                     // leg 2: the real entry
-    p.enterStepLive(p.kindWork(), true);                // leg 3: paused
+    p.beginWork(1);                                     // the real entry
+    p.enterStepLive(p.kindWork(), true);                // PAUSED ticks
     for (var i = 0; i < 20; i++) { p.runTick(); }
 
-    p.enterStepLive(p.kindWork(), false);               // leg 4: live
+    p.enterStepLive(p.kindWork(), false);               // live ticks
     p.setPower(100.0);
     for (var i = 0; i < 40; i++) { p.runTick(); }
 
     if (!p.latchSet(1, 10.0, 30.0, 3, 1230, 10)) {
-        logger.error("the latch did not take");
+        logger.error("the first latch did not take");
         return false;
     }
     var j = p.lastWorkJ();
@@ -1101,8 +1115,32 @@ class ErgTimer {
     if (j == null || (j - 1000.0).abs() > 0.001) {
         logger.error("only the 40 live work ticks at 100 W may reach the " +
                      "interval accumulator, i.e. 1000 J. Got " + j +
-                     " -- 6000 J would mean the pre-interval ticks were " +
-                     "counted, 6000 more that the paused ticks were");
+                     " -- 6000 J would mean the paused ticks were counted");
+        return false;
+    }
+
+    // THE SECOND INTERVAL, and it measured nothing.
+    p.beginWork(2);
+    p.enterStepLive(p.kindWork(), false);
+    p.setPower(null);
+    for (var i = 0; i < 40; i++) { p.runTick(); }
+    if (!p.latchSet(2, 10.0, 30.0, 3, 1230, 10)) {
+        logger.error("the second latch did not take");
+        return false;
+    }
+    if (p.lastWorkEver() != false) {
+        logger.error("the second interval measured NO power, so its 'ever " +
+                     "measured' flag must be false. It is " + p.lastWorkEver() +
+                     " -- the first interval's claim survived the interval " +
+                     "boundary, and the grid would render 1.0 kJ for an " +
+                     "interval rowed with no power meter");
+        return false;
+    }
+    var j2 = p.lastWorkJ();
+    if (j2 == null || j2 != 0.0) {
+        logger.error("the second interval's work must start from zero; it " +
+                     "latched " + j2 + " -- 1000.0 would mean the first " +
+                     "interval's joules survived the boundary");
         return false;
     }
     return true;
