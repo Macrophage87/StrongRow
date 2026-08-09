@@ -849,13 +849,19 @@ class ErgTimer {
 // same two-source rule dpsForArc states for distance (live during WORK, the
 // latched interval average during REST).
 //
-// 120 W for 40 ticks of 250 ms is 1200 J; over 60 strokes that is 20 J/stroke,
-// which against a 20 J benchmark is 100%. The numbers are small because 40
-// ticks is 10 seconds; the arithmetic is the subject, not the realism.
+// THE INTERVAL IS INTERNALLY CONSISTENT, which is not decoration: 40 ticks of
+// 250 ms is 10 seconds, and 10 seconds at the probe's 18.0 spm is 3 strokes. So
+// 120 W over that interval is 1200 J and 400 J/stroke -- which is the shipped
+// default benchmark, so the REST arc must read 100%.
+//
+// An earlier version of this case used a 20 J benchmark and 60 strokes, and it
+// red at 40% for its own reason: setJouleBench clamps to JOULE_BENCH_MIN
+// (50.0), so the case was asserting against a benchmark loadSettings would have
+// refused. Recorded rather than quietly corrected -- the clamp did its job and
+// the case was wrong.
 (:test) function test_erg_c2_theRestArcReadsTheIntervalThatJustEnded(logger) {
     var p = EgCase.onErg();
-    p.setJouleBench(20.0);
-    var r = EgCase.ergInterval(p, 120.0, 40, 240.0, 900.0, 60);
+    var r = EgCase.ergInterval(p, 120.0, 40, 10.0, 30.0, 3);
     if (!r[0]) {
         logger.error("the latch did not take; the assertions below would be " +
                      "vacuous");
@@ -863,8 +869,9 @@ class ErgTimer {
     }
     var pct = p.arcPctFor(p.kindRest(), 4.0);
     if (pct == null || (pct - 100.0).abs() > 0.01) {
-        logger.error("1200 J over 60 strokes is 20 J/stroke, which against a " +
-                     "20 J benchmark is 100%; the REST arc read " + pct);
+        logger.error("1200 J over 3 strokes is 400 J/stroke, which IS the " +
+                     "shipped benchmark, so the REST arc must read 100%; it " +
+                     "read " + pct);
         return false;
     }
     return true;
@@ -925,12 +932,13 @@ class ErgTimer {
 
 // THE GRID'S VALUES, against hand-computed numbers, through the shipping tick.
 //
-// 120 W for 40 ticks of 250 ms is 1200 J = 1.2 kJ, and over 60 strokes that is
-// 20 J/stroke. Asserted as EXACT rendered strings, because a "contains" check
-// would match a substring of a neighbouring cell.
+// The same internally consistent interval the REST-arc case uses: 40 ticks of
+// 250 ms is 10 s, which at 18.0 spm is 3 strokes, and 120 W over it is 1200 J
+// = 1.2 kJ and 400 J/stroke. Asserted as EXACT rendered strings, because a
+// "contains" check would match a substring of a neighbouring cell.
 (:test) function test_erg_c2_theGridValuesAreTheIntervalsOwnWork(logger) {
     var p = EgCase.onErg();
-    var r = EgCase.ergInterval(p, 120.0, 40, 240.0, 900.0, 60);
+    var r = EgCase.ergInterval(p, 120.0, 40, 10.0, 30.0, 3);
     if (!r[0]) { logger.error("the latch did not take"); return false; }
     var geo = r[1];
     if (!EgCase.drewExact(geo, "1.2")) {
@@ -938,9 +946,9 @@ class ErgTimer {
                      "so the accumulated cell must render '1.2' kJ");
         return false;
     }
-    if (!EgCase.drewExact(geo, "20")) {
-        logger.error("1200 J over 60 strokes is 20 J/stroke, so the " +
-                     "per-stroke cell must render '20'");
+    if (!EgCase.drewExact(geo, "400")) {
+        logger.error("1200 J over 3 strokes is 400 J/stroke, so the " +
+                     "per-stroke cell must render '400'");
         return false;
     }
     // The latched pair, read back through the shipping accumulator rather than
@@ -968,7 +976,7 @@ class ErgTimer {
 // zero forms they would take are asserted absent by name.
 (:test) function test_erg_c2_aPowerlessIntervalRendersDashesNotZeroes(logger) {
     var p = EgCase.onErg();
-    var r = EgCase.ergInterval(p, null, 40, 240.0, 900.0, 60);
+    var r = EgCase.ergInterval(p, null, 40, 10.0, 30.0, 3);
     if (!r[0]) { logger.error("the latch did not take"); return false; }
     var geo = r[1];
     if (p.lastWorkEver() != false) {
@@ -1084,7 +1092,7 @@ class ErgTimer {
     p.setPower(100.0);
     for (var i = 0; i < 40; i++) { p.runTick(); }
 
-    if (!p.latchSet(1, 240.0, 900.0, 60, 1230, 10)) {
+    if (!p.latchSet(1, 10.0, 30.0, 3, 1230, 10)) {
         logger.error("the latch did not take");
         return false;
     }
