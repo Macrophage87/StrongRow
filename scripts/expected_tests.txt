@@ -108,6 +108,16 @@ test_hr_wholeTrackIsTheWholeSweep
 test_hr_sweepIsSymmetricAboutNineOclock
 test_hr_oneDrawnDegreeIsAtMostTwoBpm
 
+# source/ErgUnitsTest.mc -- inside `module Erg`, so the names carry the module:
+# the simulator prints `Erg.test_erg_...` for a (:test) declared inside a module
+# block, and this pin has to carry the name the RUNNER prints. The module exists
+# to spend ONE fenix6 globals member instead of one per test; the measurement is
+# the CEILING note at the top of that file.
+Erg.test_erg_c0_theRestGridIsLabelledInMetres
+Erg.test_erg_c0_thePaceLineIsLabelledInMetres
+Erg.test_erg_c0_theArcTreatsAbsenceAsItsOwnKind
+Erg.test_erg_c0_theTickPeriodIsTwoHundredAndFiftyMs
+
 # source/DpsArcTest.mc
 test_dps_noStateIsEverBlue
 test_dps_theFourStatesAreDistinct
