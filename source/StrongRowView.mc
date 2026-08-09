@@ -428,6 +428,166 @@ const DPSZ_OVER  = 3;   // > 125%    -- a reward tier, not a warning
 const DPS_FAR_PCT  = 85;
 const DPS_OVER_PCT = 125;
 
+// ============ ERG MODE: work and power units ================================
+// Module (global) scope for the reason every block above gives: a Monkey C
+// class `const` is an INSTANCE member, unreachable from a static method, and
+// every decision this feature makes is a pure static so a (:test) can reach it
+// with plain numbers instead of through a built view and an event loop.
+//
+// THE TICK PERIOD, in milliseconds. It was a literal at exactly one call site
+// (onLayout's t.start) and is now named, because this feature adds a
+// TIME-INTEGRATED quantity -- work, the integral of power over time -- and an
+// integrator keyed on a period the timer does not actually run at is wrong by
+// exactly that ratio with nothing on screen to say so. Named here so the timer
+// and the integrator read the same number by construction.
+//
+// mCorrAccum's own `/ 240.0` at onTick is NOT rewritten in terms of this. That
+// divisor is 60 * 1000 / 250 for a quantity in strokes per minute, so the
+// substitution is not a rename, and rewriting a shipped accumulator was not in
+// this change's scope. Named as a known duplication rather than left to be
+// discovered.
+const TICK_MS = 250;
+
+// THE JOULES-PER-STROKE BENCHMARK the right-edge arc is read against in erg
+// mode -- the exact analogue of dpsBenchmark, and clamped IN CODE for exactly
+// the reason mDpsBench is: #21 is the defect of a range declared in
+// settings.xml and enforced nowhere, and Connect IQ Properties survive an app
+// update while a .set file is not re-clamped on load.
+//
+// THE DEFAULT IS NOT MEASURED AND IS NOT PRESENTED AS IF IT WERE. No power
+// figure exists anywhere in this repository, so any watts number chosen here is
+// an invention; what follows is the derivation of the invention, so the next
+// reader can disagree with the premise rather than with a bare number.
+//
+//   * the app's OWN shipping defaults are a 16-18 spm target band (midpoint
+//     17 spm) and a 116-130 bpm heart-rate band, i.e. aerobic durability work;
+//   * work per stroke = watts * 60 / rate, so 400 J/stroke at 17 spm is
+//     113 W -- an ordinary recreational aerobic output, consistent with that
+//     heart-rate band;
+//   * the arc spans 60-140% of benchmark, so the default covers 240-560
+//     J/stroke, and a reading outside that CLAMPS VISIBLY (dpsIsClamped) rather
+//     than silently.
+//
+// NOTE the erg and the water are not on the same scale and this constant must
+// never be derived from dpsBenchmark. 6.0 m/stroke at 17 spm is 1.70 m/s, which
+// on a Concept2's published pace-power relation (P = 2.80 / pace^3, pace in
+// s/m) is 13.8 W -- absurd for an erg, and perfectly ordinary for a boat. The
+// two figures describe different machines, which is the whole reason the
+// maintainer asked for a unit switch instead of a relabel.
+//
+// EXPECTED TO BE SET PER ATHLETE AND PER MACHINE after the first instrumented
+// session, exactly as the note on the heart-rate band says of its own defaults.
+const JOULE_BENCH_DEF = 400.0;
+// The clamp band. 50 J/stroke is below any rate/power pair a rowing machine
+// produces while someone is on it (50 W at 40 spm is 75 J/stroke); 2000
+// J/stroke is above any human (400 W at 12 spm is 2000 J/stroke, and 400 W
+// sustained is elite). Wide enough that no real configuration hits either end,
+// narrow enough that a corrupted property cannot put the benchmark somewhere
+// the arc becomes meaningless.
+const JOULE_BENCH_MIN = 50.0;
+const JOULE_BENCH_MAX = 2000.0;
+
+// ---- the erg FIT encodings -------------------------------------------------
+// RECORD-SCOPE FIELDS LATCH. Once setData has been called even once, a record
+// committing without a new setData RE-EMITS the last value (#36, byte level,
+// fr965 / SDK 9.2.0; reconfirmed by #48's probe_skip). So WITHHOLDING A WRITE
+// DOES NOT PRODUCE A GAP -- on these fields it would fabricate a power reading
+// that was not taken, which is the exact opposite of what they are for. All
+// three record-scope erg fields are therefore written on EVERY tick under the
+// mStarted && !mPaused gate, and "no power source" gets an ENCODING instead of
+// a silence.
+//
+// THE DISCRIMINATING QUESTION, asked separately for each field rather than
+// inherited, is the one the #149 block states: IS THERE A STATE IN WHICH THE
+// QUANTITY IS LEGITIMATELY 0.0 AND THAT STATE IS NOT THE NOTHING STATE?
+//
+//   erg_power   YES. ZERO WATTS IS A LEGAL READING ON AN ERG -- between
+//               strokes, on the recovery, or with the athlete sitting at the
+//               catch. So 0.0 cannot also mean "no power source", and a
+//               sentinel is required. -1.0 because power is non-negative by
+//               construction, so a negative value cannot collide with a
+//               reading. This is lock_confidence's argument, not
+//               lock_rate's.
+//
+//   erg_jps     YES, and for the same reason one step downstream: 0 W at a real
+//               stroke rate is 0.0 J/stroke, an ordinary reading. Same
+//               sentinel, same argument.
+//
+// WHAT THIS ARGUMENT DOES NOT COVER, stated so it is not read as more than it
+// is. Every sentence above is about the app's own arithmetic. Whether a decoder
+// RENDERS a record-scope float32 -1.0 as the number -1 -- rather than folding
+// it into something else -- is unmeasured here, and #53 already records that
+// Connect's rendering of an unusual float32 pattern is untested. Do not restate
+// any of this as a fact about a file until a [Local] decode has run.
+const ERG_POWER_NONE = -1.0;
+const ERG_JPS_NONE   = -1.0;
+
+// ---- the erg INSTRUMENTATION bitfield --------------------------------------
+// THE POINT OF THE FIRST SESSION. The whole feature rests on an assumption
+// nobody has measured: that Activity.Info.currentPower is populated for a
+// Connect IQ WATCH APP when a rowing machine is paired. These bits are what let
+// ONE session settle it -- and settle the three questions that immediately
+// follow from it -- without a second trip:
+//
+//   * was currentPower non-null, and was it ever positive;
+//   * do currentSpeed and elapsedDistance populate FROM THE MACHINE? They may,
+//     if it broadcasts as fitness equipment, and if they do then the
+//     distance-based figures still work on an erg and this feature's premise
+//     changes;
+//   * does currentCadence populate from the machine rather than from the wrist?
+//
+// This mirrors what ct_diag does for the CORE pod and what #149's lock fields
+// did for the stroke detector: both turned an argument into a measurement.
+//
+// ONE UINT16 rather than eight scalar fields, for ct_diag's reason -- it costs
+// one developer field id and one field_description instead of eight, and every
+// slot stays an ordinary readable integer.
+//
+// THE ALIVE BIT IS ALWAYS SET, and it is not decoration. It does two things at
+// once, and both are about telling a written value from an unwritten one:
+//   * a written value can never be 0x0000, so "everything absent" (the answer
+//     this field exists to be able to give) is 0x8000 and is unmistakably a
+//     RECORDED answer rather than a blank;
+//   * bits 0x0400..0x4000 are RESERVED ZERO, so the largest value this code can
+//     ever write is 0x83FF -- which means a written value can never be 0xFFFF,
+//     the UINT16 never-set invalid pattern (the same fact RR_INVALID records).
+// Widening the bit set past 0x0200 must therefore stop short of 0x0400 or
+// re-make this argument.
+const ERGD_ALIVE   = 0x8000;   // always set; see above
+const ERGD_PWR_OK  = 0x0001;   // Activity.Info.currentPower was non-null
+const ERGD_PWR_POS = 0x0002;   // ... and greater than zero
+const ERGD_SPD_OK  = 0x0004;   // currentSpeed was non-null
+const ERGD_SPD_POS = 0x0008;
+const ERGD_DST_OK  = 0x0010;   // elapsedDistance was non-null
+const ERGD_DST_POS = 0x0020;
+const ERGD_CAD_OK  = 0x0040;   // currentCadence was non-null
+const ERGD_CAD_POS = 0x0080;
+const ERGD_ERGMODE = 0x0100;   // the ergMode setting was ON for this record
+const ERGD_WORKUNI = 0x0200;   // work units were SELECTED for this record
+// 0x0400 .. 0x4000 reserved zero -- see the ALIVE note above.
+const ERGD_MAX     = 0x83FF;
+
+// ---- the erg PACE ROW's display clamps -------------------------------------
+// The pace row's string is DATA-DEPENDENT and it sits at h*0.70 in FONT_XTINY,
+// a position and a font this row has shipped with on all twelve devices. What
+// changes in erg mode is the STRING, so what has to be bounded is its length.
+//
+// Both figures are clamped to four digits, which makes "9999W  9999J/str" -- 16
+// characters -- the widest string paceWorkStr can ever return, against the 20
+// characters of the "-:--/500m  12.5m/str" form it replaces.
+//
+// CHARACTERS ARE NOT PIXELS and that bound is not claimed as a clearance. No
+// (:test) that runs in CI can obtain a font metric (#121), so the pixel
+// measurement is a [Local] one; what is asserted here and pinned in
+// source/ErgUnitsTest.mc is the character bound alone.
+//
+// A CLAMP IS A LIE AT THE TOP END, deliberately accepted and stated: a machine
+// reporting more than 9999 W is broken, the FIT file carries the true value
+// through erg_power, and the alternative -- an unbounded string on a glance
+// surface -- is the failure this row cannot survive.
+const PACE_W_MAX = 9999;
+const PACE_J_MAX = 9999;
+
 const HRZ_NONE  = -1;
 const HRZ_BELOW = 0;
 const HRZ_IN    = 1;
@@ -682,6 +842,17 @@ class StrongRowView extends Ui.View {
     hidden var mDpsBench;
     hidden var mHrLo;
     hidden var mHrHi;
+    // ERG MODE. THREE settings, and the split between the first two is the
+    // maintainer's own: ergMode says the athlete is on a machine, ergPowerUnits
+    // says what to show while they are. The second defaults ON and only means
+    // anything when the first is on -- which is why the predicate that reads
+    // them is a named static (useWorkUnits) rather than an `&&` at three call
+    // sites free to disagree.
+    //
+    // ALL THREE ARE CLAMPED IN CODE, never only in settings.xml (#21).
+    hidden var mErgMode;
+    hidden var mErgPowerUnits;
+    hidden var mJouleBench;
 
     // ================= stroke detector tunables =============================
     hidden const REQ_RATE = 25;
@@ -761,6 +932,22 @@ class StrongRowView extends Ui.View {
     hidden var mSetStrokeBase;   // mStrokeCount when the interval began
     hidden var mSetHrSum;
     hidden var mSetHrN;
+    // ERG: WORK, in joules, integrated from the power samples of THIS interval.
+    //
+    // AN ACCUMULATOR, NOT A BASE-AND-DELTA, and that is forced rather than
+    // stylistic: Activity.Info exposes no cumulative work reading to take a
+    // delta of, so the only way to get interval work is to integrate the power
+    // samples. It is reset at WORK entry and read at WORK exit, which is what
+    // excludes rest-interval samples for the same reason mSetHrSum excludes
+    // them -- and it is accumulated under the SAME `mSetNum > 0` gate the
+    // heart-rate sum uses, so a rest tick never reaches it in the first place.
+    //
+    // mErgWorkEver IS THE PRESENCE TEST, never `mErgWorkJ > 0.0`. Zero joules
+    // with samples taken is an athlete who produced no work; zero joules with
+    // NO samples is an athlete with no power meter, and the two must not render
+    // the same. That distinction is the whole of #86 / #107.
+    hidden var mErgWorkJ;
+    hidden var mErgWorkEver;
 
     // The LATCH: the last completed work interval, frozen at its boundary.
     hidden var mLastSetValid;
@@ -770,6 +957,12 @@ class StrongRowView extends Ui.View {
     hidden var mLastSetStrokes;
     hidden var mLastSetHrSum;
     hidden var mLastSetHrN;
+    // ERG: the interval's work and its presence flag, latched together with the
+    // rest. BOTH, never just the number -- latching the joules alone would make
+    // "no power source" indistinguishable from "no work done" at read time,
+    // which is the trap this pair exists to close.
+    hidden var mLastSetWorkJ;
+    hidden var mLastSetWorkEver;
 
     // autocorrelation state
     hidden var mDecim;
@@ -864,6 +1057,24 @@ class StrongRowView extends Ui.View {
     // #149 part 2's gate-input diagnostics, record scope, ids 23-24.
     hidden var mFitRateRaw;
     hidden var mFitRateBase;
+    // ERG MODE's fields, ids 12-15. Three record-scope, one session-scope.
+    hidden var mFitErgPower;
+    hidden var mFitErgJps;
+    hidden var mFitErgDiag;
+    hidden var mFitErgWork;
+    // SESSION-scope work, in joules, and its presence flag. Separate from the
+    // per-interval pair above because the two have different lifetimes: the
+    // interval accumulator is reset at every WORK entry, this one at every
+    // START, and only this one survives a rest.
+    //
+    // Reset in startSession() alongside mCorrAccum rather than in
+    // beginSessionAccum(), and that placement is load-bearing rather than
+    // arbitrary: beginSessionAccum is called from startWorkout only, so the
+    // FREE-ROW path (onPrimary with mWorkoutEnabled false) never reaches it,
+    // and a session accumulator reset there would carry the previous row's
+    // joules into every free row.
+    hidden var mErgSessJ;
+    hidden var mErgSessEver;
     hidden var mMaxCore;
     // #13. "Has a real reading ever been written to this record field in this
     // session?" -- one flag per field, not one for the pair, because #17 gave
@@ -925,6 +1136,12 @@ class StrongRowView extends Ui.View {
         mFitLockLow  = null;
         mFitRateRaw  = null;
         mFitRateBase = null;
+        mFitErgPower = null;
+        mFitErgJps   = null;
+        mFitErgDiag  = null;
+        mFitErgWork  = null;
+        mErgSessJ    = 0.0;
+        mErgSessEver = false;
         mMaxCore    = 0.0;
         mCoreEver   = false;      // #13
         mSkinEver   = false;      // #13
@@ -1009,6 +1226,23 @@ class StrongRowView extends Ui.View {
         mHrHi = hb[1];
         mGate = getProp("pressToContinue", true);
         mWarmCool = getProp("warmupCooldown", true);
+        // ERG MODE. CLAMPED IN CODE, all three, and that is #21's finding
+        // applied rather than restated: a range declared in settings.xml is
+        // enforced by the Garmin Connect UI and by nothing else. Connect IQ
+        // Properties survive an app update and a sideloaded .set file is not
+        // re-clamped on load, so a value this code refuses to accept is the
+        // only kind that cannot arrive.
+        //
+        // THE TWO BOOLEANS GO THROUGH ergFlag, which is not defensive noise.
+        // useWorkUnits evaluates `a && b`, and Monkey C's `&&` on a
+        // non-Boolean is not a safe operation -- a property corrupted to a
+        // Number would take the display path down at 4 Hz. ergFlag makes both
+        // members Booleans by construction, so the predicate is total.
+        mErgMode       = ergFlag(getProp("ergMode", false), false);
+        mErgPowerUnits = ergFlag(getProp("ergPowerUnits", true), true);
+        mJouleBench = getProp("jouleBenchmark", $.JOULE_BENCH_DEF).toFloat();
+        if (mJouleBench < $.JOULE_BENCH_MIN) { mJouleBench = $.JOULE_BENCH_MIN; }
+        if (mJouleBench > $.JOULE_BENCH_MAX) { mJouleBench = $.JOULE_BENCH_MAX; }
     }
 
     // reload from Garmin Connect settings (only when not mid-session)
@@ -1161,7 +1395,11 @@ class StrongRowView extends Ui.View {
         if (mCoreSensor == null) { mCoreSensor = makeCoreSensor(); }
         if (mTimer == null) {
             var t = makeTimer();
-            t.start(method(:onTick), 250, true);
+            // $.TICK_MS, not a literal 250: this period is now the divisor of a
+            // time-integrated quantity (erg work), and the timer and the
+            // integrator must read the same number by construction rather than
+            // by two people remembering. Behaviour-identical -- TICK_MS is 250.
+            t.start(method(:onTick), $.TICK_MS, true);
             mTimer = t;
         }
     }
@@ -2317,6 +2555,236 @@ class StrongRowView extends Ui.View {
         return dist;
     }
 
+    // ============ ERG MODE: the new decisions, as pure statics =============
+    // Every one of them is a class-scope static for the reason the setAvg*
+    // family and rateColour are: the call sites need a built view, a Dc or a
+    // Session, and no (:test) can supply any of the three. A (:test) is
+    // synchronous and never yields to the event loop, so a pure seam is the
+    // only genuinely testable form.
+
+    // Pure: coerce a property to a real Boolean.
+    //
+    // NOT paranoia about types. loadSettings feeds these into `&&`, and a
+    // Connect IQ property is whatever the last writer left there -- an app
+    // update, a sideloaded .set file, or a settings schema that changed shape
+    // between versions. #21's finding is that a range declared in settings.xml
+    // is enforced nowhere else; the same is true of a declared TYPE.
+    //
+    // Anything that is not a Boolean becomes the default, rather than being
+    // coerced by truthiness: 1 and "true" are not statements about a toggle the
+    // athlete set, they are evidence the property is not what this code thinks
+    // it is, and the shipped default is the honest answer to that.
+    //
+    // AN `instanceof` TEST AND NOT A VALUE COMPARISON, and that is measured
+    // rather than stylistic. The first form of this function was
+    // `if (v == true) ... if (v == false) ... return dflt`, which reads as an
+    // exact-match test and is not one: MEASURED on SDK 9.2.0 in the CI
+    // container's fr965 simulator, `0 == false` evaluates TRUE in Monkey C, so
+    // that form silently accepted a Number 0 as a set toggle and never reached
+    // its own default. The case that caught it is
+    // Erg.test_erg_c1_aCorruptedToggleFallsBackToItsDefault, which red with
+    // "junk 0 must fall back to the TRUE default" before this line changed.
+    static function ergFlag(v, dflt) {
+        if (v instanceof Lang.Boolean) { return v; }
+        return dflt;
+    }
+
+    // Pure: are WORK/POWER units selected?
+    //
+    // THE MAINTAINER'S TWO-SETTING SHAPE, in one place. ergPowerUnits defaults
+    // ON and "only means anything when ergMode is on" -- so this is an AND, and
+    // it is a named function rather than an `&&` repeated at the arc, the pace
+    // row and the grid, because three copies of a rule are three things that
+    // can disagree after one edit.
+    static function useWorkUnits(ergMode, powerUnits) {
+        return ergFlag(ergMode, false) && ergFlag(powerUnits, false);
+    }
+
+    // Pure: joules of work in one stroke, or NULL.
+    //
+    // watts * 60 / rate: power is joules per second, 60/rate is seconds per
+    // stroke.
+    //
+    // NULL, NEVER 0.0, FOR EVERY ABSENT INPUT, and this is the single most
+    // load-bearing line of the feature. The right-edge arc maps its input
+    // through dpsPct, and dpsPct's low end renders RED -- "far below
+    // benchmark". An athlete whose watch reports no power at all would be told,
+    // in the one glance the app is designed around, to row harder. That is the
+    // #86 / #107 class with an instruction attached.
+    //
+    // A REAL ZERO IS NOT ABSENCE and is deliberately allowed through as 0.0:
+    // zero watts is a legal reading on an erg (the recovery, or sitting at the
+    // catch), and this function's job is to be faithful, not to editorialise.
+    // What the ARC does with a faithful 0.0 is dpsPct's existing decision --
+    // `<= 0.0` becomes null, so it renders as no-data grey rather than as red.
+    // That is a listed consequence, not an accident: it fails toward absence,
+    // which is the safe direction, and at zero watts with a real stroke rate
+    // there is no correction to instruct anyway.
+    //
+    // A NEGATIVE READING IS ABSENCE, not a small one. Power is non-negative by
+    // construction, so a negative value is evidence the source is not what this
+    // code thinks it is -- the same judgement ergFlag makes about a type.
+    static function joulesPerStroke(watts, rate) {
+        if (watts == null || watts < 0.0) { return null; }
+        if (rate == null || rate <= 0.0)  { return null; }
+        return watts * 60.0 / rate;
+    }
+
+    // Pure: one step of the work integrator, in joules.
+    //
+    // A MISSING SAMPLE CONTRIBUTES NOTHING AND IS NOT A ZERO SAMPLE. Adding
+    // 0.0 would be arithmetically identical here and semantically fatal one
+    // function over: it is workEverAfter, not the accumulated value, that
+    // decides whether the interval has anything to say, and an accumulator that
+    // "absorbed" null samples would still read 0.0 J with ever false. Keeping
+    // the two facts in two places is what stops a later reader deriving
+    // presence from the number.
+    //
+    // tickMs IS A PARAMETER rather than $.TICK_MS read inside, so a case can
+    // drive the arithmetic at a period of its choosing and so the call site
+    // has to name the period it believes it is running at.
+    static function workAccumStep(prevJ, watts, tickMs) {
+        if (prevJ == null) { return 0.0; }
+        if (watts == null || watts < 0.0) { return prevJ; }
+        if (tickMs == null || tickMs <= 0) { return prevJ; }
+        return prevJ + watts * tickMs / 1000.0;
+    }
+
+    // Pure: has this accumulator ever seen a real sample?
+    //
+    // LATCHES TRUE and is never lowered by a later absence -- the same shape
+    // ctTempEverAfter has, and for the same reason: the question is "did this
+    // interval carry any measurement at all", not "is the source live now".
+    static function workEverAfter(ever, watts) {
+        if (ever == true) { return true; }
+        return watts != null && watts >= 0.0;
+    }
+
+    // Pure: the interval's work in KILOJOULES, or null.
+    //
+    // `ever` IS THE SOLE PRESENCE TEST, and `joules > 0.0` is deliberately NOT
+    // one. setDistM refuses a zero distance because a zero-distance interval on
+    // the water is not a thing that happens; a zero-WORK interval is, and
+    // refusing it would render an honest 0.0 kJ identically to a missing power
+    // meter. This is setAvgBpm's shape (the count decides presence, the value
+    // may be anything) rather than setDistM's.
+    static function setWorkKJ(joules, ever) {
+        if (ever != true) { return null; }
+        if (joules == null || joules < 0.0) { return null; }
+        return joules / 1000.0;
+    }
+
+    // Pure: mean joules per stroke over a completed interval -- interval work
+    // over interval strokes.
+    //
+    // The erg analogue of setAvgDps, and NOT an average of the live
+    // joulesPerStroke: that is an instantaneous ratio of two smoothed
+    // estimators and a different quantity entirely, which is the distinction
+    // setAvgDps's own note makes.
+    static function setAvgJps(joules, strokes, ever) {
+        if (ever != true) { return null; }
+        if (strokes == null || strokes <= 0) { return null; }
+        if (joules == null || joules < 0.0)  { return null; }
+        return joules / strokes;
+    }
+
+    // Pure: the erg pace row's string.
+    //
+    // "150W  500J/str", and "--W  --J/str" when there is nothing to say. NOT a
+    // dropped term: the distance form omits its m/str term when absent, which
+    // is safe there because the /500 m split still labels the row -- here BOTH
+    // figures come from the same source, so dropping them would leave a row
+    // that says nothing about why. An explicit dash says the source is missing.
+    //
+    // CLAMPED TO FOUR DIGITS EACH, so the widest string this can return is
+    // "9999W  9999J/str" -- 16 characters, against the 20 of the form it
+    // replaces. See the PACE_W_MAX note for why a clamp is preferred to an
+    // unbounded string and what it costs.
+    static function paceWorkStr(watts, jps) {
+        return ergNum(watts, $.PACE_W_MAX) + "W  " +
+               ergNum(jps, $.PACE_J_MAX) + "J/str";
+    }
+
+    // Pure: a whole-number figure for a glance surface, or "--".
+    //
+    // Rounds rather than truncates (%d on 149.9 renders 149) and clamps at
+    // `cap`. Shared by both halves of paceWorkStr so the two cannot diverge on
+    // what absence looks like.
+    static function ergNum(v, cap) {
+        if (v == null || v < 0.0) { return "--"; }
+        var n = (v + 0.5).toNumber();
+        if (n > cap) { n = cap; }
+        return n.format("%d");
+    }
+
+    // Pure: which FIT sub-sport this row should declare.
+    //
+    // SUB_SPORT_INDOOR_ROWING exists at API level 3.2.0, which is the manifest's
+    // own minApiLevel, and is confirmed present in SDK 9.2.0's symbol table.
+    //
+    // SCOPE, stated because it is exactly the overreach this repository keeps
+    // making: this function decides the VALUE. That startSession passes the
+    // value to Rec.createSession, and that a decoder then renders the row as
+    // indoor rowing, are two further claims -- the first is covered by review
+    // (no (:test) can obtain a Session) and the second by a [Local] decode.
+    static function subSportFor(ergMode) {
+        if (ergFlag(ergMode, false)) { return Activity.SUB_SPORT_INDOOR_ROWING; }
+        return Activity.SUB_SPORT_GENERIC;
+    }
+
+    // ---- the erg FIT encodings, one static per field ----------------------
+    // Same shape as #149's lockRateOf / lockConf / lockLowClamp, and for the
+    // same reason: what a field CARRIES becomes a reviewable decision with a
+    // name, and the no-data encodings can be pinned without a Session -- which
+    // no (:test) in this repository can obtain.
+
+    // Pure: the watts to record, or ERG_POWER_NONE when there was no reading.
+    // Zero watts is a LEGAL reading on an erg, so the sentinel has to be
+    // negative; see the ERG_POWER_NONE block at the top of this file.
+    static function ergPowerOf(watts) {
+        if (watts == null || watts < 0.0) { return $.ERG_POWER_NONE; }
+        return watts * 1.0;
+    }
+
+    // Pure: the joules per stroke to record, or ERG_JPS_NONE. Takes the value
+    // joulesPerStroke already computed, so the field and the screen cannot
+    // disagree about what the number was.
+    static function ergJpsOf(jps) {
+        if (jps == null || jps < 0.0) { return $.ERG_JPS_NONE; }
+        return jps * 1.0;
+    }
+
+    // Pure: one bit if a nullable reading was present, another if it was
+    // positive. Two bits rather than one because "the field exists but reads
+    // zero" and "the field is not populated" are exactly the two states this
+    // instrumentation was built to tell apart.
+    static function ergDiagFlag(v, okBit, posBit) {
+        if (v == null) { return 0; }
+        return okBit | ((v > 0) ? posBit : 0);
+    }
+
+    // Pure: the instrumentation word for one tick.
+    //
+    // `s` is [power, speed, distance, cadence] with NULLS PRESERVED -- which is
+    // why ergSample() exists at all rather than this reading currentSpeed() and
+    // friends, all of which collapse null to 0.0 and would make the field
+    // unable to answer its own question.
+    //
+    // ALIVE is set unconditionally: see the ERGD_ALIVE note for why a written
+    // value must never be 0x0000 and must never be 0xFFFF.
+    static function ergDiagBits(s, ergMode, workUnits) {
+        var b = $.ERGD_ALIVE;
+        if (s != null && s.size() >= 4) {
+            b |= ergDiagFlag(s[0], $.ERGD_PWR_OK, $.ERGD_PWR_POS);
+            b |= ergDiagFlag(s[1], $.ERGD_SPD_OK, $.ERGD_SPD_POS);
+            b |= ergDiagFlag(s[2], $.ERGD_DST_OK, $.ERGD_DST_POS);
+            b |= ergDiagFlag(s[3], $.ERGD_CAD_OK, $.ERGD_CAD_POS);
+        }
+        if (ergFlag(ergMode, false))   { b |= $.ERGD_ERGMODE; }
+        if (ergFlag(workUnits, false)) { b |= $.ERGD_WORKUNI; }
+        return b;
+    }
+
     // Pure: which of the five footer states is showing (#74).
     //
     // WHERE THE GUARANTEE ACTUALLY LIVES, stated precisely because the obvious
@@ -2533,6 +3001,23 @@ class StrongRowView extends Ui.View {
         var live = distPerStroke(spd);
         if (live <= 0.0) { return null; }
         return live;
+    }
+
+    // The PERCENTAGE the right-edge arc is drawn from, or null.
+    //
+    // Extracted from onUpdate so the arc's whole input -- the value AND the
+    // benchmark it is read against -- is one named decision a (:test) can
+    // reach. onUpdate cannot be reached with a chosen unit system and then
+    // interrogated about what it passed to drawDpsArc; this can.
+    //
+    // The GEOMETRY is deliberately untouched by any of this. dpsPct normalises
+    // to a percentage of whatever benchmark it is given, so switching units
+    // switches the numerator and the denominator together and every angle,
+    // sweep, zone boundary and colour downstream is the shipped one. Re-deriving
+    // the geometry for a second unit system is exactly what the #123 comment
+    // block warns against at length.
+    hidden function arcPct(type, spd) {
+        return dpsPct(dpsForArc(type, spd), mDpsBench);
     }
 
     // ============ #123: the distance-per-stroke arc, as pure decisions =====
@@ -3478,6 +3963,49 @@ class StrongRowView extends Ui.View {
         var r = outputRate();
         if (spd > 0.3 && r > 0.0) { return spd * 60.0 / r; }
         return 0.0;
+    }
+
+    // ================= erg: the power source ===============================
+
+    // The machine's instantaneous power in watts, or NULL.
+    //
+    // NULL, and that is the one thing separating this reader from its three
+    // neighbours. currentSpeed(), elapsedDist() and nativeCadence() all collapse
+    // an absent reading to 0.0, which is safe for each of them because a zero
+    // there is either harmless at the call site or out of band. It is NOT safe
+    // here: zero watts is a LEGAL reading on an erg, so a 0.0 return would make
+    // "no power meter" and "on the recovery" the same answer -- and the arc
+    // would render the first of them RED.
+    //
+    // So the null is propagated all the way to the display and to the FIT
+    // encoding, and every consumer has to decide what to do with it.
+    hidden function currentPower() {
+        var ai = Activity.getActivityInfo();
+        if (ai != null && ai.currentPower != null) {
+            return ai.currentPower.toFloat();
+        }
+        return null;
+    }
+
+    // The INSTRUMENTATION read: [power, speed, distance, cadence] from ONE
+    // Activity.Info, WITH NULLS PRESERVED.
+    //
+    // A separate reader rather than four calls to the existing three, because
+    // those three answer 0.0 for absent -- so a diagnostic built on them could
+    // never distinguish "the machine broadcasts a speed of zero" from "the
+    // machine broadcasts no speed at all", which is precisely the question the
+    // first erg session has to settle.
+    //
+    // ONE Activity.Info for all four, so the four bits describe the same
+    // instant. currentPower() above takes its own read, so the recorded power
+    // VALUE and the recorded power BIT can in principle come from two reads a
+    // few microseconds apart; at a 250 ms tick that is accepted and is stated
+    // here rather than left to be discovered.
+    hidden function ergSample() {
+        var ai = Activity.getActivityInfo();
+        if (ai == null) { return [null, null, null, null]; }
+        return [ai.currentPower, ai.currentSpeed, ai.elapsedDistance,
+                ai.currentCadence];
     }
 
     // the watch's own cadence, which counts every blade movement
@@ -5155,7 +5683,7 @@ class StrongRowView extends Ui.View {
             // a throw in one arc must not cost the other, and neither may cost
             // the stroke rate or the countdown above them.
             try {
-                drawDpsArc(dc, w, h, dpsPct(dpsForArc(type, spd), mDpsBench));
+                drawDpsArc(dc, w, h, arcPct(type, spd));
             } catch (e) {
             }
         }
