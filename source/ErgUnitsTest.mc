@@ -112,6 +112,83 @@ class EgCase {
         p.driveStrokes();
         return p;
     }
+
+    // The same, already in erg mode with work units selected and the shipped
+    // default benchmark.
+    static function onErg() {
+        var p = rowing();
+        p.setErgMode(true);
+        p.setErgUnits(true);
+        p.setJouleBench($.JOULE_BENCH_DEF);
+        return p;
+    }
+
+    // Did any string this render drew EQUAL `s`? Used for cell VALUES, where
+    // "contains" would match a substring of a neighbouring number and a dash
+    // check would match any dash on the screen.
+    static function drewExact(geo, s) { return countExact(geo, s) > 0; }
+
+    static function countExact(geo, s) {
+        var n = 0;
+        for (var i = 0; i < geo.texts.size(); i++) {
+            if (geo.texts[i][3].equals(s)) { n++; }
+        }
+        return n;
+    }
+
+    // A COMPLETED WORK INTERVAL, driven through the SHIPPING tick.
+    //
+    // The whole point is that the interval's joules come from onTick and not
+    // from an assignment: `ticks` calls to the real onTick at `watts`, inside a
+    // live WORK step opened by the real beginWorkAccum, then the real
+    // latchWorkAccum by way of HrProbe.latchSet. Nothing here transcribes the
+    // accumulator's arithmetic.
+    //
+    // latchSet does not touch the work accumulator, so the joules that
+    // accumulated above survive into the latch -- which is exactly the shipping
+    // order of events (the interval accumulates, then it is frozen).
+    //
+    // Returns [latchTook, geo] with the view left on the REST screen, so the
+    // grid is up.
+    static function ergInterval(p, watts, ticks, sec, dist, strokes) {
+        p.enterStepLive(p.kindWork(), false);
+        p.beginWork(1);
+        p.setPower(watts);
+        for (var i = 0; i < ticks; i++) { p.runTick(); }
+        var ok = p.latchSet(1, sec, dist, strokes, 1230, 10);
+        p.enterStep(p.kindRest(), false);
+        var ds = System.getDeviceSettings();
+        var geo = new HrGeoDc(ds.screenWidth, ds.screenHeight);
+        p.runUpdate(geo);
+        return [ok, geo];
+    }
+}
+
+// A recording stand-in for a FitContributor field handle. CueFix.Field has the
+// same shape and is deliberately not reused here: this suite also needs the
+// full write HISTORY (a record-scope field that LATCHES is only honest if it is
+// written on every tick, which is a claim about the count and not only about
+// the last value), and widening another suite's stub to carry it would make
+// that suite's cases noisier for something they never read.
+class ErgField {
+    var vals;
+    function initialize() { vals = []; }
+    function setData(v) { vals.add(v); }
+    function last() { return (vals.size() == 0) ? null : vals[vals.size() - 1]; }
+    function count() { return vals.size(); }
+}
+
+// A duck-typed stand-in for an ActivityRecording.Session. stopAndSave calls
+// exactly these three on the handle; nothing else is needed and nothing else is
+// provided, so a future call to a fourth surfaces as a missing member rather
+// than as a silent pass.
+class ErgSession {
+    var saves;
+    var stops;
+    function initialize() { saves = 0; stops = 0; }
+    function isRecording() { return true; }
+    function stop() { stops++; }
+    function save() { saves++; }
 }
 
 // A probe whose only job is to hand onLayout a stub timer and no ANT channel.
@@ -675,6 +752,527 @@ class ErgTimer {
     // the low clamp is what keeps the arc from silently going dark.
     if (StrongRowView.dpsPct(400.0, $.JOULE_BENCH_MIN) == null) {
         logger.error("the clamped low end must still produce a percentage");
+        return false;
+    }
+    return true;
+}
+
+// ===========================================================================
+// c2 -- THE DIFFERENTIALS. Every case below FAILS at this commit.
+//
+// c1 built the decisions; nothing reads them. These cases drive the SHIPPING
+// call sites -- onUpdate through a recording Dc, onTick directly, stopAndSave
+// on a stand-in session -- and assert what those call sites must do once the
+// wiring lands in c3. Each one is the evidence that the c3 line it names was
+// not already there.
+//
+// The red evidence is the CI run on this commit, linked from the pull request.
+// ===========================================================================
+
+// THE ARC'S NUMERATOR AND ITS DENOMINATOR BOTH SWITCH.
+//
+// 120 W at 18.0 spm is 400 J/stroke, which is exactly the shipped default
+// benchmark, so the arc must read 100% -- the one transition it exists to show.
+//
+// AND IT MUST IGNORE THE SPEED ENTIRELY. The second half is what makes this a
+// unit switch rather than a second reading of the same input: the same probe is
+// re-rendered at three speeds, including a speed that on the distance path
+// would put the arc deep in the RED zone, and the answer must not move.
+//
+// The geometry is deliberately not re-asserted here. dpsPct normalises to a
+// percentage of whatever benchmark it is handed, so every angle, sweep, zone
+// boundary and colour downstream is the shipped one -- which is the whole
+// reason this feature switches the two ends of a ratio instead of re-deriving
+// an arc (#123's comment block).
+(:test) function test_erg_c2_theArcReadsJoulesAgainstTheJouleBenchmark(logger) {
+    var p = EgCase.onErg();
+    p.setPower(120.0);
+    var speeds = [ 0.0, 1.0, 6.0 ];
+    for (var i = 0; i < speeds.size(); i++) {
+        var pct = p.arcPctFor(p.kindWork(), speeds[i]);
+        if (pct == null || (pct - 100.0).abs() > 0.01) {
+            logger.error("120 W at 18 spm is 400 J/stroke, which IS the " +
+                         "benchmark, so the arc must read 100%; at speed " +
+                         speeds[i] + " it read " + pct);
+            return false;
+        }
+        if (StrongRowView.dpsZone(pct) != $.DPSZ_AT) {
+            logger.error("100% of benchmark must be DPSZ_AT");
+            return false;
+        }
+    }
+    // Halving the benchmark must double the percentage: the arc is read
+    // against jouleBenchmark and not against anything else.
+    p.setJouleBench(200.0);
+    var half = p.arcPctFor(p.kindWork(), 0.0);
+    if (half == null || (half - 200.0).abs() > 0.01) {
+        logger.error("400 J/stroke against a 200 J benchmark is 200%; got " +
+                     half);
+        return false;
+    }
+    return true;
+}
+
+// THE DEFECT THIS WHOLE FEATURE IS MOST LIKELY TO SHIP.
+//
+// In erg mode with NO power source the arc must have nothing to say. What it
+// must never do is keep reading the GPS-derived distance figure, because on an
+// erg that number has no source -- and at the speed used here the distance path
+// puts the arc at 55% of benchmark, which is DPSZ_FAR and renders RED: "far
+// below benchmark", i.e. row harder, in response to a measurement that does not
+// exist.
+//
+// The assertion is on the COLOUR as well as on the null, because the null on
+// its own is not the harm.
+(:test) function test_erg_c2_anAbsentPowerSourceNeverReachesTheArcAsAWarning(logger) {
+    var p = EgCase.onErg();
+    p.setPower(null);
+    // 1.0 m/s at 18 spm is 3.33 m/stroke, 55% of the 6.0 m benchmark -- FAR.
+    var pct = p.arcPctFor(p.kindWork(), 1.0);
+    if (pct != null) {
+        logger.error("with no power source the arc must have nothing to say; " +
+                     "it read " + pct + "% -- which is the GPS distance " +
+                     "figure, and on an erg that number has no source");
+        return false;
+    }
+    var col = StrongRowView.dpsZoneColour(StrongRowView.dpsZone(pct));
+    if (col == Gfx.COLOR_RED || col == Gfx.COLOR_ORANGE) {
+        logger.error("with no power source the arc rendered a WARNING colour. " +
+                     "An athlete whose watch reports no power at all would be " +
+                     "told to row harder in response to nothing");
+        return false;
+    }
+    return true;
+}
+
+// A REST arc reads the interval just completed, in the selected units -- the
+// same two-source rule dpsForArc states for distance (live during WORK, the
+// latched interval average during REST).
+//
+// 120 W for 40 ticks of 250 ms is 1200 J; over 60 strokes that is 20 J/stroke,
+// which against a 20 J benchmark is 100%. The numbers are small because 40
+// ticks is 10 seconds; the arithmetic is the subject, not the realism.
+(:test) function test_erg_c2_theRestArcReadsTheIntervalThatJustEnded(logger) {
+    var p = EgCase.onErg();
+    p.setJouleBench(20.0);
+    var r = EgCase.ergInterval(p, 120.0, 40, 240.0, 900.0, 60);
+    if (!r[0]) {
+        logger.error("the latch did not take; the assertions below would be " +
+                     "vacuous");
+        return false;
+    }
+    var pct = p.arcPctFor(p.kindRest(), 4.0);
+    if (pct == null || (pct - 100.0).abs() > 0.01) {
+        logger.error("1200 J over 60 strokes is 20 J/stroke, which against a " +
+                     "20 J benchmark is 100%; the REST arc read " + pct);
+        return false;
+    }
+    return true;
+}
+
+// THE GRID'S LABELS FOLLOW ITS UNITS, and only when BOTH toggles are on.
+//
+// A number whose label still says metres is worse than no number, so the labels
+// are asserted in both directions: the work labels must appear and the metre
+// labels must be gone, and the two off-states must leave the shipping screen
+// exactly as it is.
+(:test) function test_erg_c2_theGridSpeaksInWorkUnitsOnlyWhenBothTogglesAreOn(logger) {
+    var p = EgCase.onErg();
+    var r = EgCase.ergInterval(p, 120.0, 40, 240.0, 900.0, 60);
+    if (!r[0]) { logger.error("the latch did not take"); return false; }
+    var geo = r[1];
+    if (!EgCase.drew(geo, "avg J/str")) {
+        logger.error("in work units the per-stroke cell must be labelled " +
+                     "'avg J/str'");
+        return false;
+    }
+    if (!EgCase.drew(geo, "work kJ")) {
+        logger.error("in work units the accumulated cell must be labelled " +
+                     "'work kJ'");
+        return false;
+    }
+    if (EgCase.drew(geo, "m/str") || EgCase.drew(geo, "interval m")) {
+        logger.error("in work units NO metre label may survive: a number " +
+                     "under a stale unit is worse than no number");
+        return false;
+    }
+
+    // The toggle is ON by default, so it MUST mean nothing outside erg mode --
+    // otherwise every water row ships in joules the first time this lands.
+    p.setErgMode(false);
+    p.setErgUnits(true);
+    var ds = System.getDeviceSettings();
+    var g2 = new HrGeoDc(ds.screenWidth, ds.screenHeight);
+    p.runUpdate(g2);
+    if (!EgCase.drew(g2, "avg m/str") || !EgCase.drew(g2, "interval m")) {
+        logger.error("with erg mode OFF the grid must be the shipping metre " +
+                     "grid, whatever the units toggle says");
+        return false;
+    }
+
+    // And erg mode with the units toggle off is still the distance screen.
+    p.setErgMode(true);
+    p.setErgUnits(false);
+    var g3 = new HrGeoDc(ds.screenWidth, ds.screenHeight);
+    p.runUpdate(g3);
+    if (!EgCase.drew(g3, "avg m/str") || !EgCase.drew(g3, "interval m")) {
+        logger.error("erg mode with the units toggle OFF must stay in " +
+                     "distance units");
+        return false;
+    }
+    return true;
+}
+
+// THE GRID'S VALUES, against hand-computed numbers, through the shipping tick.
+//
+// 120 W for 40 ticks of 250 ms is 1200 J = 1.2 kJ, and over 60 strokes that is
+// 20 J/stroke. Asserted as EXACT rendered strings, because a "contains" check
+// would match a substring of a neighbouring cell.
+(:test) function test_erg_c2_theGridValuesAreTheIntervalsOwnWork(logger) {
+    var p = EgCase.onErg();
+    var r = EgCase.ergInterval(p, 120.0, 40, 240.0, 900.0, 60);
+    if (!r[0]) { logger.error("the latch did not take"); return false; }
+    var geo = r[1];
+    if (!EgCase.drewExact(geo, "1.2")) {
+        logger.error("120 W for 40 ticks of " + $.TICK_MS + " ms is 1200 J, " +
+                     "so the accumulated cell must render '1.2' kJ");
+        return false;
+    }
+    if (!EgCase.drewExact(geo, "20")) {
+        logger.error("1200 J over 60 strokes is 20 J/stroke, so the " +
+                     "per-stroke cell must render '20'");
+        return false;
+    }
+    // The latched pair, read back through the shipping accumulator rather than
+    // only off the screen: the number AND the flag that says it is a
+    // measurement.
+    if (p.lastWorkEver() != true) {
+        logger.error("an interval with real power samples must latch its " +
+                     "'ever measured' flag; got " + p.lastWorkEver());
+        return false;
+    }
+    var j = p.lastWorkJ();
+    if (j == null || (j - 1200.0).abs() > 0.001) {
+        logger.error("the latched interval work must be 1200 J; got " + j);
+        return false;
+    }
+    return true;
+}
+
+// A POWERLESS INTERVAL RENDERS DASHES, NEVER ZEROES. This is acceptance
+// criterion 2 at the grid, and it is the case the feature exists to not get
+// wrong: 0.0 kJ is a claim about the interval, and an athlete with no power
+// meter did not make it.
+//
+// Both erg cells are asserted absent AS VALUES and present AS DASHES, and the
+// zero forms they would take are asserted absent by name.
+(:test) function test_erg_c2_aPowerlessIntervalRendersDashesNotZeroes(logger) {
+    var p = EgCase.onErg();
+    var r = EgCase.ergInterval(p, null, 40, 240.0, 900.0, 60);
+    if (!r[0]) { logger.error("the latch did not take"); return false; }
+    var geo = r[1];
+    if (p.lastWorkEver() != false) {
+        logger.error("an interval with NO power samples must not claim a " +
+                     "measurement; the ever flag is " + p.lastWorkEver());
+        return false;
+    }
+    if (EgCase.drewExact(geo, "0.0") || EgCase.drewExact(geo, "0")) {
+        logger.error("with no power source the grid rendered a ZERO. That is " +
+                     "a claim about the interval -- the #86/#107 class");
+        return false;
+    }
+    if (EgCase.countExact(geo, "--") < 2) {
+        logger.error("both erg cells must render a dash when there was no " +
+                     "power source; saw " + EgCase.countExact(geo, "--") +
+                     " dash cells");
+        return false;
+    }
+    // And the labels are still the work labels: the units did not silently
+    // fall back to metres just because the source was missing.
+    if (!EgCase.drew(geo, "avg J/str") || !EgCase.drew(geo, "work kJ")) {
+        logger.error("a missing source must not change the UNITS, only the " +
+                     "values");
+        return false;
+    }
+    return true;
+}
+
+// THE PACE ROW. Free row is the screen that still draws it (#108 stood it down
+// during WORK), so it is where both forms are measured.
+//
+// 150 W at 18.0 spm is 500 J/stroke.
+(:test) function test_erg_c2_thePaceRowSpeaksInPowerAndWorkPerStroke(logger) {
+    var p = EgCase.onErg();
+    p.setPower(150.0);
+    p.setSpeed(4.0);
+    var geo = EgCase.freeRowScreen(p);
+    if (!EgCase.drew(geo, "150W")) {
+        logger.error("the erg pace row must carry the power; 150 W was not " +
+                     "drawn");
+        return false;
+    }
+    if (!EgCase.drew(geo, "500J/str")) {
+        logger.error("150 W at 18 spm is 500 J/stroke; that term was not drawn");
+        return false;
+    }
+    if (EgCase.drew(geo, "/500m") || EgCase.drew(geo, "m/str")) {
+        logger.error("in work units the pace row must not also carry the " +
+                     "distance form -- a number under a stale unit is worse " +
+                     "than no number");
+        return false;
+    }
+
+    // No power source: dashes, never zeroes, and the speed must not creep back
+    // in as a substitute.
+    var q = EgCase.onErg();
+    q.setPower(null);
+    q.setSpeed(4.0);
+    var g2 = EgCase.freeRowScreen(q);
+    if (!EgCase.drew(g2, "--W") || !EgCase.drew(g2, "--J/str")) {
+        logger.error("with no power source the erg pace row must read " +
+                     "'--W  --J/str'");
+        return false;
+    }
+    if (EgCase.drew(g2, "0W") || EgCase.drew(g2, "0J/str")) {
+        logger.error("absence rendered as a zero on the pace row");
+        return false;
+    }
+    return true;
+}
+
+// A REAL ZERO IS A READING. Acceptance criterion 3, at the pace row, which is
+// the one element that renders the instantaneous figure as a NUMBER.
+(:test) function test_erg_c2_aRealZeroWattReadingRendersAsZero(logger) {
+    var p = EgCase.onErg();
+    p.setPower(0.0);
+    p.setSpeed(4.0);
+    var geo = EgCase.freeRowScreen(p);
+    if (!EgCase.drew(geo, "0W")) {
+        logger.error("0 W is a MEASUREMENT -- an athlete sitting at the catch " +
+                     "-- and must render as the value 0, not as a dash");
+        return false;
+    }
+    if (EgCase.drew(geo, "--W")) {
+        logger.error("a real zero-watt reading must not render as absence");
+        return false;
+    }
+    return true;
+}
+
+// THE INTERVAL WORK IS INTEGRATED FROM THE TICKS, AND ONLY FROM THE WORK
+// TICKS.
+//
+// Four legs on one accumulator, in the order the shipping code meets them:
+//   1. ticks OUTSIDE any interval (mSetNum == 0) -- must contribute nothing,
+//      which is what excludes rest and gate samples for the same reason
+//      mSetHrSum excludes them;
+//   2. the interval opens (the real beginWorkAccum), which must CLEAR whatever
+//      leg 1 left;
+//   3. PAUSED ticks -- must contribute nothing;
+//   4. live ticks -- 40 at 100 W is 1000 J.
+(:test) function test_erg_c2_onlyWorkTicksReachTheIntervalAccumulator(logger) {
+    var p = EgCase.onErg();
+    p.enterStepLive(p.kindWork(), false);
+    p.setPower(1000.0);
+    for (var i = 0; i < 20; i++) { p.runTick(); }      // leg 1: no interval open
+
+    p.beginWork(1);                                     // leg 2: the real entry
+    p.enterStepLive(p.kindWork(), true);                // leg 3: paused
+    for (var i = 0; i < 20; i++) { p.runTick(); }
+
+    p.enterStepLive(p.kindWork(), false);               // leg 4: live
+    p.setPower(100.0);
+    for (var i = 0; i < 40; i++) { p.runTick(); }
+
+    if (!p.latchSet(1, 240.0, 900.0, 60, 1230, 10)) {
+        logger.error("the latch did not take");
+        return false;
+    }
+    var j = p.lastWorkJ();
+    // 40 ticks of 250 ms is 10 s; 100 W for 10 s is 1000 J.
+    if (j == null || (j - 1000.0).abs() > 0.001) {
+        logger.error("only the 40 live work ticks at 100 W may reach the " +
+                     "interval accumulator, i.e. 1000 J. Got " + j +
+                     " -- 6000 J would mean the pre-interval ticks were " +
+                     "counted, 6000 more that the paused ticks were");
+        return false;
+    }
+    return true;
+}
+
+// THE FIT WRITES: A VALUE EVERY TICK, NEVER A SILENCE.
+//
+// Record-scope fields LATCH -- a skipped setData re-emits the previous value
+// (#36 byte level, reconfirmed by #48's probe_skip) -- so withholding a write
+// on a tick with no power source would fabricate a power reading that was not
+// taken. That makes the WRITE COUNT part of the assertion and not a detail:
+// three ticks must produce three writes on each record-scope field.
+//
+// SCOPE, stated because it is exactly the claim this repository keeps
+// overreaching on: this observes the ARGUMENT of an in-app setData call. It
+// says nothing about what lands in the file's bytes and nothing about what a
+// decoder renders. Those need a simulator session and a decode.
+(:test) function test_erg_c2_theTickRecordsThePowerStateAsAValue(logger) {
+    var p = EgCase.onErg();
+    var pw = new ErgField();
+    var jp = new ErgField();
+    var dg = new ErgField();
+    var wk = new ErgField();
+    p.installErgFields(pw, jp, dg, wk);
+    p.enterStepLive(p.kindWork(), false);
+
+    p.setPower(null);
+    p.runTick();
+    if (pw.last() != $.ERG_POWER_NONE) {
+        logger.error("a tick with no power source must WRITE the sentinel " +
+                     $.ERG_POWER_NONE + ", not stay silent -- a record-scope " +
+                     "field that is not written re-emits the last value. Got " +
+                     pw.last());
+        return false;
+    }
+    if (jp.last() != $.ERG_JPS_NONE) {
+        logger.error("the joules-per-stroke field must carry its sentinel too; " +
+                     "got " + jp.last());
+        return false;
+    }
+    var d0 = dg.last();
+    if (d0 == null || (d0 & $.ERGD_ALIVE) == 0 || (d0 & $.ERGD_PWR_OK) != 0) {
+        logger.error("the diagnostic must record ALIVE with the power bit " +
+                     "CLEAR when there was no reading; got " + d0);
+        return false;
+    }
+
+    p.setPower(0.0);
+    p.runTick();
+    if (pw.last() != 0.0) {
+        logger.error("0 W is a reading and must be recorded verbatim; got " +
+                     pw.last());
+        return false;
+    }
+    var d1 = dg.last();
+    if (d1 == null || (d1 & $.ERGD_PWR_OK) == 0 || (d1 & $.ERGD_PWR_POS) != 0) {
+        logger.error("a broadcast ZERO must set the populated bit and clear " +
+                     "the positive bit -- that pair is the whole point of the " +
+                     "instrumentation. Got " + d1);
+        return false;
+    }
+
+    p.setPower(120.0);
+    p.runTick();
+    if (pw.last() != 120.0) {
+        logger.error("a real reading must be recorded verbatim; got " + pw.last());
+        return false;
+    }
+    // 120 W at 18 spm is 400 J/stroke.
+    var j = jp.last();
+    if (j == null || (j - 400.0).abs() > 0.01) {
+        logger.error("120 W at 18 spm must record 400 J/stroke; got " + j);
+        return false;
+    }
+
+    if (pw.count() != 3 || jp.count() != 3 || dg.count() != 3) {
+        logger.error("every record-scope erg field must be written on EVERY " +
+                     "tick, because a skipped write re-emits the previous " +
+                     "value. Three ticks produced " + pw.count() + " / " +
+                     jp.count() + " / " + dg.count() + " writes");
+        return false;
+    }
+    // The session field is a SAVE-time write and must not be touched per tick.
+    if (wk.count() != 0) {
+        logger.error("the session-scope work field must not be written per " +
+                     "tick; it was written " + wk.count() + " times");
+        return false;
+    }
+    return true;
+}
+
+// THE SESSION TOTAL, written once at save -- and withheld when nothing was ever
+// measured.
+//
+// GUARDED BY THE EVER FLAG, never by `> 0.0`. A `> 0.0` guard would suppress
+// the field for a row whose true total work was zero and leave a reader unable
+// to tell suppression from absence, which is the reasoning #80 records for
+// declining a session-scope heat-strain companion.
+(:test) function test_erg_c2_theSessionTotalIsWrittenOnlyWhenMeasured(logger) {
+    var p = EgCase.onErg();
+    var wk = new ErgField();
+    p.installErgFields(new ErgField(), new ErgField(), new ErgField(), wk);
+    p.installSession(new ErgSession());
+    p.enterStepLive(p.kindWork(), false);
+    p.setPower(200.0);
+    for (var i = 0; i < 40; i++) { p.runTick(); }
+    p.runStopAndSave();
+    // 200 W for 40 ticks of 250 ms is 2000 J = 2.0 kJ. NOT gated on an
+    // interval: the session total accumulates across rests too, which is the
+    // difference between it and the grid cell.
+    var v = wk.last();
+    if (v == null || (v - 2.0).abs() > 0.001) {
+        logger.error("200 W over 40 ticks is 2000 J, so the session field " +
+                     "must carry 2.0 kJ; got " + v);
+        return false;
+    }
+
+    var q = EgCase.onErg();
+    var wk2 = new ErgField();
+    q.installErgFields(new ErgField(), new ErgField(), new ErgField(), wk2);
+    q.installSession(new ErgSession());
+    q.enterStepLive(q.kindWork(), false);
+    q.setPower(null);
+    for (var i = 0; i < 40; i++) { q.runTick(); }
+    q.runStopAndSave();
+    if (wk2.count() != 0) {
+        logger.error("a row that never measured any power must leave the " +
+                     "session work field UNWRITTEN; it was written " +
+                     wk2.count() + " time(s) with " + wk2.last());
+        return false;
+    }
+    return true;
+}
+
+// THE INSTRUMENTATION ANSWERS ITS OWN QUESTION, through the shipping tick.
+//
+// This is the case that decides whether ONE erg session settles the assumption.
+// A machine that broadcasts as fitness equipment would populate speed, distance
+// and cadence as well as power, and if it does then the distance-based figures
+// still work on an erg -- which changes the design. All four sources are driven
+// independently and read back out of the one recorded word.
+(:test) function test_erg_c2_theDiagnosticRecordsWhatTheMachinePopulated(logger) {
+    var p = EgCase.onErg();
+    var dg = new ErgField();
+    p.installErgFields(new ErgField(), new ErgField(), dg, new ErgField());
+    p.enterStepLive(p.kindWork(), false);
+
+    // Nothing populated: the answer the assumption fails with.
+    p.setPower(null);
+    p.setSpeed(null);
+    p.setDist(null);
+    p.setCadence(null);
+    p.runTick();
+    var none = dg.last();
+    if (none != ($.ERGD_ALIVE | $.ERGD_ERGMODE | $.ERGD_WORKUNI)) {
+        logger.error("with nothing populated the word must be ALIVE plus the " +
+                     "two setting bits; got " + none);
+        return false;
+    }
+
+    // The machine broadcasts as fitness equipment: all four populated.
+    p.setPower(150.0);
+    p.setSpeed(4.2);
+    p.setDist(900.0);
+    p.setCadence(22);
+    p.runTick();
+    var all = dg.last();
+    var wantOn = [ $.ERGD_PWR_OK, $.ERGD_PWR_POS, $.ERGD_SPD_OK, $.ERGD_SPD_POS,
+                   $.ERGD_DST_OK, $.ERGD_DST_POS, $.ERGD_CAD_OK, $.ERGD_CAD_POS ];
+    for (var i = 0; i < wantOn.size(); i++) {
+        if ((all & wantOn[i]) == 0) {
+            logger.error("bit " + wantOn[i] + " must be set when its source is " +
+                         "populated and positive; the word was " + all);
+            return false;
+        }
+    }
+    if (all > $.ERGD_MAX) {
+        logger.error("the recorded word " + all + " escaped the reserved band");
         return false;
     }
     return true;
