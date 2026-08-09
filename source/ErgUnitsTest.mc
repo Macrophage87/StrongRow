@@ -42,6 +42,18 @@ using Toybox.Lang;
 // four. The limit is inclusive, which is what makes 11 free and the 12th the
 // one that reds.)
 //
+// AND WITH THIS FILE IN THE TREE, re-bisected on fenix6 the same way -- N=10
+// BUILDS, N=11 reports 254:
+//
+//     CEILING erg-branch fenix6: 243 used of 253, 10 free -- the 11th file-scope (:test) added reds
+//
+// ONE member for TWENTY-NINE (:test) functions plus four classes, which is the
+// module's whole justification stated as arithmetic rather than as a principle:
+// 243 - 242 = 1. At file scope the same declarations would need 33 and the
+// build would fail on all four fenix6-family devices with an error naming
+// neither the test nor the file, while fr965 (which run-tests uses) and
+// release-build stayed green -- so a green local run would prove nothing.
+//
 // The simulator prints a module-qualified name for a (:test) inside a module
 // block, so scripts/expected_tests.txt carries `Erg.test_erg_...`.
 //
