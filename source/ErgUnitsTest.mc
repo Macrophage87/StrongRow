@@ -174,6 +174,59 @@ class EgCase {
         p.runUpdate(geo);
         return [ok, geo];
     }
+
+    // The same, but with the power source DROPPING IN AND OUT -- the state no
+    // case in this suite could previously reach. ergInterval sets the power
+    // once before the loop, so every interval it builds is 0% or 100% covered,
+    // and the whole band between them was untested while being the band an
+    // unmeasured ANT link is most likely to occupy.
+    //
+    // INTERLEAVED IN BLOCKS OF FOUR rather than one long live run followed by
+    // one long dead one, so nothing can pass because the samples happened to be
+    // contiguous.
+    static function ergIntervalPartial(p, watts, onTicks, offTicks, sec, dist,
+                                       strokes) {
+        p.enterStepLive(p.kindWork(), false);
+        p.beginWork(1);
+        var on = onTicks;
+        var off = offTicks;
+        while (on > 0 || off > 0) {
+            for (var i = 0; i < 4 && on > 0; i++) {
+                p.setPower(watts); p.runTick(); on--;
+            }
+            for (var k = 0; k < 4 && off > 0; k++) {
+                p.setPower(null); p.runTick(); off--;
+            }
+        }
+        var ok = p.latchSet(1, sec, dist, strokes, 1230, 10);
+        p.enterStep(p.kindRest(), false);
+        var ds = System.getDeviceSettings();
+        var geo = new HrGeoDc(ds.screenWidth, ds.screenHeight);
+        p.runUpdate(geo);
+        return [ok, geo];
+    }
+
+    // The REC footer's string, or null if the footer is not in that state.
+    // Named by its prefix rather than taken as "the last text drawn", so a
+    // later element added after drawFoot cannot silently turn this into an
+    // assertion about something else.
+    static function recFoot(geo) {
+        for (var i = 0; i < geo.texts.size(); i++) {
+            var s = geo.texts[i][3];
+            if (s.length() >= 4 && s.substring(0, 4).equals("REC ")) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    // A re-render of whatever state the probe is already in.
+    static function reRender(p) {
+        var ds = System.getDeviceSettings();
+        var geo = new HrGeoDc(ds.screenWidth, ds.screenHeight);
+        p.runUpdate(geo);
+        return geo;
+    }
 }
 
 // A recording stand-in for a FitContributor field handle. CueFix.Field has the
@@ -1589,6 +1642,244 @@ class ErgTimer {
     }
     if (all > $.ERGD_MAX) {
         logger.error("the recorded word " + all + " escaped the reserved band");
+        return false;
+    }
+    return true;
+}
+
+// ===========================================================================
+// r5 c2 -- THE REVISION'S DIFFERENTIALS. Every case below FAILS at this commit.
+//
+// r5 c1 added the decisions these need; nothing reads them. Each case drives a
+// SHIPPING call site and asserts what it must do once r5 c3 wires the decision
+// in. The red evidence is the CI run on this commit, linked from the pull
+// request.
+// ===========================================================================
+
+// THE REC FOOTER'S KILOMETRES ARE THE ONE DISTANCE FIGURE THE UNIT SWITCH DID
+// NOT REACH.
+//
+// Every other distance string on screen became conditional when erg mode
+// landed. drawFoot's was not, and its input -- elapsedDist() -- collapses an
+// absent reading to 0.0, so in the mode this feature ships the footer rendered
+// a fabricated "0.00km", with a unit label, on the glance surface, directly
+// under a grid whose own cells were dashing for exactly the same missing
+// source. That is the #86/#107 class.
+//
+// A REST render, because that is the screen the maintainer sees the grid and
+// the footer on together, and the footer draws on every non-WORK step.
+(:test) function test_erg_c2_theRecFooterNeverFabricatesADistanceOnAnErg(logger) {
+    var p = EgCase.onErg();
+    // Without this the footer is NO ACCEL and the case would hold vacuously.
+    p.setSensorOk(true);
+    var r = EgCase.ergInterval(p, 120.0, 40, 10.0, 0.0, 3);
+    if (!r[0]) {
+        logger.error("the latch did not take; the assertions below would be " +
+                     "vacuous");
+        return false;
+    }
+    var foot = EgCase.recFoot(r[1]);
+    if (foot == null) {
+        logger.error("the REC footer must be on screen for this case to say " +
+                     "anything; it was not drawn");
+        return false;
+    }
+    if (foot.find("0.00km") != null) {
+        logger.error("on an erg with no distance source the footer rendered " +
+                     "'" + foot + "' -- a fabricated measurement with a unit " +
+                     "label, which is what every other cell on this screen " +
+                     "refuses to do");
+        return false;
+    }
+    if (foot.find("--") == null) {
+        logger.error("the footer's distance token must be a dash when there " +
+                     "may be no source; the footer read '" + foot + "'");
+        return false;
+    }
+
+    // NOT A UNITS QUESTION. Kilometres are kilometres whichever figures the arc
+    // shows, so turning the work-units toggle off must NOT restore the
+    // fabricated zero.
+    p.setErgUnits(false);
+    var f2 = EgCase.recFoot(EgCase.reRender(p));
+    if (f2 == null || f2.find("0.00km") != null) {
+        logger.error("with the units toggle off but still on the erg, the " +
+                     "footer must still refuse to invent a distance; it read " +
+                     "'" + f2 + "'");
+        return false;
+    }
+
+    // OFF THE ERG NOTHING CHANGES, which is what keeps this a scoped fix and
+    // stops the case holding for the wrong reason.
+    p.setErgMode(false);
+    var f3 = EgCase.recFoot(EgCase.reRender(p));
+    if (f3 == null || f3.find("0.00km") == null) {
+        logger.error("off the erg the shipping footer is unchanged and must " +
+                     "still read '0.00km'; it read '" + f3 + "'");
+        return false;
+    }
+    return true;
+}
+
+// A PARTIALLY COVERED INTERVAL UNDER-REPORTS ITS WORK BY EXACTLY THE FRACTION
+// THE SOURCE WAS DOWN, AND NOTHING ABOUT THE NUMBER SAYS SO.
+//
+// The interval accumulator is an INTEGRAL of instantaneous samples. mSetHrN
+// makes the heart-rate mean immune to a dropout and an odometer delta makes the
+// distance immune by construction; an integral has neither defence. 30 of 40
+// ticks carrying a sample is 75% coverage, so an athlete rowing exactly at the
+// 400 J/stroke benchmark latches 300 J/stroke -- which the shipping dpsZone
+// calls FAR, i.e. "far below benchmark, row harder", handed to someone who is
+// on benchmark.
+//
+// The answer is a DASH, not a scaled-up estimate: extrapolating the measured
+// mean across the unmeasured time would invent work the app never saw.
+(:test) function test_erg_c2_aPartlyCoveredIntervalDashesRatherThanUnderReporting(logger) {
+    // THE STAKES, through the shipping zone decision rather than restated: 75%
+    // of benchmark is the warning zone this gate exists to keep an on-benchmark
+    // athlete out of.
+    if (StrongRowView.dpsZone(75.0) != $.DPSZ_FAR) {
+        logger.error("75% of benchmark must be the FAR zone, or this case " +
+                     "has no stakes");
+        return false;
+    }
+
+    var p = EgCase.onErg();
+    // 30 live ticks and 10 dead ones over a 10.0 s interval: 7.5 s of samples
+    // against 10 s of rowing.
+    var r = EgCase.ergIntervalPartial(p, 120.0, 30, 10, 10.0, 30.0, 3);
+    if (!r[0]) { logger.error("the latch did not take"); return false; }
+    if (p.lastWorkN() != 30) {
+        logger.error("the latch must carry the SAMPLE COUNT, which is the " +
+                     "whole input to the coverage decision; it carried " +
+                     p.lastWorkN());
+        return false;
+    }
+    var pct = p.arcPctFor(p.kindRest(), 4.0);
+    if (pct != null) {
+        logger.error("a quarter of the interval had no power sample, so the " +
+                     "arc must have NO reading rather than an under-reported " +
+                     "one; it read " + pct + "% -- an athlete on benchmark " +
+                     "shown 'far below benchmark'");
+        return false;
+    }
+    var geo = r[1];
+    if (EgCase.countExact(geo, "--") < 2) {
+        logger.error("both erg cells must dash when the interval is too " +
+                     "sparsely sampled to report; saw " +
+                     EgCase.countExact(geo, "--") + " dash cells");
+        return false;
+    }
+    if (EgCase.drewExact(geo, "0.9") || EgCase.drewExact(geo, "300")) {
+        logger.error("the grid rendered the under-reported figures (0.9 kJ / " +
+                     "300 J/stroke) as though they were the interval's work");
+        return false;
+    }
+
+    // THE CONTROL, so the gate cannot pass by refusing everything: the same
+    // interval fully covered reads 100% and carries both numbers.
+    var q = EgCase.onErg();
+    var r2 = EgCase.ergIntervalPartial(q, 120.0, 40, 0, 10.0, 30.0, 3);
+    if (!r2[0]) { logger.error("the control latch did not take"); return false; }
+    var pct2 = q.arcPctFor(q.kindRest(), 4.0);
+    if (pct2 == null || (pct2 - 100.0).abs() > 0.01) {
+        logger.error("a fully covered interval at the benchmark must read " +
+                     "100%; it read " + pct2);
+        return false;
+    }
+    if (!EgCase.drewExact(r2[1], "1.2") || !EgCase.drewExact(r2[1], "400")) {
+        logger.error("a fully covered interval must still carry both figures");
+        return false;
+    }
+    return true;
+}
+
+// THE TWO ERG CELLS CANNOT OVERRUN THEIR STATED WIDTH.
+//
+// The grid's format table asserted maxima ("9999" J/stroke, "999.9" kJ) that
+// nothing clamped and no case pinned -- an assumption about athlete power
+// printed in the same table as the format strings. The pace row's analogous
+// bound is enforced by ergNum against PACE_W_MAX and pinned in characters; the
+// grid had neither.
+//
+// CHARACTERS, NOT PIXELS (#121). Five characters is the width of the "18000"
+// the accumulated cell replaces; nothing here claims a pixel clearance.
+(:test) function test_erg_c2_theGridCellsCannotOverrunTheirWidth(logger) {
+    var p = EgCase.onErg();
+    // 1e8 W for 40 ticks of 250 ms is 1e9 J: 1 000 000 kJ over 3 strokes, i.e.
+    // 3.3e8 J/stroke. Absurd by construction -- the point is that an absurd
+    // input must not become an absurd STRING.
+    var r = EgCase.ergInterval(p, 1.0e8, 40, 10.0, 30.0, 3);
+    if (!r[0]) { logger.error("the latch did not take"); return false; }
+    var geo = r[1];
+    if (EgCase.countExact(geo, "9999") != 2) {
+        logger.error("both erg cells must clamp to '9999'; the screen carried " +
+                     EgCase.countExact(geo, "9999") + " of them");
+        return false;
+    }
+    // Every cell value on this screen, bounded. Five characters or fewer.
+    for (var i = 0; i < geo.texts.size(); i++) {
+        var s = geo.texts[i][3];
+        if (s.find("kJ") != null || s.find("J/str") != null) { continue; }
+        if (s.length() > 6 && s.find(" ") == null) {
+            logger.error("an unbounded numeric cell reached the screen: '" +
+                         s + "', " + s.length() + " characters");
+            return false;
+        }
+    }
+    return true;
+}
+
+// THE NATIVE CADENCE IS RECORDED AS A VALUE.
+//
+// The erg_diag cadence BITS cannot say where cadence came from -- the wrist
+// populates ai.currentCadence with no machine present, measured on the water in
+// the README's Potomac row -- so a set bit is the expected reading either way.
+// Only the VALUE can be differenced against row_stroke_rate, and
+// corrective_rate cannot serve because it clamps that difference at zero and so
+// destroys the one sign that would be evidence.
+//
+// SCOPE: this observes the ARGUMENT of an in-app setData. It says nothing about
+// what lands in the file's bytes or what a decoder renders (#154, #168).
+(:test) function test_erg_c2_theTickRecordsTheNativeCadenceAsAValue(logger) {
+    var p = EgCase.onErg();
+    var cd = new ErgField();
+    p.installErgFields(new ErgField(), new ErgField(), new ErgField(),
+                       new ErgField(), cd);
+    p.enterStepLive(p.kindWork(), false);
+
+    p.setCadence(22);
+    p.runTick();
+    if (cd.count() != 1 || cd.last() != 22.0) {
+        logger.error("the tick must record the native cadence; the field was " +
+                     "written " + cd.count() + " time(s) with " + cd.last());
+        return false;
+    }
+
+    // ABSENCE IS A VALUE, NEVER A SILENCE. Record-scope fields LATCH, so
+    // skipping the write would re-emit 22 spm on a record where the source
+    // reported nothing.
+    p.setCadence(null);
+    p.runTick();
+    if (cd.count() != 2) {
+        logger.error("the field must be written on EVERY tick -- a skipped " +
+                     "write re-emits the last value. It was written " +
+                     cd.count() + " time(s)");
+        return false;
+    }
+    if (cd.last() != $.ERG_CAD_NONE) {
+        logger.error("no cadence reading must record as ERG_CAD_NONE; it " +
+                     "recorded " + cd.last());
+        return false;
+    }
+
+    // A REAL ZERO IS A READING -- a stationary handle -- and is exactly the
+    // state that would tell a machine source from a wrist one.
+    p.setCadence(0);
+    p.runTick();
+    if (cd.count() != 3 || cd.last() != 0.0) {
+        logger.error("0 spm is a measurement and must record as 0.0; it " +
+                     "recorded " + cd.last());
         return false;
     }
     return true;
