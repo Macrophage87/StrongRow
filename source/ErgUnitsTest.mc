@@ -510,42 +510,48 @@ class ErgTimer {
 
 // A MISSING SAMPLE CONTRIBUTES NOTHING AND DOES NOT COUNT AS A SAMPLE. The
 // second half is the one that matters: an accumulator that absorbed nulls would
-// still read 0.0 J, and 0.0 J with `ever` true is an athlete who did no work,
-// which is a different claim from an athlete with no power meter.
+// still read 0.0 J, and 0.0 J with a non-zero count is an athlete who did no
+// work, which is a different claim from an athlete with no power meter.
 (:test) function test_erg_c1_aMissingSampleNeitherAddsNorCounts(logger) {
     var j = 0.0;
-    var ever = false;
+    var n = 0;
     var bad = [ null, -1.0 ];
     for (var i = 0; i < bad.size(); i++) {
-        j    = StrongRowView.workAccumStep(j, bad[i], $.TICK_MS);
-        ever = StrongRowView.workEverAfter(ever, bad[i]);
+        j = StrongRowView.workAccumStep(j, bad[i], $.TICK_MS);
+        n = StrongRowView.workCountAfter(n, bad[i]);
     }
     if (j != 0.0) {
         logger.error("absent samples must add nothing; got " + j);
         return false;
     }
-    if (ever != false) {
+    if (n != 0) {
         logger.error("absent samples must not make the interval claim a " +
                      "measurement -- that is what turns 0.0 kJ from 'no power " +
-                     "meter' into 'no work done'");
+                     "meter' into 'no work done'. The count is " + n);
         return false;
     }
-    if (StrongRowView.setWorkKJ(j, ever) != null) {
+    if (StrongRowView.setWorkKJ(j, n > 0) != null) {
         logger.error("an interval with no samples must render as ABSENT, not " +
                      "as 0.0 kJ");
         return false;
     }
-    if (StrongRowView.setAvgJps(j, 60, ever) != null) {
+    if (StrongRowView.setAvgJps(j, 60, n > 0) != null) {
         logger.error("an interval with no samples has no average J/stroke");
         return false;
     }
     // And a REAL zero-watt sample DOES count, because it is a measurement.
-    var e2 = StrongRowView.workEverAfter(false, 0.0);
-    if (e2 != true) {
-        logger.error("0 W is a measurement and must set the ever flag");
+    var n2 = StrongRowView.workCountAfter(0, 0.0);
+    if (n2 != 1) {
+        logger.error("0 W is a measurement and must be counted; got " + n2);
         return false;
     }
-    if (StrongRowView.setWorkKJ(0.0, e2) != 0.0) {
+    // MONOTONIC: a later absence never lowers the count, which is the property
+    // the boolean's "latches true" used to carry.
+    if (StrongRowView.workCountAfter(n2, null) != 1) {
+        logger.error("a later absence must not lower the sample count");
+        return false;
+    }
+    if (StrongRowView.setWorkKJ(0.0, n2 > 0) != 0.0) {
         logger.error("an interval measured at zero work must render 0.0 kJ, " +
                      "not a dash -- that is a claim the file can support");
         return false;
@@ -739,8 +745,14 @@ class ErgTimer {
 }
 
 // The benchmark's clamp, applied IN CODE and not only in settings.xml (#21).
-// Driven through the shipping loadSettings clamp by way of the probe seam, so
-// a case can never assert against a value loadSettings would have refused.
+//
+// DRIVEN THROUGH THE SHIPPING jouleClampBench, WHICH loadSettings CALLS. The
+// header here used to say "driven through the shipping loadSettings clamp by
+// way of the probe seam", and that route did not exist: HrProbe.setJouleBench
+// re-implemented the comparison inline, so this case pinned the probe's private
+// copy. MEASURED: deleting both clamp lines from loadSettings left all 308
+// cases green (CI container, fr965). Extracting the static and routing both
+// callers through it is what turned that mutant red.
 (:test) function test_erg_c1_theJouleBenchmarkIsClampedInCode(logger) {
     var p = new HrProbe();
     p.setJouleBench(0.0);
@@ -764,6 +776,198 @@ class ErgTimer {
     // the low clamp is what keeps the arc from silently going dark.
     if (StrongRowView.dpsPct(400.0, $.JOULE_BENCH_MIN) == null) {
         logger.error("the clamped low end must still produce a percentage");
+        return false;
+    }
+    return true;
+}
+
+// THE COVERAGE FLOOR, AND THE DERIVATION OF ITS VALUE.
+//
+// An integral of instantaneous samples is under-reported by exactly the
+// fraction of the interval its source was down, and nothing about the number
+// says so. workCoverOk is what refuses to show such a total; WORK_COVER_MIN is
+// where the threshold comes from, and this case pins the DERIVATION rather than
+// the digits: 0.85 is DPS_FAR_PCT / 100, so an interval that clears the floor
+// can be under-reported by at most 15% and a reading that was AT the benchmark
+// cannot be pushed into FAR. That last sentence is asserted through the
+// shipping dpsZone rather than restated.
+(:test) function test_erg_c1_theCoverageFloorIsTheArcsOwnFarBoundary(logger) {
+    // 240 s at a 250 ms tick is 960 samples for full coverage.
+    if (!StrongRowView.workCoverOk(960, 240.0, $.TICK_MS)) {
+        logger.error("an interval every one of whose ticks carried a sample " +
+                     "must be covered");
+        return false;
+    }
+    // 85% of 960 is 816 -- the boundary, which is INSIDE the floor.
+    if (!StrongRowView.workCoverOk(816, 240.0, $.TICK_MS)) {
+        logger.error("coverage exactly at the floor must be accepted");
+        return false;
+    }
+    if (StrongRowView.workCoverOk(815, 240.0, $.TICK_MS)) {
+        logger.error("coverage below the floor must be refused -- the total " +
+                     "is under-reported and nothing on screen says so");
+        return false;
+    }
+    // 75%, the case the finding named: 720 of 960 samples.
+    if (StrongRowView.workCoverOk(720, 240.0, $.TICK_MS)) {
+        logger.error("a quarter of the interval with no power sample must " +
+                     "NOT be presented as the interval's work");
+        return false;
+    }
+    // Absence, and an unanswerable question, are both refusals.
+    if (StrongRowView.workCoverOk(0, 240.0, $.TICK_MS)
+            || StrongRowView.workCoverOk(null, 240.0, $.TICK_MS)
+            || StrongRowView.workCoverOk(960, 0.0, $.TICK_MS)
+            || StrongRowView.workCoverOk(960, null, $.TICK_MS)) {
+        logger.error("no samples, or no duration to judge them against, must " +
+                     "never be 'covered'");
+        return false;
+    }
+    // THE DERIVATION, through the shipping zone decision. At the floor an
+    // athlete exactly on benchmark reads DPS_FAR_PCT, and dpsZone's boundaries
+    // are inclusive upward -- so that is UNDER, not FAR. This is the whole
+    // reason the number is 0.85 and not a round guess.
+    var worst = 100.0 * $.WORK_COVER_MIN;
+    if (StrongRowView.dpsZone(worst) != $.DPSZ_UNDER) {
+        logger.error("the worst under-report a covered interval allows is " +
+                     worst + "% of benchmark, which must NOT be the FAR zone " +
+                     "-- otherwise the floor does not buy what it claims");
+        return false;
+    }
+    if (StrongRowView.dpsZone(worst - 0.01) != $.DPSZ_FAR) {
+        logger.error("just below the floor's worst case must be FAR, or the " +
+                     "assertion above is vacuous");
+        return false;
+    }
+    return true;
+}
+
+// THE KILOJOULE CELL'S WIDTH IS ENFORCED, NOT ASSUMED.
+//
+// The grid's format table claimed this cell was never wider than the "18000"
+// it replaces, on an assumed maximum of "999.9". settings.xml allows a
+// 60-minute work interval, and 60 minutes at 278 W is 1 000 800 J -- "1000.8",
+// six characters. gridKjStr drops the tenth at 1000 kJ instead, which is where
+// it stops being useful resolution, so the bound is five characters and is
+// enforced rather than hoped for.
+//
+// CHARACTERS, NOT PIXELS (#121). This is a character bound.
+(:test) function test_erg_c1_theKilojouleCellIsBoundedToFiveCharacters(logger) {
+    if (!StrongRowView.gridKjStr(1.2).equals("1.2")) {
+        logger.error("an ordinary interval keeps its tenth; got '" +
+                     StrongRowView.gridKjStr(1.2) + "'");
+        return false;
+    }
+    if (!StrongRowView.gridKjStr(999.9).equals("999.9")) {
+        logger.error("the widest tenths form must be '999.9'; got '" +
+                     StrongRowView.gridKjStr(999.9) + "'");
+        return false;
+    }
+    // THE ROUNDING BOUNDARY, which the sweep below found: "%.1f" on 999.96 is
+    // "1000.0", six characters, so the switch point is 999.95 and not 1000.0.
+    if (!StrongRowView.gridKjStr(999.96).equals("1000")) {
+        logger.error("999.96 must switch format rather than round up into a " +
+                     "sixth character; got '" +
+                     StrongRowView.gridKjStr(999.96) + "'");
+        return false;
+    }
+    // 60 minutes at 278 W, the case the claimed bound could not survive.
+    if (!StrongRowView.gridKjStr(1000.8).equals("1001")) {
+        logger.error("at and above 1000 kJ the tenth is dropped, so a " +
+                     "60-minute interval at 278 W renders '1001'; got '" +
+                     StrongRowView.gridKjStr(1000.8) + "'");
+        return false;
+    }
+    if (!StrongRowView.gridKjStr(1.0e9).equals("9999")) {
+        logger.error("an absurd total must clamp to " + $.GRID_KJ_MAX +
+                     "; got '" + StrongRowView.gridKjStr(1.0e9) + "'");
+        return false;
+    }
+    if (!StrongRowView.gridKjStr(null).equals("--")) {
+        logger.error("absence is a dash, never a number");
+        return false;
+    }
+    // The bound itself, swept rather than argued. Five characters is exactly
+    // the width of the "18000" this cell replaces.
+    var probe = [ 0.0, 0.05, 9.99, 99.99, 999.94, 999.96, 1000.0, 9998.6,
+                  1.0e9 ];
+    for (var i = 0; i < probe.size(); i++) {
+        var s = StrongRowView.gridKjStr(probe[i]);
+        if (s.length() > 5) {
+            logger.error("gridKjStr(" + probe[i] + ") is '" + s + "', " +
+                         s.length() + " characters -- the cell it replaces is " +
+                         "five");
+            return false;
+        }
+    }
+    // And the per-stroke cell shares the pace row's clamp, so it is four.
+    if (!StrongRowView.ergNum(1.0e9, $.GRID_J_MAX).equals("9999")) {
+        logger.error("the per-stroke cell must clamp at " + $.GRID_J_MAX);
+        return false;
+    }
+    return true;
+}
+
+// THE FOOTER'S DISTANCE TOKEN. A zero here is a fabricated measurement with a
+// unit label on a glance surface, which is the #86/#107 class -- and on an erg
+// elapsedDistance may have no source at all.
+//
+// GATED ON ERG MODE, NOT ON THE UNITS TOGGLE, and that is asserted in both
+// directions: kilometres are kilometres whichever units the arc shows, so what
+// decides this is whether a distance SOURCE plausibly exists.
+(:test) function test_erg_c1_theFooterDistanceDashesWhenTheSourceMayBeAbsent(logger) {
+    if (!StrongRowView.footDistStr(0.0, true).equals("--")) {
+        logger.error("on an erg a zero distance must be a dash, not " +
+                     "'0.00km' -- there may be no distance source at all");
+        return false;
+    }
+    if (!StrongRowView.footDistStr(null, false).equals("--")) {
+        logger.error("a null distance is a dash in every mode");
+        return false;
+    }
+    // OFF the erg the shipping behaviour is untouched, including the zero.
+    if (!StrongRowView.footDistStr(0.0, false).equals("0.00km")) {
+        logger.error("off the erg the footer is unchanged; got '" +
+                     StrongRowView.footDistStr(0.0, false) + "'");
+        return false;
+    }
+    // SELF-HEALING: a machine that DOES broadcast distance gets its km back.
+    if (!StrongRowView.footDistStr(1234.0, true).equals("1.23km")
+            || !StrongRowView.footDistStr(1234.0, false).equals("1.23km")) {
+        logger.error("a real distance renders identically in both modes");
+        return false;
+    }
+    // A corrupted setting must not throw here any more than at useWorkUnits:
+    // the gate goes through ergFlag, so a non-Boolean is the default (false).
+    if (!StrongRowView.footDistStr(0.0, 0).equals("0.00km")) {
+        logger.error("a corrupted ergMode must fall back to the off default, " +
+                     "not throw");
+        return false;
+    }
+    return true;
+}
+
+// THE CADENCE ENCODING. 0 spm is what a stationary handle broadcasts, so the
+// no-reading sentinel cannot be zero -- ERG_POWER_NONE's argument, one field
+// over.
+(:test) function test_erg_c1_theCadenceEncodingIsOutOfBandNotZero(logger) {
+    if (StrongRowView.ergCadOf(null) != $.ERG_CAD_NONE) {
+        logger.error("no cadence reading must encode as ERG_CAD_NONE");
+        return false;
+    }
+    if (StrongRowView.ergCadOf(0) != 0.0) {
+        logger.error("0 spm is a READING -- a stationary handle -- and must " +
+                     "encode as 0.0, not as the sentinel");
+        return false;
+    }
+    if ($.ERG_CAD_NONE >= 0.0) {
+        logger.error("the sentinel must be out of band for a real cadence, " +
+                     "or the case above cannot hold");
+        return false;
+    }
+    if (StrongRowView.ergCadOf(22) != 22.0) {
+        logger.error("a real cadence passes through; got " +
+                     StrongRowView.ergCadOf(22));
         return false;
     }
     return true;
@@ -868,9 +1072,12 @@ class ErgTimer {
 //
 // An earlier version of this case used a 20 J benchmark and 60 strokes, and it
 // red at 40% for its own reason: setJouleBench clamps to JOULE_BENCH_MIN
-// (50.0), so the case was asserting against a benchmark loadSettings would have
-// refused. Recorded rather than quietly corrected -- the clamp did its job and
-// the case was wrong.
+// (50.0), so the case was asserting against a benchmark the clamp refuses.
+// Recorded rather than quietly corrected -- the clamp did its job and the case
+// was wrong. (Precisely: at the time, the refusal came from a copy of the clamp
+// inside the probe, not from loadSettings -- see
+// theJouleBenchmarkIsClampedInCode. Both now route through jouleClampBench, so
+// the sentence is true of the shipping clamp as well.)
 (:test) function test_erg_c2_theRestArcReadsTheIntervalThatJustEnded(logger) {
     var p = EgCase.onErg();
     var r = EgCase.ergInterval(p, 120.0, 40, 10.0, 30.0, 3);
@@ -939,6 +1146,44 @@ class ErgTimer {
                      "distance units");
         return false;
     }
+
+    // AND SO MUST THE OTHER TWO CALL SITES. useWorkUnits' own justification is
+    // that it is a named function "rather than an `&&` repeated at the arc, the
+    // pace row and the grid, because three copies of a rule are three things
+    // that can disagree after one edit" -- and until this block, only the GRID
+    // copy was pinned. MEASURED: substituting `ergFlag(mErgMode, false)` for
+    // useWorkUnits at arcPct and at drawPace left all 308 cases green, because
+    // every other erg case is built from EgCase.onErg(), where the toggle is
+    // ON and the two predicates are behaviour-identical. The state that
+    // separates them is the one an athlete reaches by turning the maintainer's
+    // "option (default on)" off, which is the requested feature rather than an
+    // edge case.
+    //
+    // The two figures are far apart on purpose. 120 W at 18.0 spm is 400
+    // J/stroke, exactly JOULE_BENCH_DEF, so the WORK path would read 100%;
+    // 1.0 m/s at 18.0 spm is 3.33 m/stroke against the 6.0 m dpsBenchmark, so
+    // the DISTANCE path reads 55.6%.
+    var pct = p.arcPctFor(p.kindWork(), 1.0);
+    if (pct == null || (pct - 55.56).abs() > 0.1) {
+        logger.error("with the units toggle OFF the arc must read the " +
+                     "DISTANCE figure against dpsBenchmark (55.6%); it read " +
+                     pct);
+        return false;
+    }
+    // freeRowScreen and not the workout screen, because #108 stood the pace
+    // row down during WORK.
+    p.setSpeed(4.0);
+    var g4 = EgCase.freeRowScreen(p);
+    if (!EgCase.drew(g4, "/500m") || !EgCase.drew(g4, "m/str")) {
+        logger.error("with the units toggle OFF the pace row must stay the " +
+                     "shipping distance row");
+        return false;
+    }
+    if (EgCase.drew(g4, "J/str") || EgCase.drew(g4, "W  ")) {
+        logger.error("with the units toggle OFF the pace row rendered work " +
+                     "units anyway -- a mixed-unit screen");
+        return false;
+    }
     return true;
 }
 
@@ -966,9 +1211,9 @@ class ErgTimer {
     // The latched pair, read back through the shipping accumulator rather than
     // only off the screen: the number AND the flag that says it is a
     // measurement.
-    if (p.lastWorkEver() != true) {
-        logger.error("an interval with real power samples must latch its " +
-                     "'ever measured' flag; got " + p.lastWorkEver());
+    if (p.lastWorkN() != 40) {
+        logger.error("an interval of 40 ticks with real power samples must " +
+                     "latch a sample count of 40; got " + p.lastWorkN());
         return false;
     }
     var j = p.lastWorkJ();
@@ -991,9 +1236,9 @@ class ErgTimer {
     var r = EgCase.ergInterval(p, null, 40, 10.0, 30.0, 3);
     if (!r[0]) { logger.error("the latch did not take"); return false; }
     var geo = r[1];
-    if (p.lastWorkEver() != false) {
+    if (p.lastWorkN() != 0) {
         logger.error("an interval with NO power samples must not claim a " +
-                     "measurement; the ever flag is " + p.lastWorkEver());
+                     "measurement; the sample count is " + p.lastWorkN());
         return false;
     }
     if (EgCase.drewExact(geo, "0.0") || EgCase.drewExact(geo, "0")) {
@@ -1140,9 +1385,9 @@ class ErgTimer {
         logger.error("the second latch did not take");
         return false;
     }
-    if (p.lastWorkEver() != false) {
-        logger.error("the second interval measured NO power, so its 'ever " +
-                     "measured' flag must be false. It is " + p.lastWorkEver() +
+    if (p.lastWorkN() != 0) {
+        logger.error("the second interval measured NO power, so its sample " +
+                     "count must be zero. It is " + p.lastWorkN() +
                      " -- the first interval's claim survived the interval " +
                      "boundary, and the grid would render 1.0 kJ for an " +
                      "interval rowed with no power meter");
@@ -1176,7 +1421,7 @@ class ErgTimer {
     var jp = new ErgField();
     var dg = new ErgField();
     var wk = new ErgField();
-    p.installErgFields(pw, jp, dg, wk);
+    p.installErgFields(pw, jp, dg, wk, new ErgField());
     p.enterStepLive(p.kindWork(), false);
 
     p.setPower(null);
@@ -1254,7 +1499,8 @@ class ErgTimer {
 (:test) function test_erg_c2_theSessionTotalIsWrittenOnlyWhenMeasured(logger) {
     var p = EgCase.onErg();
     var wk = new ErgField();
-    p.installErgFields(new ErgField(), new ErgField(), new ErgField(), wk);
+    p.installErgFields(new ErgField(), new ErgField(), new ErgField(), wk,
+                       new ErgField());
     p.installSession(new ErgSession());
     p.enterStepLive(p.kindWork(), false);
     p.setPower(200.0);
@@ -1272,7 +1518,8 @@ class ErgTimer {
 
     var q = EgCase.onErg();
     var wk2 = new ErgField();
-    q.installErgFields(new ErgField(), new ErgField(), new ErgField(), wk2);
+    q.installErgFields(new ErgField(), new ErgField(), new ErgField(), wk2,
+                       new ErgField());
     q.installSession(new ErgSession());
     q.enterStepLive(q.kindWork(), false);
     q.setPower(null);
@@ -1287,17 +1534,28 @@ class ErgTimer {
     return true;
 }
 
-// THE INSTRUMENTATION ANSWERS ITS OWN QUESTION, through the shipping tick.
+// THE INSTRUMENTATION RECORDS WHAT THE MACHINE POPULATED, through the shipping
+// tick.
 //
 // This is the case that decides whether ONE erg session settles the assumption.
 // A machine that broadcasts as fitness equipment would populate speed, distance
 // and cadence as well as power, and if it does then the distance-based figures
 // still work on an erg -- which changes the design. All four sources are driven
 // independently and read back out of the one recorded word.
+//
+// WHAT THIS CASE DOES NOT ESTABLISH, corrected here because an earlier header
+// claimed the bits "answer their own question" and the cadence pair does not.
+// These assertions pin the ENCODING -- "the bit is set when the source is
+// non-null" -- and they pass identically for a wrist-sourced cadence, because
+// the wrist populates ai.currentCadence with no machine present (measured on
+// the water; see the ERGD_CAD_OK note in source/StrongRowView.mc). The bits
+// therefore say whether cadence populated AT ALL, not where it came from; the
+// erg_cadence VALUE is what carries the source question off the file.
 (:test) function test_erg_c2_theDiagnosticRecordsWhatTheMachinePopulated(logger) {
     var p = EgCase.onErg();
     var dg = new ErgField();
-    p.installErgFields(new ErgField(), new ErgField(), dg, new ErgField());
+    p.installErgFields(new ErgField(), new ErgField(), dg, new ErgField(),
+                       new ErgField());
     p.enterStepLive(p.kindWork(), false);
 
     // Nothing populated: the answer the assumption fails with.

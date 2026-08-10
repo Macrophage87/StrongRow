@@ -347,16 +347,18 @@ class HrProbe extends StrongRowView {
 
     // The three erg settings, bypassing loadSettings so a case can drive the
     // unit switch without a Properties store. Pushed through the shipping
-    // ergFlag / clamp so a case can never assert against a configuration
-    // loadSettings would have refused.
+    // ergFlag / jouleClampBench so a case can never assert against a
+    // configuration loadSettings would have refused.
+    //
+    // ALL THREE CALL THE SHIPPING STATIC. setJouleBench used to re-implement
+    // the comparison inline, and that made the case named
+    // theJouleBenchmarkIsClampedInCode pin this copy and nothing else: deleting
+    // both clamp lines from loadSettings left all 308 green (measured). The
+    // route setBand takes through hrClampBand, one screen up, is the shape that
+    // was always correct here.
     function setErgMode(v)    { mErgMode = StrongRowView.ergFlag(v, false); }
     function setErgUnits(v)   { mErgPowerUnits = StrongRowView.ergFlag(v, false); }
-    function setJouleBench(j) {
-        var b = j * 1.0;
-        if (b < $.JOULE_BENCH_MIN) { b = $.JOULE_BENCH_MIN; }
-        if (b > $.JOULE_BENCH_MAX) { b = $.JOULE_BENCH_MAX; }
-        mJouleBench = b;
-    }
+    function setJouleBench(j) { mJouleBench = StrongRowView.jouleClampBench(j); }
     function jouleBench() { return mJouleBench; }
 
     // The arc's whole input -- value AND benchmark -- through the SHIPPING
@@ -371,25 +373,33 @@ class HrProbe extends StrongRowView {
 
     // Read-only views of the latched interval's work pair. BOTH, because the
     // whole point of the pair is that the number alone cannot say whether the
-    // interval carried a measurement.
-    function lastWorkJ()    { return mLastSetWorkJ; }
-    function lastWorkEver() { return mLastSetWorkEver; }
-    function sessWorkJ()    { return mErgSessJ; }
-    function sessWorkEver() { return mErgSessEver; }
+    // interval carried a measurement -- or how much of it did.
+    //
+    // THE COUNT, not a boolean. `lastWorkN() > 0` is the old lastWorkEver()
+    // exactly, so every absence assertion reads the same; what the count adds
+    // is that a case can now see a PARTIALLY covered interval, which is the
+    // state a boolean cannot express and under which the work total is
+    // under-reported.
+    function lastWorkJ()  { return mLastSetWorkJ; }
+    function lastWorkN()  { return mLastSetWorkN; }
+    function lastWorkSec() { return mLastSetSec; }
+    function sessWorkJ()  { return mErgSessJ; }
+    function sessWorkN()  { return mErgSessN; }
 
     // The real 250 ms tick, called directly -- the same seam Lock.Probe.runTick
     // uses, so the accumulator cases drive the SHIPPING onTick rather than a
     // transcription of its arithmetic.
     function runTick() { onTick(); }
 
-    // Recording stand-ins for the four erg field handles, in id order:
+    // Recording stand-ins for the five erg field handles, in id order:
     // erg_power (12), erg_joules_per_stroke (13), erg_diag (14),
-    // erg_work_total (15).
-    function installErgFields(pF, jF, dF, wF) {
+    // erg_work_total (15), erg_cadence (16).
+    function installErgFields(pF, jF, dF, wF, cF) {
         mFitErgPower = pF;
         mFitErgJps   = jF;
         mFitErgDiag  = dF;
         mFitErgWork  = wF;
+        mFitErgCad   = cF;
     }
 
     // Enough of a session for stopAndSave's session-scope write to be reached.

@@ -487,6 +487,55 @@ const JOULE_BENCH_DEF = 400.0;
 const JOULE_BENCH_MIN = 50.0;
 const JOULE_BENCH_MAX = 2000.0;
 
+// ---- the interval work integrator's SAMPLE-COVERAGE FLOOR ------------------
+// WHY A FLOOR EXISTS AT ALL. Interval work is an INTEGRAL of instantaneous
+// samples, and that makes it unlike every other latched total on this screen.
+// mSetHrSum is immune to a dropout because mSetHrN counts the samples actually
+// taken and setAvgBpm divides by it; mLastSetDist is immune because
+// latchWorkAccum takes an ODOMETER DELTA, which cannot lose a sample by
+// construction. An integral has neither defence: a tick with no power sample
+// contributes nothing and, without a count, leaves no trace that it happened.
+// The result is a total that is under-reported by exactly the fraction of the
+// interval the source was down, rendered as a value with nothing saying so --
+// which is the same shape as the defect latchWorkAccum's own note records ("a
+// 20% under-report on glance priority 1, rendered as a value rather than a
+// dash").
+//
+// THE VALUE IS DERIVED FROM THE ARC'S OWN FAR BOUNDARY, not chosen. 0.85 is
+// DPS_FAR_PCT / 100. The consequence, stated exactly and no stronger: an
+// interval that clears this floor can be under-reported by at most 15%, so a
+// reading that was AT the benchmark (100%) can be pushed no lower than 85% --
+// and dpsZone's boundaries are inclusive upward, so 85% is UNDER and NOT FAR.
+// A covered interval therefore cannot turn "you are on benchmark" into "far
+// below benchmark, row harder". It CAN still move AT to UNDER, and it can move
+// an already-UNDER reading into FAR; neither of those is a reversal of the
+// instruction, which is what this floor is chosen to prevent.
+//
+// BELOW THE FLOOR THE ANSWER IS A DASH, never a scaled-up estimate.
+// Extrapolating the measured mean across the unmeasured time would invent work
+// the app never saw and present it with the same authority as work it did.
+//
+// THE FLOOR IS APPLIED TO THE DISPLAYED figures ONLY, and not to
+// erg_work_total. See the note at that write for why the FIT record does not
+// need it and would be made worse by it.
+const WORK_COVER_MIN = 0.85;
+
+// ---- the REST GRID's two erg cells: their display clamps -------------------
+// The same argument PACE_W_MAX makes for the pace row, applied to the grid --
+// and it had to be made here separately because the grid formatted its two erg
+// cells RAW. The comment in drawSetGrid claimed maxima ("9999" J/stroke,
+// "999.9" kJ) that nothing enforced and no case pinned: settings.xml declares
+// workMinutes up to 60, and 60 minutes at 278 W is 1 000 800 J, which the
+// unclamped cell renders as "1000.8" -- six characters where the "18000" it
+// replaces is five.
+//
+// GRID_KJ_HI is not a constant because it is not a policy: 1000.0 appears once,
+// inside gridKjStr, as the point where "%.1f" would grow a sixth character. See
+// that function for why the format changes there rather than the value being
+// clamped there.
+const GRID_J_MAX  = 9999;    // J/stroke, "%d"   -> at most 4 characters
+const GRID_KJ_MAX = 9999;    // kJ,       see gridKjStr -> at most 5 characters
+
 // ---- the erg FIT encodings -------------------------------------------------
 // RECORD-SCOPE FIELDS LATCH. Once setData has been called even once, a record
 // committing without a new setData RE-EMITS the last value (#36, byte level,
@@ -513,6 +562,11 @@ const JOULE_BENCH_MAX = 2000.0;
 //               stroke rate is 0.0 J/stroke, an ordinary reading. Same
 //               sentinel, same argument.
 //
+//   erg_cadence YES. A cadence of 0 spm is what a machine broadcasts while the
+//               handle is stationary, and it is exactly the reading that would
+//               tell a machine source from a wrist one. Same sentinel, same
+//               argument -- cadence is non-negative by construction.
+//
 // WHAT THIS ARGUMENT DOES NOT COVER, stated so it is not read as more than it
 // is. Every sentence above is about the app's own arithmetic. Whether a decoder
 // RENDERS a record-scope float32 -1.0 as the number -1 -- rather than folding
@@ -521,20 +575,44 @@ const JOULE_BENCH_MAX = 2000.0;
 // any of this as a fact about a file until a [Local] decode has run.
 const ERG_POWER_NONE = -1.0;
 const ERG_JPS_NONE   = -1.0;
+const ERG_CAD_NONE   = -1.0;
 
 // ---- the erg INSTRUMENTATION bitfield --------------------------------------
 // THE POINT OF THE FIRST SESSION. The whole feature rests on an assumption
 // nobody has measured: that Activity.Info.currentPower is populated for a
 // Connect IQ WATCH APP when a rowing machine is paired. These bits are what let
-// ONE session settle it -- and settle the three questions that immediately
-// follow from it -- without a second trip:
+// ONE session settle it -- and settle the questions that immediately follow
+// from it -- without a second trip:
 //
 //   * was currentPower non-null, and was it ever positive;
 //   * do currentSpeed and elapsedDistance populate FROM THE MACHINE? They may,
 //     if it broadcasts as fitness equipment, and if they do then the
 //     distance-based figures still work on an erg and this feature's premise
 //     changes;
-//   * does currentCadence populate from the machine rather than from the wrist?
+//   * does currentCadence populate AT ALL on an erg?
+//
+// WHAT THE CADENCE BITS CANNOT SAY, corrected here because an earlier revision
+// of this block claimed they answered "does currentCadence populate from the
+// MACHINE rather than from the wrist" and they cannot. THE WRIST ALREADY
+// POPULATES THAT FIELD WITH NO MACHINE PRESENT, and this repository has
+// measured it: the Potomac row in README.md records native cadence at 89-109
+// blade movements against 66-68 drives, which is the measurement
+// correctiveRate() is built on, taken on the water. So CAD_OK|CAD_POS set is
+// the EXPECTED reading on an erg whichever source feeds it, and only CAD_OK
+// CLEAR would be informative -- it would say the indoor context suppressed the
+// wrist counter. The power, speed and distance bits do not share this problem,
+// because none of those three is known to populate without a machine.
+//
+// SO THE SOURCE QUESTION IS ANSWERED BY THE VALUE, NOT BY THE BITS. erg_cadence
+// (id 16) carries ai.currentCadence itself, so it can be differenced against
+// row_stroke_rate off the file -- which correctiveRate() cannot be used for,
+// because it clamps the difference at zero and so destroys exactly the sign of
+// interest (a machine cadence BELOW the wrist-derived drive rate). Even then a
+// decisive read needs a protocol rather than a passive comparison: during
+// ordinary erg rowing both candidate sources track the same strokes. Hands off
+// the handle while moving the arm is the discriminator -- a machine source goes
+// to zero there and a wrist source does not. That protocol is #168's, not this
+// field's.
 //
 // This mirrors what ct_diag does for the CORE pod and what #149's lock fields
 // did for the stroke detector: both turned an argument into a measurement.
@@ -560,6 +638,9 @@ const ERGD_SPD_OK  = 0x0004;   // currentSpeed was non-null
 const ERGD_SPD_POS = 0x0008;
 const ERGD_DST_OK  = 0x0010;   // elapsedDistance was non-null
 const ERGD_DST_POS = 0x0020;
+// "was it populated", NOT "was it the machine". See the correction above: only
+// CAD_OK CLEAR carries information, because the wrist populates this field on
+// its own. erg_cadence (id 16) is what carries the source question.
 const ERGD_CAD_OK  = 0x0040;   // currentCadence was non-null
 const ERGD_CAD_POS = 0x0080;
 const ERGD_ERGMODE = 0x0100;   // the ergMode setting was ON for this record
@@ -942,12 +1023,24 @@ class StrongRowView extends Ui.View {
     // them -- and it is accumulated under the SAME `mSetNum > 0` gate the
     // heart-rate sum uses, so a rest tick never reaches it in the first place.
     //
-    // mErgWorkEver IS THE PRESENCE TEST, never `mErgWorkJ > 0.0`. Zero joules
-    // with samples taken is an athlete who produced no work; zero joules with
-    // NO samples is an athlete with no power meter, and the two must not render
-    // the same. That distinction is the whole of #86 / #107.
+    // A SUM AND A COUNT, exactly like mSetHrSum / mSetHrN above -- and the
+    // COUNT is the half an earlier revision of this comment left out while
+    // claiming parity with the heart-rate pair. That omission was the whole
+    // defect: mSetHrN is what makes the HR mean immune to a dropout (setAvgBpm
+    // divides by the samples actually taken), and mLastSetDist is immune for a
+    // different reason again (latchWorkAccum takes an odometer delta, which
+    // cannot lose a sample). An INTEGRAL of instantaneous samples has neither
+    // defence, so it needs its own count. See WORK_COVER_MIN.
+    //
+    // mErgWorkN IS THE PRESENCE TEST, never `mErgWorkJ > 0.0`. Zero joules with
+    // samples taken is an athlete who produced no work; zero joules with NO
+    // samples is an athlete with no power meter, and the two must not render
+    // the same. That distinction is the whole of #86 / #107. `mErgWorkN > 0` is
+    // exactly the boolean this member replaced, so nothing about presence
+    // changed when the count arrived -- what the count adds is COVERAGE, which
+    // a boolean cannot express.
     hidden var mErgWorkJ;
-    hidden var mErgWorkEver;
+    hidden var mErgWorkN;
 
     // The LATCH: the last completed work interval, frozen at its boundary.
     hidden var mLastSetValid;
@@ -957,12 +1050,13 @@ class StrongRowView extends Ui.View {
     hidden var mLastSetStrokes;
     hidden var mLastSetHrSum;
     hidden var mLastSetHrN;
-    // ERG: the interval's work and its presence flag, latched together with the
+    // ERG: the interval's work and its sample COUNT, latched together with the
     // rest. BOTH, never just the number -- latching the joules alone would make
     // "no power source" indistinguishable from "no work done" at read time,
-    // which is the trap this pair exists to close.
+    // which is the trap this pair exists to close, and it would also lose the
+    // coverage the count carries. Read against mLastSetSec by workCoverOk.
     hidden var mLastSetWorkJ;
-    hidden var mLastSetWorkEver;
+    hidden var mLastSetWorkN;
 
     // autocorrelation state
     hidden var mDecim;
@@ -1057,24 +1151,35 @@ class StrongRowView extends Ui.View {
     // #149 part 2's gate-input diagnostics, record scope, ids 23-24.
     hidden var mFitRateRaw;
     hidden var mFitRateBase;
-    // ERG MODE's fields, ids 12-15. Three record-scope, one session-scope.
+    // ERG MODE's fields, ids 12-16. Four record-scope, one session-scope.
     hidden var mFitErgPower;
     hidden var mFitErgJps;
     hidden var mFitErgDiag;
     hidden var mFitErgWork;
-    // SESSION-scope work, in joules, and its presence flag. Separate from the
+    hidden var mFitErgCad;
+    // SESSION-scope work, in joules, and its sample count. Separate from the
     // per-interval pair above because the two have different lifetimes: the
     // interval accumulator is reset at every WORK entry, this one at every
     // START, and only this one survives a rest.
     //
-    // Reset in startSession() alongside mCorrAccum rather than in
-    // beginSessionAccum(), and that placement is load-bearing rather than
-    // arbitrary: beginSessionAccum is called from startWorkout only, so the
-    // FREE-ROW path (onPrimary with mWorkoutEnabled false) never reaches it,
-    // and a session accumulator reset there would carry the previous row's
-    // joules into every free row.
+    // Reset in startSession() alongside mCorrAccum, mMaxCore and the #13 flags,
+    // because startSession is where the SESSION-scope FIT field this feeds
+    // comes into existence.
+    //
+    // AN EARLIER REVISION OF THIS COMMENT JUSTIFIED THE PLACEMENT WITH A FALSE
+    // CLAIM ABOUT CONTROL FLOW -- that "beginSessionAccum is called from
+    // startWorkout only, so the FREE-ROW path never reaches it". It is not
+    // true, in both directions: onPrimary's free-row arm calls
+    // beginSessionAccum(), and so does initialize(), which startSession has no
+    // analogue for. The file already said so correctly at beginWorkAccum's
+    // caller note ("beginSessionAccum(), which every recording-start path
+    // calls"), so the branch briefly held two mutually exclusive statements
+    // about one function. beginSessionAccum WOULD reset this correctly; the
+    // real reason it does not live there is that that function owns the
+    // INTERVAL-scope accumulators, and a session-scope reset in it would blur
+    // the boundary the two lifetimes depend on.
     hidden var mErgSessJ;
-    hidden var mErgSessEver;
+    hidden var mErgSessN;
     hidden var mMaxCore;
     // #13. "Has a real reading ever been written to this record field in this
     // session?" -- one flag per field, not one for the pair, because #17 gave
@@ -1140,8 +1245,9 @@ class StrongRowView extends Ui.View {
         mFitErgJps   = null;
         mFitErgDiag  = null;
         mFitErgWork  = null;
+        mFitErgCad   = null;
         mErgSessJ    = 0.0;
-        mErgSessEver = false;
+        mErgSessN    = 0;
         mMaxCore    = 0.0;
         mCoreEver   = false;      // #13
         mSkinEver   = false;      // #13
@@ -1240,9 +1346,12 @@ class StrongRowView extends Ui.View {
         // members Booleans by construction, so the predicate is total.
         mErgMode       = ergFlag(getProp("ergMode", false), false);
         mErgPowerUnits = ergFlag(getProp("ergPowerUnits", true), true);
-        mJouleBench = getProp("jouleBenchmark", $.JOULE_BENCH_DEF).toFloat();
-        if (mJouleBench < $.JOULE_BENCH_MIN) { mJouleBench = $.JOULE_BENCH_MIN; }
-        if (mJouleBench > $.JOULE_BENCH_MAX) { mJouleBench = $.JOULE_BENCH_MAX; }
+        // THROUGH jouleClampBench, not inline: an inline clamp here is
+        // unreachable from every (:test) in the repository, and the case that
+        // claimed to pin it was pinning a copy inside the test probe instead.
+        // See that function.
+        mJouleBench = jouleClampBench(
+            getProp("jouleBenchmark", $.JOULE_BENCH_DEF).toFloat());
     }
 
     // reload from Garmin Connect settings (only when not mid-session)
@@ -1603,8 +1712,8 @@ class StrongRowView extends Ui.View {
             // THE SESSION TOTAL takes every tick of the recording, rests
             // included -- it is the whole row's work, which is what the
             // maintainer's "work over the session" asks for.
-            mErgSessJ    = workAccumStep(mErgSessJ, ergW, $.TICK_MS);
-            mErgSessEver = workEverAfter(mErgSessEver, ergW);
+            mErgSessJ = workAccumStep(mErgSessJ, ergW, $.TICK_MS);
+            mErgSessN = workCountAfter(mErgSessN, ergW);
             // THE INTERVAL TOTAL takes only ticks inside a WORK interval, under
             // the SAME `mSetNum > 0` gate the heart-rate sum above uses -- which
             // is what excludes rest and gate samples for the same reason they
@@ -1614,9 +1723,15 @@ class StrongRowView extends Ui.View {
             // NOT gated on erg mode: the latch is then always meaningful, so a
             // setting flipped between rows cannot leave the grid reading an
             // interval that was never accumulated.
+            //
+            // THE COUNT IS INCREMENTED HERE WITH THE SUM, from the same
+            // sample, which is what makes coverage knowable at the latch. It
+            // counts SAMPLES TAKEN, not ticks elapsed: a tick with no reading
+            // adds nothing to either, and the difference between the count and
+            // the interval's own duration IS the dropout. See WORK_COVER_MIN.
             if (mSetNum > 0) {
-                mErgWorkJ    = workAccumStep(mErgWorkJ, ergW, $.TICK_MS);
-                mErgWorkEver = workEverAfter(mErgWorkEver, ergW);
+                mErgWorkJ = workAccumStep(mErgWorkJ, ergW, $.TICK_MS);
+                mErgWorkN = workCountAfter(mErgWorkN, ergW);
             }
             // #13. Each field decides for itself, from its own sample and its
             // own "ever written" flag -- core and skin carry SEPARATE freshness
@@ -2685,10 +2800,10 @@ class StrongRowView extends Ui.View {
     //
     // A MISSING SAMPLE CONTRIBUTES NOTHING AND IS NOT A ZERO SAMPLE. Adding
     // 0.0 would be arithmetically identical here and semantically fatal one
-    // function over: it is workEverAfter, not the accumulated value, that
+    // function over: it is workCountAfter, not the accumulated value, that
     // decides whether the interval has anything to say, and an accumulator that
-    // "absorbed" null samples would still read 0.0 J with ever false. Keeping
-    // the two facts in two places is what stops a later reader deriving
+    // "absorbed" null samples would still read 0.0 J with a count of zero.
+    // Keeping the two facts in two places is what stops a later reader deriving
     // presence from the number.
     //
     // tickMs IS A PARAMETER rather than $.TICK_MS read inside, so a case can
@@ -2701,26 +2816,68 @@ class StrongRowView extends Ui.View {
         return prevJ + watts * tickMs / 1000.0;
     }
 
-    // Pure: has this accumulator ever seen a real sample?
+    // Pure: HOW MANY real samples this accumulator has taken.
     //
-    // LATCHES TRUE and is never lowered by a later absence -- the same shape
-    // ctTempEverAfter has, and for the same reason: the question is "did this
-    // interval carry any measurement at all", not "is the source live now".
-    static function workEverAfter(ever, watts) {
-        if (ever == true) { return true; }
-        return watts != null && watts >= 0.0;
+    // A COUNT AND NOT A BOOLEAN, and the two are not interchangeable even
+    // though `n > 0` is exactly the boolean this replaced. The boolean answers
+    // "did this interval carry any measurement at all"; only the count answers
+    // "how much of it did", which is what workCoverOk needs and what a partial
+    // dropout silently destroys. mSetHrN is the same member for the same
+    // reason, one accumulator up.
+    //
+    // MONOTONIC: it never decreases, which is the property the boolean's
+    // "latches true" was expressing. A tick with no sample returns the count
+    // unchanged rather than resetting it, because the question is cumulative.
+    //
+    // A REAL ZERO COUNTS. `watts >= 0.0` and not `> 0.0`: 0 W between strokes
+    // is a sample the source produced, and treating it as a dropout would make
+    // an athlete on the recovery look like an athlete with no power meter.
+    static function workCountAfter(n, watts) {
+        var c = (n == null) ? 0 : n;
+        if (watts != null && watts >= 0.0) { return c + 1; }
+        return c;
+    }
+
+    // Pure: did enough of the interval actually carry a power sample for its
+    // work total to be worth showing?
+    //
+    // WHY THIS IS NOT PARANOIA. `n * tickMs / 1000` is the number of SECONDS
+    // covered by real samples; `sec` is the interval's own pause-corrected
+    // duration. Their ratio is the fraction of the interval the power source
+    // was up, and the work total is under-reported by exactly one minus that
+    // ratio -- an integral of instantaneous samples cannot notice its own gaps
+    // the way a mean over a counted sum or an odometer delta can. The whole
+    // argument, and the derivation of the 0.85, is at WORK_COVER_MIN.
+    //
+    // FALSE WHEN THE DURATION IS UNKNOWN OR ZERO: coverage is a ratio, and a
+    // zero denominator is not a full interval, it is an unanswerable question.
+    //
+    // tickMs IS A PARAMETER for workAccumStep's reason -- the call site names
+    // the period it believes it is running at, rather than this reading a
+    // constant the timer may not honour.
+    static function workCoverOk(n, sec, tickMs) {
+        if (n == null || sec == null || tickMs == null) { return false; }
+        if (sec <= 0.0 || tickMs <= 0) { return false; }
+        if (n <= 0) { return false; }
+        return (n * tickMs / 1000.0) >= ($.WORK_COVER_MIN * sec);
     }
 
     // Pure: the interval's work in KILOJOULES, or null.
     //
-    // `ever` IS THE SOLE PRESENCE TEST, and `joules > 0.0` is deliberately NOT
-    // one. setDistM refuses a zero distance because a zero-distance interval on
-    // the water is not a thing that happens; a zero-WORK interval is, and
-    // refusing it would render an honest 0.0 kJ identically to a missing power
-    // meter. This is setAvgBpm's shape (the count decides presence, the value
-    // may be anything) rather than setDistM's.
-    static function setWorkKJ(joules, ever) {
-        if (ever != true) { return null; }
+    // `measured` IS THE SOLE PRESENCE TEST, and `joules > 0.0` is deliberately
+    // NOT one. setDistM refuses a zero distance because a zero-distance
+    // interval on the water is not a thing that happens; a zero-WORK interval
+    // is, and refusing it would render an honest 0.0 kJ identically to a
+    // missing power meter. This is setAvgBpm's shape (the count decides
+    // presence, the value may be anything) rather than setDistM's.
+    //
+    // WHAT `measured` MEANS IS THE CALLER'S DECISION, and the two live callers
+    // answer it differently on purpose: the grid passes workCoverOk (enough of
+    // the interval carried a sample), stopAndSave passes `n > 0` (any sample at
+    // all). Both reasons are written at their call sites; this function only
+    // refuses to invent a number when told there is none.
+    static function setWorkKJ(joules, measured) {
+        if (measured != true) { return null; }
         if (joules == null || joules < 0.0) { return null; }
         return joules / 1000.0;
     }
@@ -2732,8 +2889,9 @@ class StrongRowView extends Ui.View {
     // joulesPerStroke: that is an instantaneous ratio of two smoothed
     // estimators and a different quantity entirely, which is the distinction
     // setAvgDps's own note makes.
-    static function setAvgJps(joules, strokes, ever) {
-        if (ever != true) { return null; }
+    // `measured` carries setWorkKJ's meaning verbatim -- see the note there.
+    static function setAvgJps(joules, strokes, measured) {
+        if (measured != true) { return null; }
         if (strokes == null || strokes <= 0) { return null; }
         if (joules == null || joules < 0.0)  { return null; }
         return joules / strokes;
@@ -2754,6 +2912,67 @@ class StrongRowView extends Ui.View {
     static function paceWorkStr(watts, jps) {
         return ergNum(watts, $.PACE_W_MAX) + "W  " +
                ergNum(jps, $.PACE_J_MAX) + "J/str";
+    }
+
+    // Pure: the REST grid's accumulated-work cell, in kilojoules, or "--".
+    //
+    // WHY THIS IS NOT JUST `kj.format("%.1f")`. The grid's format table claimed
+    // the kJ cell was never wider than the "18000" (five characters) it
+    // replaces, on an assumed maximum of "999.9". Nothing enforced that and no
+    // case pinned it: settings.xml allows a 60-minute work interval, and 60
+    // minutes at 278 W is 1 000 800 J -- "1000.8", six characters. The claimed
+    // bound was an assumption about athlete power printed in the same table as
+    // the format strings.
+    //
+    // THE SWITCH POINT IS 999.95 AND NOT 1000.0, and that is a measurement
+    // rather than a nicety: "%.1f" ROUNDS, so 999.96 formats as "1000.0" --
+    // six characters, the exact overrun this function exists to prevent. Found
+    // by the sweep in test_erg_c1_theKilojouleCellIsBoundedToFiveCharacters,
+    // which is why that case sweeps instead of checking three examples.
+    //
+    // THE FORMAT CHANGES AT ~1000 kJ RATHER THAN THE VALUE BEING CLAMPED THERE,
+    // because 1000 kJ is a real interval and clamping it would be a lie about a
+    // legitimate reading -- unlike PACE_W_MAX, whose 9999 W is a broken
+    // machine. A tenth of a kilojoule is the useful resolution below 1000 kJ
+    // and is meaningless above it, so dropping it there costs nothing and buys
+    // the character bound outright: "999.9" is five, "1000" is four, "9999" is
+    // four. FIVE CHARACTERS IS THEREFORE THE MAXIMUM, which is exactly the
+    // width of the "18000" this cell replaces.
+    //
+    // GRID_KJ_MAX is still a clamp, and it is PACE_W_MAX's argument verbatim:
+    // 9999 kJ in one interval is 2775 W sustained for the full hour
+    // settings.xml allows, so the top end is a broken machine and the FIT file
+    // carries the true total through erg_work_total.
+    //
+    // CHARACTERS ARE NOT PIXELS. No (:test) that runs in CI can obtain a font
+    // metric (#121), so five characters is a character bound and not a
+    // clearance; the pixel measurement is #169's.
+    static function gridKjStr(kj) {
+        if (kj == null || kj < 0.0) { return "--"; }
+        if (kj < 999.95) { return kj.format("%.1f"); }
+        var n = (kj + 0.5).toNumber();
+        if (n > $.GRID_KJ_MAX) { n = $.GRID_KJ_MAX; }
+        return n.format("%d");
+    }
+
+    // Pure: the joules-per-stroke benchmark, clamped to its declared band.
+    //
+    // SPLIT OUT OF loadSettings FOR hrClampBand's REASON, which is the whole
+    // point: the clamp itself has to be reachable from a (:test), and
+    // loadSettings is not -- it needs App.Properties and a built view. While
+    // this lived inline in loadSettings, the case named
+    // theJouleBenchmarkIsClampedInCode was in fact exercising a private COPY of
+    // the comparison inside the test probe, and deleting both real clamp lines
+    // left all 308 cases green (measured, in the CI container, on fr965). That
+    // is this repository's own named failure "a test that re-implements logic
+    // instead of calling it pins nothing", landing on exactly the #21 defect
+    // class the clamp exists to close.
+    static function jouleClampBench(v) {
+        if (v == null) { return $.JOULE_BENCH_DEF; }
+        var b = v * 1.0;
+        if (b < $.JOULE_BENCH_MIN) { b = $.JOULE_BENCH_MIN; }
+        if (b > $.JOULE_BENCH_MAX) { b = $.JOULE_BENCH_MAX; }
+        return b;
     }
 
     // Pure: a whole-number figure for a glance surface, or "--".
@@ -2803,6 +3022,24 @@ class StrongRowView extends Ui.View {
     static function ergJpsOf(jps) {
         if (jps == null || jps < 0.0) { return $.ERG_JPS_NONE; }
         return jps * 1.0;
+    }
+
+    // Pure: the native cadence to record, or ERG_CAD_NONE.
+    //
+    // THIS IS THE FIELD THAT ANSWERS THE SOURCE QUESTION, and the erg_diag
+    // cadence BITS are not. See the correction in the ERGD_CAD_OK block: the
+    // wrist populates ai.currentCadence with no machine present -- measured, on
+    // the water, in the README's Potomac row -- so a set bit is the expected
+    // reading either way and only the VALUE can be differenced against
+    // row_stroke_rate. correctiveRate() cannot serve, because it clamps that
+    // difference at zero and so discards the one sign that would be evidence.
+    //
+    // SENTINEL, NOT SILENCE, for the record-scope latch reason all three of
+    // these encoders share; negative because cadence is non-negative by
+    // construction and 0 spm is a real reading.
+    static function ergCadOf(cad) {
+        if (cad == null || cad < 0) { return $.ERG_CAD_NONE; }
+        return cad * 1.0;
     }
 
     // Pure: one bit if a nullable reading was present, another if it was
@@ -2981,6 +3218,45 @@ class StrongRowView extends Ui.View {
         return fs == $.FOOT_NO_ACCEL || fs == $.FOOT_NO_REC;
     }
 
+    // Pure: the REC footer's distance token, or a dash.
+    //
+    // THE ONE DISTANCE STRING THE UNIT SWITCH DID NOT REACH. Every other
+    // distance figure on screen became conditional when erg mode landed -- the
+    // pace row, both grid labels, both grid values -- and this one was left as
+    // an unconditional `(dist / 1000.0).format("%.2f") + "km"`. Its input is
+    // elapsedDist(), which collapses an absent reading to 0.0; the note at
+    // currentPower() calls that collapse safe because a zero there "is either
+    // harmless at the call site or out of band". THIS IS THE CALL SITE WHERE IT
+    // IS NEITHER: on an erg elapsedDistance may have no source at all (that is
+    // what ERGD_DST_OK exists to find out), so the footer rendered a fabricated
+    // "0.00km", with a unit label, on a glance surface, in the mode this
+    // feature ships. drawSetGrid's own header states the standard it broke: a
+    // dash is a distinct answer, a zero is a claim.
+    //
+    // GATED ON ERG MODE ALONE, NOT ON useWorkUnits, and that is deliberate: the
+    // footer's kilometres are not a UNIT question -- kilometres are kilometres
+    // whichever units the arc is in -- they are a SOURCE question. Whether a
+    // distance source exists is decided by whether the athlete is on a machine,
+    // not by which figures they asked the arc to show. An athlete who turns the
+    // units toggle off is asking for distance FIGURES, not for a fabricated
+    // one.
+    //
+    // `dist <= 0.0` RATHER THAN A BARE NULL TEST, because it is not known
+    // whether an absent distance arrives as null or as 0.0 -- and elapsedDist()
+    // has already erased the difference by the time it gets here. This dashes
+    // in both cases and SELF-HEALS: if the machine does broadcast as fitness
+    // equipment, dist goes positive after the first few metres and the km token
+    // returns, which is the correct reading of that situation.
+    //
+    // The null branch is unreachable from today's only caller (elapsedDist()
+    // never returns null) and is stated as defence for a future one rather than
+    // as a fix for anything observed.
+    static function footDistStr(dist, ergMode) {
+        if (dist == null) { return "--"; }
+        if (ergFlag(ergMode, false) && dist <= 0.0) { return "--"; }
+        return (dist / 1000.0).format("%.2f") + "km";
+    }
+
     // ============ #110: the heart-rate arc, as pure decisions ================
     // Every judgement the left-edge arc makes lives here, as a class-scope
     // static taking plain numbers and booleans -- the same seam filterRr /
@@ -3094,7 +3370,7 @@ class StrongRowView extends Ui.View {
     hidden function jpsForArc(type) {
         if (type == STEP_REST) {
             if (!mLastSetValid) { return null; }
-            return setAvgJps(mLastSetWorkJ, mLastSetStrokes, mLastSetWorkEver);
+            return setAvgJps(mLastSetWorkJ, mLastSetStrokes, mLastSetWorkN > 0);
         }
         return joulesPerStroke(currentPower(), outputRate());
     }
@@ -4399,18 +4675,25 @@ class StrongRowView extends Ui.View {
                         mFitErgJps   = null;
                         mFitErgDiag  = null;
                         mFitErgWork  = null;
+                        mFitErgCad   = null;
                     }
                 }
                 mCorrAccum = 0.0;
                 // ERG: the SESSION work accumulator, reset here with mCorrAccum
-                // and for the identical reason -- this is the one function every
-                // recording-start path passes through, including the free-row
-                // path that never reaches beginSessionAccum(). Resetting it
-                // there would carry the previous row's joules into every free
-                // row. The FLAG is reset with the value, or a second row with no
+                // and for the identical reason -- startSession is where the
+                // session-scope FIT field this feeds comes into existence, so
+                // its lifetime and the accumulator's are the same lifetime.
+                //
+                // NOT because beginSessionAccum() misses a path: it does not.
+                // An earlier revision of this comment said "the free-row path
+                // ... never reaches beginSessionAccum()", which is false --
+                // onPrimary's free-row arm calls it, and so does initialize().
+                // See the member declaration for the corrected reasoning.
+                //
+                // The COUNT is reset with the value, or a second row with no
                 // power source would inherit the first row's claim.
-                mErgSessJ    = 0.0;
-                mErgSessEver = false;
+                mErgSessJ = 0.0;
+                mErgSessN = 0;
                 // Per-session accumulator, reset with the others above. It used
                 // to be reset INSIDE the CORE block below, which made its
                 // correctness depend on whether fields were created.
@@ -4713,14 +4996,14 @@ class StrongRowView extends Ui.View {
         mLastSetStrokes = 0;
         mLastSetHrSum  = 0;
         mLastSetHrN    = 0;
-        // ERG: both the live interval accumulator and its latch. The FLAGS are
+        // ERG: both the live interval accumulator and its latch. The COUNTS are
         // what actually clear the previous row's claim -- a stale
-        // mLastSetWorkEver of true over a fresh zero would render 0.0 kJ for an
-        // interval that has not happened yet.
-        mErgWorkJ        = 0.0;
-        mErgWorkEver     = false;
-        mLastSetWorkJ    = 0.0;
-        mLastSetWorkEver = false;
+        // mLastSetWorkN over a fresh zero would render 0.0 kJ for an interval
+        // that has not happened yet.
+        mErgWorkJ     = 0.0;
+        mErgWorkN     = 0;
+        mLastSetWorkJ = 0.0;
+        mLastSetWorkN = 0;
     }
 
     // A WORK interval begins.
@@ -4738,11 +5021,13 @@ class StrongRowView extends Ui.View {
         mSetStrokeBase = mStrokeCount;
         mSetHrSum      = 0;
         mSetHrN        = 0;
-        // ERG: the interval's work restarts here, WITH its presence flag. An
-        // accumulator reset without its flag would carry the previous
-        // interval's "a measurement was taken" into one where none was.
-        mErgWorkJ      = 0.0;
-        mErgWorkEver   = false;
+        // ERG: the interval's work restarts here, WITH its sample count. An
+        // accumulator reset without its count would carry the previous
+        // interval's "a measurement was taken" into one where none was -- and,
+        // since the count is also the coverage numerator, would credit this
+        // interval with the previous one's samples.
+        mErgWorkJ = 0.0;
+        mErgWorkN = 0;
     }
 
     // A WORK interval ends: freeze its raw totals.
@@ -4781,11 +5066,13 @@ class StrongRowView extends Ui.View {
         mLastSetHrSum   = mSetHrSum;
         mLastSetHrN     = mSetHrN;
         // ERG: the interval's work, frozen with EVERYTHING ELSE and as a PAIR.
-        // Latching the joules without the flag would make "no power meter" and
+        // Latching the joules without the count would make "no power meter" and
         // "no work done" the same latched state, which is exactly the
-        // distinction the pair exists to carry.
-        mLastSetWorkJ    = mErgWorkJ;
-        mLastSetWorkEver = mErgWorkEver;
+        // distinction the pair exists to carry -- and it would leave the
+        // coverage unknowable, because mLastSetSec alone cannot say how much of
+        // the interval carried a sample.
+        mLastSetWorkJ = mErgWorkJ;
+        mLastSetWorkN = mErgWorkN;
         mLastSetValid   = true;
         mSetNum         = 0;
     }
@@ -4989,7 +5276,17 @@ class StrongRowView extends Ui.View {
             // there is no previous value for a skipped write to re-emit. What a
             // never-written session-scope field carries is #76's open question
             // and is not claimed here.
-            var ergKJ = setWorkKJ(mErgSessJ, mErgSessEver);
+            //
+            // NO COVERAGE FLOOR HERE, and that is a decision rather than an
+            // omission. WORK_COVER_MIN dashes the two GRID cells when too
+            // little of the interval carried a sample, because a glance figure
+            // has no way to carry its own caveat. A session-scope FIT field
+            // does: erg_diag writes ERGD_PWR_OK on EVERY record, so an offline
+            // reader can count the covered records directly and scale or
+            // discard this total for itself. Withholding it would destroy that
+            // option and leave "the source dropped out" indistinguishable from
+            // "the field was never created".
+            var ergKJ = setWorkKJ(mErgSessJ, mErgSessN > 0);
             if (mFitErgWork != null && ergKJ != null) {
                 mFitErgWork.setData(ergKJ);
             }
@@ -5027,6 +5324,7 @@ class StrongRowView extends Ui.View {
             mFitErgJps = null;
             mFitErgDiag = null;
             mFitErgWork = null;
+            mFitErgCad = null;
         }
         mStarted = false;
         // #74: the attempt is over either way, so the footer goes back to
@@ -5414,8 +5712,8 @@ class StrongRowView extends Ui.View {
         var acc = null;
         if (mLastSetValid) {
             if (wu) {
-                per = setAvgJps(mLastSetWorkJ, mLastSetStrokes, mLastSetWorkEver);
-                acc = setWorkKJ(mLastSetWorkJ, mLastSetWorkEver);
+                per = setAvgJps(mLastSetWorkJ, mLastSetStrokes, mLastSetWorkN > 0);
+                acc = setWorkKJ(mLastSetWorkJ, mLastSetWorkN > 0);
             } else {
                 per = setAvgDps(mLastSetDist, mLastSetStrokes);
                 acc = setDistM(mLastSetDist);
