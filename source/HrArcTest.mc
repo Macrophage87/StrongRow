@@ -318,6 +318,96 @@ class HrProbe extends StrongRowView {
         return (mFakeDist == null) ? 0.0 : mFakeDist;
     }
 
+    // -- erg mode's seams (source/ErgUnitsTest.mc) -----------------------------
+
+    // THE POWER SOURCE, and its DEFAULT IS NULL -- which is the state of every
+    // device that has no power meter paired, i.e. every case in every other
+    // suite in this repository. So adding this seam changes nothing for them,
+    // and the erg cases have to switch the source ON explicitly rather than
+    // switching a failure off.
+    //
+    // ONE backing field feeds BOTH shipping readers. The shipping pair takes
+    // two Activity.Info reads and can in principle see two instants (stated at
+    // currentPower); the probe cannot, so a case can never accidentally pass
+    // because the value and the diagnostic bit disagreed.
+    hidden var mFakePower;
+    hidden var mFakeCadence;
+    function setPower(w)   { mFakePower = w; }
+    function setCadence(c) { mFakeCadence = c; }
+    hidden function currentPower() { return mFakePower; }
+
+    // NULLS PRESERVED, unlike currentSpeed()/elapsedDist() above -- the whole
+    // point of ergSample is that it can tell "broadcasts zero" from "does not
+    // broadcast", so the probe must be able to express both. mFakeSpeed and
+    // mFakeDist are null until a case sets them, which is the "not broadcast"
+    // state; setSpeed(0.0) is the "broadcasts zero" state.
+    hidden function ergSample() {
+        return [mFakePower, mFakeSpeed, mFakeDist, mFakeCadence];
+    }
+
+    // The three erg settings, bypassing loadSettings so a case can drive the
+    // unit switch without a Properties store. Pushed through the shipping
+    // ergFlag / jouleClampBench so a case can never assert against a
+    // configuration loadSettings would have refused.
+    //
+    // ALL THREE CALL THE SHIPPING STATIC. setJouleBench used to re-implement
+    // the comparison inline, and that made the case named
+    // theJouleBenchmarkIsClampedInCode pin this copy and nothing else: deleting
+    // both clamp lines from loadSettings left all 308 green (measured). The
+    // route setBand takes through hrClampBand, one screen up, is the shape that
+    // was always correct here.
+    function setErgMode(v)    { mErgMode = StrongRowView.ergFlag(v, false); }
+    function setErgUnits(v)   { mErgPowerUnits = StrongRowView.ergFlag(v, false); }
+    function setJouleBench(j) { mJouleBench = StrongRowView.jouleClampBench(j); }
+    function jouleBench() { return mJouleBench; }
+
+    // The arc's whole input -- value AND benchmark -- through the SHIPPING
+    // decision. Never a transcription: onUpdate calls this same method.
+    function arcPctFor(type, spd) { return arcPct(type, spd); }
+
+    // The interval accumulator's two boundaries, called -- not transcribed.
+    // `hidden` is protected in Monkey C, which is what makes this a seam on the
+    // shipping lifecycle rather than a copy of it.
+    function beginWork(num) { beginWorkAccum(num); }
+    function latchWork()    { latchWorkAccum(); }
+
+    // Read-only views of the latched interval's work pair. BOTH, because the
+    // whole point of the pair is that the number alone cannot say whether the
+    // interval carried a measurement -- or how much of it did.
+    //
+    // THE COUNT, not a boolean. `lastWorkN() > 0` is the old lastWorkEver()
+    // exactly, so every absence assertion reads the same; what the count adds
+    // is that a case can now see a PARTIALLY covered interval, which is the
+    // state a boolean cannot express and under which the work total is
+    // under-reported.
+    function lastWorkJ()  { return mLastSetWorkJ; }
+    function lastWorkN()  { return mLastSetWorkN; }
+    function lastWorkSec() { return mLastSetSec; }
+    function sessWorkJ()  { return mErgSessJ; }
+    function sessWorkN()  { return mErgSessN; }
+
+    // The real 250 ms tick, called directly -- the same seam Lock.Probe.runTick
+    // uses, so the accumulator cases drive the SHIPPING onTick rather than a
+    // transcription of its arithmetic.
+    function runTick() { onTick(); }
+
+    // Recording stand-ins for the five erg field handles, in id order:
+    // erg_power (12), erg_joules_per_stroke (13), erg_diag (14),
+    // erg_work_total (15), erg_cadence (16).
+    function installErgFields(pF, jF, dF, wF, cF) {
+        mFitErgPower = pF;
+        mFitErgJps   = jF;
+        mFitErgDiag  = dF;
+        mFitErgWork  = wF;
+        mFitErgCad   = cF;
+    }
+
+    // Enough of a session for stopAndSave's session-scope write to be reached.
+    // The handle is a duck-typed stand-in: stopAndSave calls isRecording(),
+    // stop(), save() and a setData on each non-null field handle.
+    function installSession(s) { mSession = s; }
+    function runStopAndSave()  { stopAndSave(); }
+
     // #131: latch a completed work interval, so a case can render the REST /
     // GATE grid. Without this seam the whole
     // `(type == STEP_REST || type == STEP_GATE) && mLastSetValid` branch is

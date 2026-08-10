@@ -32,4 +32,18 @@
     <setting propertyKey="@Properties.warmupCooldown" title="@Strings.setWarmupCooldown">
         <settingConfig type="boolean"/>
     </setting>
+    <setting propertyKey="@Properties.ergMode" title="@Strings.setErgMode">
+        <settingConfig type="boolean"/>
+    </setting>
+    <setting propertyKey="@Properties.ergPowerUnits" title="@Strings.setErgPowerUnits">
+        <settingConfig type="boolean"/>
+    </setting>
+    <!-- The declared range is ALSO enforced in loadSettings. #21 is precisely
+         the defect of a range declared here and nowhere else: this bound binds
+         the Garmin Connect UI and nothing more, while Connect IQ Properties
+         survive an app update and a sideloaded .set file is not re-clamped on
+         load. -->
+    <setting propertyKey="@Properties.jouleBenchmark" title="@Strings.setJouleBenchmark">
+        <settingConfig type="numeric" min="50" max="2000"/>
+    </setting>
 </settings>
