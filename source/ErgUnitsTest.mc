@@ -47,12 +47,38 @@ using Toybox.Lang;
 //
 //     CEILING erg-branch fenix6: 243 used of 253, 10 free -- the 11th file-scope (:test) added reds
 //
-// ONE member for TWENTY-NINE (:test) functions plus four classes, which is the
+// RE-BISECTED AGAIN after the review revision, which added eight (:test)
+// functions to this file and four file-scope `const` declarations to
+// source/StrongRowView.mc. N=10 BUILDS, N=11 reports 254 -- the SAME figures:
+//
+//     CEILING erg-r5 fenix6: 243 used of 253, 10 free -- the 11th file-scope (:test) added reds
+//
+// That the number did not move is itself the measurement, and it is worth
+// stating because it is not obvious: nothing was REMOVED at file scope, so the
+// four new `const`s cost ZERO `globals` members on SDK 9.2.0. Consts are not
+// what this budget counts; functions, classes and modules at file scope are.
+// The eight new cases cost nothing because they are inside the module block.
+//
+// ONE member for THIRTY-EIGHT (:test) functions plus five classes, which is the
 // module's whole justification stated as arithmetic rather than as a principle:
-// 243 - 242 = 1. At file scope the same declarations would need 33 and the
+// 243 - 242 = 1. At file scope the same declarations would need 43 and the
 // build would fail on all four fenix6-family devices with an error naming
 // neither the test nor the file, while fr965 (which run-tests uses) and
 // release-build stayed green -- so a green local run would prove nothing.
+//
+// AN EARLIER REVISION OF THIS PARAGRAPH SAID TWENTY-NINE, FOUR AND 33. All
+// three were wrong on the day they were written, in the commit whose stated
+// purpose was to make "one member" arithmetic rather than a claim: the file has
+// held 30 tests and 5 classes since f70110f. Reproduce both counts rather than
+// trusting this sentence:
+//
+//     python3 scripts/list_tests.py | grep -c '^Erg\.'      -> 38
+//     grep -c '^class ' source/ErgUnitsTest.mc              -> 5
+//     242 + 43 = 285 > 253
+//
+// scripts/check_ceiling_notes.py cannot catch this class of error -- it parses
+// only the two CEILING lines above, whose own arithmetic closes and always did.
+// That gap is the one its docstring describes.
 //
 // The simulator prints a module-qualified name for a (:test) inside a module
 // block, so scripts/expected_tests.txt carries `Erg.test_erg_...`.
