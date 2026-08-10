@@ -1705,9 +1705,16 @@ class StrongRowView extends Ui.View {
             if (mFitErgJps != null) {
                 mFitErgJps.setData(ergJpsOf(joulesPerStroke(ergW, outputRate())));
             }
+            // ONE ergSample() for the diagnostic word AND the cadence value, so
+            // the bit and the number describe the same instant. Two reads could
+            // record a CAD_OK bit against a cadence the field says was absent.
+            var es = ergSample();
             if (mFitErgDiag != null) {
-                mFitErgDiag.setData(ergDiagBits(ergSample(), mErgMode,
+                mFitErgDiag.setData(ergDiagBits(es, mErgMode,
                                     useWorkUnits(mErgMode, mErgPowerUnits)));
+            }
+            if (mFitErgCad != null) {
+                mFitErgCad.setData(ergCadOf(es[3]));
             }
             // THE SESSION TOTAL takes every tick of the recording, rests
             // included -- it is the whole row's work, which is what the
@@ -3370,7 +3377,15 @@ class StrongRowView extends Ui.View {
     hidden function jpsForArc(type) {
         if (type == STEP_REST) {
             if (!mLastSetValid) { return null; }
-            return setAvgJps(mLastSetWorkJ, mLastSetStrokes, mLastSetWorkN > 0);
+            // COVERAGE, not merely presence. `mLastSetWorkN > 0` would let an
+            // interval whose power source was down for a quarter of its length
+            // reach this arc under-reported by a quarter -- which maps an
+            // on-benchmark athlete into the FAR zone and instructs them to row
+            // harder. workCoverOk refuses; the arc then takes the null it
+            // already handles as DPSZ_NONE.
+            return setAvgJps(mLastSetWorkJ, mLastSetStrokes,
+                             workCoverOk(mLastSetWorkN, mLastSetSec,
+                                         $.TICK_MS));
         }
         return joulesPerStroke(currentPower(), outputRate());
     }
@@ -4607,16 +4622,16 @@ class StrongRowView extends Ui.View {
                     mFitRateRaw = null;
                     mFitRateBase = null;
                 }
-                // ---- ERG MODE's fields. Record scope, ids 12-14; session
-                // scope, id 15.
+                // ---- ERG MODE's fields. Record scope, ids 12-14 and 16;
+                // session scope, id 15.
                 //
                 // ITS OWN try/catch, per #74 and for the reason every group
                 // above gives for theirs: a throw here must not null handles
-                // that were already created successfully -- and these four are
+                // that were already created successfully -- and these five are
                 // the newest, therefore the likeliest to fail, and everything
                 // they sit beside is already shipped.
                 //
-                // WHY 12-15. Every developer field id in this file was
+                // WHY 12-16. Every developer field id in this file was
                 // enumerated before choosing: 0..11 (row_stroke_rate,
                 // dist_per_stroke, rr_interval, rmssd, avg_rmssd,
                 // corrective_rate, total_corrective_strokes, core_temperature,
@@ -4625,12 +4640,12 @@ class StrongRowView extends Ui.View {
                 // lock_lowconf_run, rate_raw, rate_base). 12..19 were free, and
                 // the #149 block above says in as many words that it started at
                 // 20 to leave that contiguous run "free for that branch". THIS
-                // IS THAT BRANCH. 16..19 stay free.
+                // IS THAT BRANCH. 17..19 stay free.
                 //
                 // GATED ON ERG MODE, unlike the lock fields and like the CORE
                 // block. #166's first acceptance criterion is that with erg
                 // mode off -- the default -- every FIT value is what it is
-                // today, and four extra field_description messages on every
+                // today, and five extra field_description messages on every
                 // water row is not that. The cost is a real one and is stated
                 // rather than hidden: a WATER row records no control sample, so
                 // "currentPower is null off an erg" is not measured by this
@@ -4640,14 +4655,22 @@ class StrongRowView extends Ui.View {
                 // #77 measured eleven fields created and saved on fr965 /
                 // SDK 9.2.0, found no cap below 256, and found that AT id 256
                 // the SDK raises an uncatchable System Error that escapes this
-                // try. #80 measured twelve. TWENTY-ONE fields, and a
+                // try. #80 measured twelve. TWENTY-TWO fields, and a
                 // non-contiguous id set, are beyond both -- so this is EXPECTED
                 // to behave and has not been observed to. No in-process test
                 // can settle it: a (:test) cannot obtain a Session, so every
                 // case in source/ErgUnitsTest.mc observes the ARGUMENT of a
                 // setData call and nothing about a field_description message or
                 // a record's bytes. #154 owns the field-count question; the
-                // [Local] erg session owns what these four decode to.
+                // [Local] erg session owns what these five decode to.
+                //
+                // erg_cadence is the twenty-second and it was added in review,
+                // knowingly against that unmeasured ceiling: without the VALUE
+                // the maintainer's third question -- does cadence come from
+                // the machine or from the wrist -- cannot be answered from one
+                // session at all, because the diag BITS read the same either
+                // way. One more field against an untested count, or a second
+                // trip; #168 carries the risk either way.
                 //
                 // No :scale/:offset on any of them, so what the encoders hand
                 // setData is what the field carries -- which the sentinels and
@@ -4670,6 +4693,17 @@ class StrongRowView extends Ui.View {
                         mFitErgWork = mSession.createField(
                             "erg_work_total", 15, Fit.DATA_TYPE_FLOAT,
                             { :mesgType => Fit.MESG_TYPE_SESSION, :units => "kJ" });
+                        // THE FIELD THAT ANSWERS THE CADENCE SOURCE QUESTION.
+                        // erg_diag's CAD bits cannot: the wrist populates
+                        // ai.currentCadence with no machine present, so a set
+                        // bit is the expected reading either way. Only the
+                        // VALUE can be differenced against row_stroke_rate --
+                        // and corrective_rate cannot serve, because it clamps
+                        // that difference at zero. Id 16, the first of the four
+                        // still free (16-19).
+                        mFitErgCad = mSession.createField(
+                            "erg_cadence", 16, Fit.DATA_TYPE_FLOAT,
+                            { :mesgType => Fit.MESG_TYPE_RECORD, :units => "spm" });
                     } catch (e) {
                         mFitErgPower = null;
                         mFitErgJps   = null;
@@ -5712,8 +5746,12 @@ class StrongRowView extends Ui.View {
         var acc = null;
         if (mLastSetValid) {
             if (wu) {
-                per = setAvgJps(mLastSetWorkJ, mLastSetStrokes, mLastSetWorkN > 0);
-                acc = setWorkKJ(mLastSetWorkJ, mLastSetWorkN > 0);
+                // ONE coverage decision for BOTH cells, so they cannot
+                // disagree about whether the interval is reportable -- the same
+                // reason all four cells come from one set of latched totals.
+                var cov = workCoverOk(mLastSetWorkN, mLastSetSec, $.TICK_MS);
+                per = setAvgJps(mLastSetWorkJ, mLastSetStrokes, cov);
+                acc = setWorkKJ(mLastSetWorkJ, cov);
             } else {
                 per = setAvgDps(mLastSetDist, mLastSetStrokes);
                 acc = setDistM(mLastSetDist);
@@ -5746,24 +5784,39 @@ class StrongRowView extends Ui.View {
         // wraps drawHrArc, so a type surprise here would take the whole screen
         // at 4 Hz. Rounded rather than truncated: %d on 147.9 renders 147.
         //
-        // THE TWO SWAPPED CELLS ALSO SWAP THEIR FORMATS, and the formats are
-        // chosen so neither erg cell is wider IN CHARACTERS than the distance
-        // cell it replaces:
-        //   per-stroke   metres "%.1f" (up to "999.9")  joules "%d" (up to "9999")
-        //   accumulated  metres "%d" (up to "18000")    kJ "%.1f" (up to "999.9")
-        // A tenth of a joule per stroke is below anything a rower can act on;
-        // a tenth of a kilojoule over an interval is the useful resolution.
+        // THE TWO SWAPPED CELLS ALSO SWAP THEIR FORMATS, and both erg formats
+        // are CLAMPED so that neither cell is wider IN CHARACTERS than the
+        // distance cell it replaces:
+        //   per-stroke   metres "%.1f" (up to "999.9", 5)  joules ergNum (4)
+        //   accumulated  metres "%d"   (up to "18000", 5)  kJ gridKjStr (5)
+        //
+        // THE CLAMPS ARE NEW AND THE OLD TABLE WAS WRONG, recorded rather than
+        // quietly replaced. It claimed the same two bounds with nothing
+        // enforcing them and no case pinning them: settings.xml allows a
+        // 60-minute work interval, and 60 minutes at 278 W is 1 000 800 J,
+        // which the unclamped cell rendered as "1000.8" -- six characters
+        // against the five of "18000". The stated maximum was an assumption
+        // about athlete power printed in the same table as the format strings.
+        // The pace row's analogous bound was enforced (ergNum against
+        // PACE_W_MAX) and pinned in characters from the start; the grid had
+        // neither.
+        //
+        // A tenth of a joule per stroke is below anything a rower can act on; a
+        // tenth of a kilojoule is the useful resolution below 1000 kJ and is
+        // meaningless above it, which is exactly where gridKjStr drops it.
+        //
+        // CHARACTERS ARE NOT PIXELS (#121). Five characters is a character
+        // bound, not a clearance; the per-device measurement is #169's.
         dc.setColor(Gfx.COLOR_WHITE, Gfx.COLOR_TRANSPARENT);
         dc.drawText(lx, valY1, Gfx.FONT_TINY,
                     (spm == null) ? "--" : spm.format("%.1f"), Gfx.TEXT_JUSTIFY_CENTER);
         dc.drawText(rx, valY1, Gfx.FONT_TINY,
-                    (per == null) ? "--"
-                                  : (wu ? (per + 0.5).toNumber().format("%d")
-                                        : per.format("%.1f")),
+                    wu ? ergNum(per, $.GRID_J_MAX)
+                       : ((per == null) ? "--" : per.format("%.1f")),
                     Gfx.TEXT_JUSTIFY_CENTER);
         dc.drawText(lx, valY2, Gfx.FONT_TINY,
-                    (acc == null) ? "--"
-                                  : (wu ? acc.format("%.1f")
+                    wu ? gridKjStr(acc)
+                       : ((acc == null) ? "--"
                                         : (acc + 0.5).toNumber().format("%d")),
                     Gfx.TEXT_JUSTIFY_CENTER);
         dc.drawText(rx, valY2, Gfx.FONT_TINY,
@@ -5780,7 +5833,10 @@ class StrongRowView extends Ui.View {
     hidden function drawFoot(dc, w, h, dist, fs) {
         var foot;
         var fcol = Gfx.COLOR_LT_GRAY;
-        var km = (dist / 1000.0).format("%.2f") + "km";
+        // THROUGH footDistStr, and gated on ERG MODE alone rather than on
+        // useWorkUnits: see that function. This was the one distance string on
+        // screen that the unit switch did not reach.
+        var km = footDistStr(dist, mErgMode);
         // #74: the chain that used to live here was gated on mStarted alone and
         // never consulted whether a session exists. It is now the pure
         // footState(), pinned in FootStateTest.mc; this switch only maps a state
