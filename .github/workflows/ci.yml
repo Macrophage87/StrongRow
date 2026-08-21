@@ -146,6 +146,29 @@ jobs:
         # unrequired and could red for months without blocking anything -- the
         # exact failure mode this check exists to prevent, one level up.
         run: python3 scripts/check_ceiling_notes.py
+      - name: Step-mark harness self-test (runner-free RED/GREEN)
+        # scripts/fit_step_marks.py is the ONLY thing in this repository that
+        # checks the step marks' acceptance criterion -- "from the FIT alone,
+        # with no duration heuristic, select exactly the work seconds and group
+        # them by interval" -- so a checker that cannot fail would be worth
+        # nothing. This suite feeds it four files, each wrong in one named way
+        # (a latched work interval, a work second with interval 0, a renamed
+        # field description, an undescribed developer field) and requires it to
+        # say so. Hermetic: it builds its own bytes, reads nothing but
+        # source/StrongRowView.mc, and touches no network.
+        run: python3 scripts/test_fit_step_marks.py
+      - name: Prove the step marks' acceptance criterion on a synthetic FIT
+        # The criterion itself, on a file that also contains BOTH cases the old
+        # duration heuristic gets wrong: a rest that runs exactly a work piece's
+        # length, and a piece shortened mid-session. The field-based selection
+        # must recover the intended work seconds exactly AND the heuristic must
+        # not -- if both succeeded, these fields would be redundant.
+        #
+        # The wire codes and the four field ids are PARSED from
+        # source/StrongRowView.mc, so renumbering them there moves this check or
+        # fails it loudly. It proves the QUERY side only: nothing in this
+        # repository can decode a file this app actually wrote.
+        run: python3 scripts/fit_step_marks.py
 
   # 3) Compile the unit-test build for EVERY manifest device in ONE job, so the
   #    SDK image is pulled once (not once per device via a matrix). A per-device
