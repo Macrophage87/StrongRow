@@ -58,6 +58,26 @@ class WsCase {
         p.enterStep(kind, false);
         return p;
     }
+
+    // The footer as the shipping onUpdate drew it, or null if this screen drew
+    // none. Matched on the two PREFIXES drawFoot produces for a live recording
+    // rather than on position, so the assertion does not silently follow a row
+    // that moved.
+    //
+    // "PAUSED  " WITH ITS TWO SPACES, and that is not incidental: the TITLE
+    // also renders the bare word "PAUSED" and is drawn FIRST, so a six-
+    // character match returns the title and every assertion below it is made
+    // against the wrong string. Measured -- it returned "PAUSED" until this was
+    // narrowed. WorkLayoutTest.mc:65 records the same collision from the other
+    // side ("the title and the footer both say PAUSED").
+    static function footer(geo) {
+        for (var i = 0; i < geo.texts.size(); i++) {
+            var s = geo.texts[i][3];
+            if (s.length() >= 4 && s.substring(0, 4).equals("REC ")) { return s; }
+            if (s.length() >= 8 && s.substring(0, 8).equals("PAUSED  ")) { return s; }
+        }
+        return null;
+    }
 }
 
 // -- c1: the counter itself. Green before the footer moves and after ---------
@@ -216,6 +236,99 @@ class WsCase {
                      "current through a pause, so the first stroke after the " +
                      "resume DOES have a period to measure against)");
         return false;
+    }
+    return true;
+}
+
+// -- c2: the footer itself. RED until the row reads the work counter ---------
+
+// THE FOOTER REPORTS THE STROKES TAKEN ON THE PIECES, NOT EVERY STROKE.
+//
+// The differential is built so the two counters CANNOT agree: the probe starts
+// from a session that already carries 6 strokes on both counters, then takes 6
+// more on a REST step. Session 12, work 6. A footer reading 12 is the defect
+// #125 is about -- the six rest strokes are the positioning and paddling the
+// maintainer asked to keep out of the figure.
+//
+// Asserted BOTH ways round. Requiring "6" alone would be satisfied by the
+// unchanged footer the moment some other number on the row happened to contain
+// it, so the session figure is required to be ABSENT as well.
+(:test) function test_ws_c2_theFooterReportsWorkStrokesNotEveryStroke(logger) {
+    var k = new HrProbe();
+    var p = WsCase.probeAt(k.kindRest());
+    p.setNarrowSession();                   // both counters 6, no distance
+    p.strokeTrainFrom(0.0, 7);              // +6 REST strokes: session 12, work 6
+    if (p.sessionStrokes() != 12 || p.workStrokes() != 6) {
+        logger.error("#125: this case needs the two counters to DISAGREE to " +
+                     "mean anything; session=" + p.sessionStrokes() +
+                     " work=" + p.workStrokes() + " (want 12 and 6)");
+        return false;
+    }
+    var ds  = System.getDeviceSettings();
+    var geo = new HrGeoDc(ds.screenWidth, ds.screenHeight);
+    p.runUpdate(geo);
+    var f = WsCase.footer(geo);
+    if (f == null) {
+        logger.error("#125: the REST screen must draw the recording footer for " +
+                     "this case to have a subject. Drew:
+" + SgCase.log(geo));
+        return false;
+    }
+    if (f.find("6wk") == null) {
+        logger.error("#125: the footer must report the 6 strokes taken on the " +
+                     "pieces; it drew '" + f + "'");
+        return false;
+    }
+    if (f.find("12") != null) {
+        logger.error("#125: the footer must NOT report the session total of " +
+                     "12 -- six of those are rest and positioning strokes, " +
+                     "which are quicker and lower force than the drive " +
+                     "strokes being trained; it drew '" + f + "'");
+        return false;
+    }
+    return true;
+}
+
+// BOTH FOOTER FORMS NAME THE STROKES THEY COUNT.
+//
+// The number's MEANING changed, so its label has to. "345str" reads as strokes
+// taken; the figure is now strokes taken on the pieces, and a number whose
+// label no longer describes it is the trap this file's own grid note states
+// ("a number whose label still says metres is worse than no number").
+//
+// "wk" rather than "wstr" or "work": the widest footer the app can draw is
+// "REC 199:59 12.35km 9999str" at FONT_XTINY, and no (:test) in CI can measure
+// a string (#121). Two characters where three stood is STRICTLY NARROWER in
+// characters than the token it replaces, so this cannot become the row's
+// binding constraint. That is a character argument and not a clearance
+// measurement, which is exactly how the erg pace row's bound is stated too.
+(:test) function test_ws_c2_bothFooterFormsNameTheStrokesTheyCount(logger) {
+    var k     = new HrProbe();
+    var pause = [ false, true ];
+    var names = [ "REC", "PAUSED" ];
+    for (var i = 0; i < pause.size(); i++) {
+        var p = new HrProbe();
+        p.setSensorOk(true);
+        p.enterStep(k.kindRest(), pause[i]);
+        p.setNarrowSession();
+        var ds  = System.getDeviceSettings();
+        var geo = new HrGeoDc(ds.screenWidth, ds.screenHeight);
+        p.runUpdate(geo);
+        var f = WsCase.footer(geo);
+        if (f == null) {
+            logger.error("#125: the " + names[i] + " footer must be on screen " +
+                         "for this case to say anything. Drew:
+" +
+                         SgCase.log(geo));
+            return false;
+        }
+        if (f.find("6wk") == null || f.find("str") != null) {
+            logger.error("#125: the " + names[i] + " footer must label its " +
+                         "figure as work strokes ('6wk') and must not still " +
+                         "say 'str', which reads as every stroke taken; it " +
+                         "drew '" + f + "'");
+            return false;
+        }
     }
     return true;
 }
