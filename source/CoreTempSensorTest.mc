@@ -704,21 +704,20 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
 // value already recorded in a FIT file is interpreted through this key.
 (:test) function test_ct_diagLayoutConstants(logger) {
     var ok = true;
-    // 24 slots since #80 added the three heat-strain slots; v3 since the retry
-    // path gained the CT_DIAG_F_RETRY_LOST bit in CT_DIAG_I_FLAGS. The pair
-    // moves TOGETHER, which is the whole content of this case: a length change
-    // with no version bump leaves every already-recorded file
-    // unreadable-by-key, and a :count that lags the length is an uncatchable
-    // System Error at save.
+    // 25 slots since #165 added CT_DIAG_I_PAGE0; v4 with it. The pair moves
+    // TOGETHER, which is the whole content of this case: a length change with no
+    // version bump leaves every already-recorded file unreadable-by-key, and a
+    // :count that lags the length is an uncatchable System Error at save.
     //
-    // v2 -> v3 moved the version WITHOUT moving the length, and that is the
-    // point of the pair being asserted separately rather than as one tuple: the
-    // new bit extends the KEY for slot 17 while the array, and therefore the
-    // createField `:count`, is untouched.
+    // v2 -> v3 moved the version WITHOUT moving the length, which is why the two
+    // are asserted separately rather than as one tuple: that bump extended the
+    // KEY for slot 17 while the array, and therefore the createField `:count`,
+    // was untouched. v3 -> v4 moves BOTH -- one new slot AND nine new bits of
+    // slot 17 -- so it is the case where the length half earns its keep.
     // RetryBound.test_rb_c1_theRetryLostBitIsDistinctAndTheArrayDidNotGrow
-    // states that invariant from the other side.
-    if ($.CT_DIAG_SLOTS != 24)      { logger.error("CT_DIAG_SLOTS changed to " + $.CT_DIAG_SLOTS + " -- bump CT_DIAG_VERSION and the field's :count together"); ok = false; }
-    if ($.CT_DIAG_VERSION != 3)     { logger.error("CT_DIAG_VERSION changed to " + $.CT_DIAG_VERSION); ok = false; }
+    // states the same invariant from the other side.
+    if ($.CT_DIAG_SLOTS != 25)      { logger.error("CT_DIAG_SLOTS changed to " + $.CT_DIAG_SLOTS + " -- bump CT_DIAG_VERSION and the field's :count together"); ok = false; }
+    if ($.CT_DIAG_VERSION != 4)     { logger.error("CT_DIAG_VERSION changed to " + $.CT_DIAG_VERSION); ok = false; }
     if ($.CT_DIAG_MAX != 65535)     { logger.error("CT_DIAG_MAX must be the UINT16 ceiling, got " + $.CT_DIAG_MAX); ok = false; }
     if ($.CT_DIAG_NONE != 0xFFFF)   { logger.error("CT_DIAG_NONE changed to " + $.CT_DIAG_NONE); ok = false; }
     return ok;
@@ -737,7 +736,8 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
                $.CT_DIAG_I_CHAN_CLOSED, $.CT_DIAG_I_MAX_FAILS, $.CT_DIAG_I_FLAGS,
                $.CT_DIAG_I_PAGE_FIRST, $.CT_DIAG_I_PAGE_OTHER_LAST,
                $.CT_DIAG_I_ACQ_PERIOD,
-               $.CT_DIAG_I_HSI_OK, $.CT_DIAG_I_HSI_INVALID, $.CT_DIAG_I_HSI_MAX_RAW];
+               $.CT_DIAG_I_HSI_OK, $.CT_DIAG_I_HSI_INVALID, $.CT_DIAG_I_HSI_MAX_RAW,
+               $.CT_DIAG_I_PAGE0];
     var ok = true;
     if (idx.size() != $.CT_DIAG_SLOTS) {
         logger.error("this test lists " + idx.size() + " indices but CT_DIAG_SLOTS is " +

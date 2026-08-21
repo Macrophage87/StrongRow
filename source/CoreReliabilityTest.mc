@@ -408,6 +408,220 @@ function relHrByte(code) {
     return ok;
 }
 
+// ---- #165 c1: the page-0x00 extractors and the grown wire format ------------
+// Green from the commit that adds ctPage0Quality/ctPage0HrSupport and slot 24
+// onward, and green after the fix wires them into onBroadcast.
+//
+// WHAT THESE ARE NOT. They feed bytes this file chose to a decoder this branch
+// wrote, and both encode the same layout, read from ONE unmeasured source. They
+// restate that assumption; they do not verify it, and no case here is evidence
+// about what a CORE pod transmits. What they do verify is that the extraction is
+// the function it is documented to be rather than the vendor's buggy one, and
+// that absence is not rendered as a value.
+
+// THE PRECEDENCE TRAP, on a code point where the two functions DISAGREE.
+//
+// The vendor example #165 was read from writes `payload[2] & 0x03 + 1`, which
+// under C-family precedence is `payload[2] & (0x03 + 1)` = `payload[2] & 4`.
+// That is not a near-miss of the intended `(payload[2] & 0x03) + 1`: it returns
+// only 0 or 4, never 1, 2 or 3.
+//
+// The sweep below asserts the whole 0x00..0xFE domain against the low two bits,
+// and then names one specific divergence, so a failure message says WHAT went
+// wrong rather than only that something did. Spot-checking would be enough to
+// catch this particular bug -- the two readings disagree on every code point --
+// but the sweep is what would also catch a mask widened to three bits, which
+// they agree on for half the domain.
+(:test) function test_cr_c1_theQualityTableAvoidsTheVendorPrecedenceBug(logger) {
+    var ok = true;
+    for (var b = 0x00; b <= 0xFE; b++) {
+        var got = CoreTempSensor.ctPage0Quality(relPage0(b, 0));
+        var want = (b & 0x03) + 1;
+        if (got != want) {
+            logger.error("ctPage0Quality(byte2 = " + b + ") = " + got + ", expected " + want);
+            ok = false;
+            if (!ok) { return false; }
+        }
+    }
+    // The named divergence: byte 2 = 0x02 is 3 under the intended reading and 0
+    // under the vendor's precedence. A quality code of 0 is outside the 1..4
+    // range the field is documented to carry.
+    var two = CoreTempSensor.ctPage0Quality(relPage0(0x02, 0));
+    if (two != 3) {
+        logger.error("ctPage0Quality(byte2 = 0x02) = " + two + ", expected 3; the vendor's " +
+                     "`payload[2] & 0x03 + 1` binds as `payload[2] & 4` and answers 0 here");
+        ok = false;
+    }
+    var three = CoreTempSensor.ctPage0Quality(relPage0(0x03, 0));
+    if (three != 4) {
+        logger.error("ctPage0Quality(byte2 = 0x03) = " + three + ", expected 4");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE DISREGARD MARKER IS ABSENCE, NOT A CODE.
+//
+// byte 2 == 0xFF is the pod saying "disregard this broadcast". Every value the
+// arithmetic can produce is a legal 1..4 rating, so there is no in-band code
+// point that could carry "no rating" -- exactly the situation decodeHsi is in,
+// and exactly the trap #86/#107 cost this repository twice by returning a
+// number for absence.
+//
+// Note that 0xFF would otherwise arithmetic to 4, which is a perfectly
+// plausible-looking rating. That is the whole reason the marker is tested
+// BEFORE the arithmetic rather than after.
+(:test) function test_cr_c1_theDisregardMarkerIsNullNotAFourthCode(logger) {
+    var ok = true;
+    if (CoreTempSensor.ctPage0Quality(relPage0($.CT_PAGE0_Q_INVALID, 0)) != null) {
+        logger.error("ctPage0Quality(byte2 = 0xFF) = " +
+                     CoreTempSensor.ctPage0Quality(relPage0($.CT_PAGE0_Q_INVALID, 0)) +
+                     "; the marker must be NULL. It arithmetics to 4, an entirely " +
+                     "plausible-looking rating, which is why it is tested first");
+        ok = false;
+    }
+    // ...and the marker must not become a flag bit either.
+    if (CoreTempSensor.ctQualityBit(CoreTempSensor.ctPage0Quality(relPage0($.CT_PAGE0_Q_INVALID, 0))) != 0) {
+        logger.error("the disregard marker produced a quality bit; absence is not a code");
+        ok = false;
+    }
+    if (CoreTempSensor.ctQualityBit(null) != 0 || CoreTempSensor.ctQualityBit(0) != 0 ||
+        CoreTempSensor.ctQualityBit(5) != 0) {
+        logger.error("ctQualityBit must answer 0 outside 1..4, got " +
+                     CoreTempSensor.ctQualityBit(null) + ", " + CoreTempSensor.ctQualityBit(0) +
+                     ", " + CoreTempSensor.ctQualityBit(5));
+        ok = false;
+    }
+    return ok;
+}
+
+// THE HEART-RATE-SUPPORT FIELD, swept over all 256 values of byte 3.
+//
+// Per #165 the code is bits 6:7. The shift is applied to the MASKED byte, and
+// getting that backwards -- `p[3] & 0xC0 >> 6`, which binds as `p[3] & 3` --
+// reads the UTC-request field instead and would answer plausible small integers
+// the whole way. The sweep is what separates the two.
+(:test) function test_cr_c1_theHeartRateSupportFieldIsTheTopTwoBits(logger) {
+    var ok = true;
+    for (var b = 0x00; b <= 0xFF; b++) {
+        var got  = CoreTempSensor.ctPage0HrSupport(relPage0(0, b));
+        var want = (b & 0xC0) >> 6;
+        if (got != want) {
+            logger.error("ctPage0HrSupport(byte3 = " + b + ") = " + got + ", expected " + want);
+            return false;
+        }
+    }
+    // The two values #165 gives a meaning to, named so a failure says which.
+    if (CoreTempSensor.ctPage0HrSupport(relPage0(0, relHrByte(1))) != 1) {
+        logger.error("the pod's REQUESTING-heart-rate code did not read back as 1");
+        ok = false;
+    }
+    if (CoreTempSensor.ctPage0HrSupport(relPage0(0, relHrByte(2))) != 2) {
+        logger.error("the pod's HAS-heart-rate code did not read back as 2");
+        ok = false;
+    }
+    // The low bits of byte 3 carry the UTC-request field, which this branch
+    // deliberately does not act on. They must not leak into this answer.
+    if (CoreTempSensor.ctPage0HrSupport(relPage0(0, relHrByte(0) | 0x3F)) != 0) {
+        logger.error("the low six bits of byte 3 leaked into the heart-rate-support code; " +
+                     "that is the `p[3] & 0xC0 >> 6` precedence bug, which reads the " +
+                     "UTC-request field instead");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE NEW FLAG BITS, and the wire format they live in.
+//
+// Three separate properties, all of which a mistake could satisfy one of:
+//
+//   * the nine new bits are distinct from each other AND from the four that
+//     already exist. A collision would silently make two observations one;
+//   * Q1..Q4 and HR0..HR3 are CONTIGUOUS runs, because ctQualityBit and
+//     ctHrSupportBit shift rather than branch. Renumber one and the shift maps
+//     the wrong code to the wrong bit while every distinctness check stays
+//     green;
+//   * the whole slot still fits the UINT16 the ct_diag field is typed as. The
+//     readout clamps at CT_DIAG_MAX, so a bit above the ceiling would be
+//     silently truncated at save rather than reported.
+(:test) function test_cr_c1_theNewFlagBitsAreContiguousAndDistinct(logger) {
+    var bits = [$.CT_DIAG_F_CHANNEL_HELD, $.CT_DIAG_F_CLOSED, $.CT_DIAG_F_EVER_SEEN,
+                $.CT_DIAG_F_RETRY_LOST,
+                $.CT_DIAG_F_Q1, $.CT_DIAG_F_Q2, $.CT_DIAG_F_Q3, $.CT_DIAG_F_Q4,
+                $.CT_DIAG_F_Q_NONE,
+                $.CT_DIAG_F_HR0, $.CT_DIAG_F_HR1, $.CT_DIAG_F_HR2, $.CT_DIAG_F_HR3];
+    var ok = true;
+    var all = 0;
+    for (var i = 0; i < bits.size(); i++) {
+        if (bits[i] <= 0) {
+            logger.error("flag bit " + i + " = " + bits[i] + "; a zero bit can never be read back");
+            ok = false;
+        }
+        if ((all & bits[i]) != 0) {
+            logger.error("flag bit " + bits[i] + " collides with an earlier one; two observations " +
+                         "would silently become one");
+            ok = false;
+        }
+        all |= bits[i];
+    }
+    if (all > $.CT_DIAG_MAX) {
+        logger.error("the flags slot can reach " + all + ", above the UINT16 ceiling " +
+                     $.CT_DIAG_MAX + "; the readout clamp would silently truncate it at save");
+        ok = false;
+    }
+    // Contiguity, asserted THROUGH the shifting helpers rather than on the
+    // constants: that is what actually breaks if a bit is renumbered.
+    var q = [$.CT_DIAG_F_Q1, $.CT_DIAG_F_Q2, $.CT_DIAG_F_Q3, $.CT_DIAG_F_Q4];
+    for (var i = 0; i < 4; i++) {
+        if (CoreTempSensor.ctQualityBit(i + 1) != q[i]) {
+            logger.error("ctQualityBit(" + (i + 1) + ") = " + CoreTempSensor.ctQualityBit(i + 1) +
+                         ", expected " + q[i] + "; the helper shifts, so Q1..Q4 must be contiguous");
+            ok = false;
+        }
+    }
+    var h = [$.CT_DIAG_F_HR0, $.CT_DIAG_F_HR1, $.CT_DIAG_F_HR2, $.CT_DIAG_F_HR3];
+    for (var i = 0; i < 4; i++) {
+        if (CoreTempSensor.ctHrSupportBit(i) != h[i]) {
+            logger.error("ctHrSupportBit(" + i + ") = " + CoreTempSensor.ctHrSupportBit(i) +
+                         ", expected " + h[i] + "; the helper shifts, so HR0..HR3 must be contiguous");
+            ok = false;
+        }
+    }
+    if (CoreTempSensor.ctHrSupportBit(null) != 0 || CoreTempSensor.ctHrSupportBit(-1) != 0 ||
+        CoreTempSensor.ctHrSupportBit(4) != 0) {
+        logger.error("ctHrSupportBit must answer 0 outside 0..3");
+        ok = false;
+    }
+    // The array grew, and the version moved with it. These two must never be
+    // edited apart: the createField :count reads CT_DIAG_SLOTS, and a setData
+    // array longer than :count is an uncatchable System Error that kills the
+    // app at save time and takes the whole activity with it.
+    if ($.CT_DIAG_SLOTS != 25) {
+        logger.error("CT_DIAG_SLOTS = " + $.CT_DIAG_SLOTS + ", expected 25");
+        ok = false;
+    }
+    if ($.CT_DIAG_VERSION != 4) {
+        logger.error("CT_DIAG_VERSION = " + $.CT_DIAG_VERSION + ", expected 4");
+        ok = false;
+    }
+    if ($.CT_DIAG_I_PAGE0 != 24) {
+        logger.error("CT_DIAG_I_PAGE0 = " + $.CT_DIAG_I_PAGE0 + ", expected 24 -- the new slot goes " +
+                     "on the END, or every index after it is silently re-labelled in files already written");
+        ok = false;
+    }
+    // ...and the readout must already carry the new slot, at zero, before
+    // anything populates it. A snapshot short of CT_DIAG_SLOTS would be
+    // accepted by setData without complaint and leave the slot absent.
+    var p = new RelOkProbe();
+    p.reset();
+    if (p.slot($.CT_DIAG_I_PAGE0) != 0) {
+        logger.error("slot 24 reads " + p.slot($.CT_DIAG_I_PAGE0) + " on a sensor that has seen " +
+                     "no frame at all; it must be present and zero");
+        ok = false;
+    }
+    return ok;
+}
+
 // ---- #122 c1: the new ladder shape, as pure arithmetic ----------------------
 // Green from the commit that adds ctSearchDelayMs/ctDutyPerMille onward, and
 // green after the fix wires mPodEverNear in. They assert what must NOT move.

@@ -169,7 +169,7 @@ const CT_BACKOFF_NEAR_MAX_MS = 60000;
 // 65535 messages is ~4.6 h at PERIOD_B, ~9.1 h at PERIOD_A. Only quantitative
 // ratios degrade there; every discrimination below turns on zero versus
 // non-zero, which survives any session length.
-const CT_DIAG_SLOTS   = 24;
+const CT_DIAG_SLOTS   = 25;
 const CT_DIAG_MAX     = 65535;    // UINT16 ceiling; readout clamps, not the counter
 const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
 
@@ -184,9 +184,36 @@ const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
 // constant BOTH diagSnapshot() and the createField `:count` read (a setData
 // array longer than :count is an uncatchable System Error at save time).
 //
-// VERSION 3 ADDS NO SLOT. CT_DIAG_SLOTS stays 24 and every index below keeps
-// its number, so the createField `:count` is untouched and the uncatchable
-// too-long-array failure above is not in play. What changed is that
+// VERSION 4 (#165) ADDS ONE SLOT, CT_DIAG_I_PAGE0 at index 24, and NINE BITS to
+// CT_DIAG_I_FLAGS. Slots 0-23 keep their numbers and their meanings, and every
+// v1/v2/v3 flag bit keeps its value, so an older key still answers every
+// question it could answer before -- test_cr_c0_theFourFlagBitsKeepTheirValues
+// and test_ct_c0_diagSlotKeyIsZeroToTwenty are the pins that force that.
+//
+// THE LENGTH GREW, so this is the version bump that actually matters: the
+// createField `:count` in StrongRowView reads $.CT_DIAG_SLOTS, and a setData
+// array LONGER than :count is an uncatchable System Error that kills the app at
+// save time and takes the whole activity with it. Both sites read the one
+// constant; neither may substitute a literal.
+//
+// WHY A SLOT FOR THE PAGE-0 COUNT AND BITS FOR THE REST. The count is a tally,
+// and a tally packed into bits stops being an ordinary readable integer, which
+// is the property the whole array was designed around. The two things page 0x00
+// says about itself -- a 1-4 quality code and a 0-3 heart-rate-support code --
+// are small enums, and what a reader wants of them is WHICH VALUES WERE EVER
+// SEEN, which is a bitmask by nature. Nine free bits of an existing slot cost no
+// array growth and no :count risk.
+//
+// A MASK RATHER THAN "THE LAST VALUE" OR "THE WORST VALUE", and that is a
+// deliberate refusal to guess. #165 calls the quality field "a 0-4 reliability
+// rating" and nothing here knows its POLARITY -- whether 4 is good or bad. A
+// "worst observed" slot would have to assume one. A mask assumes nothing: it
+// reports exactly which codes the pod emitted, and the polarity question can be
+// settled later from a row without re-recording anything.
+//
+// VERSION 3 ADDED NO SLOT. CT_DIAG_SLOTS stayed 24 and every index below kept
+// its number, so the createField `:count` was untouched and the uncatchable
+// too-long-array failure above was not in play. What changed is that
 // CT_DIAG_I_FLAGS carries one more bit -- CT_DIAG_F_RETRY_LOST, "a deferred
 // retry was dropped for want of a Timer". Every v2 bit keeps its meaning, so a
 // v2 key applied to a v3 array still answers every question it could answer
@@ -194,7 +221,7 @@ const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
 // documented signal rather than residue, and so that this decision is visible
 // in the file rather than only here (test_ct_diagLayoutConstants is the pin
 // that forces it to be deliberate).
-const CT_DIAG_VERSION = 3;        // value stored in slot CT_DIAG_I_VERSION
+const CT_DIAG_VERSION = 4;        // value stored in slot CT_DIAG_I_VERSION
 
 const CT_DIAG_I_VERSION       = 0;
 const CT_DIAG_I_OPEN_ATTEMPTS = 1;   // openChannel() entries
@@ -237,6 +264,20 @@ const CT_DIAG_I_HSI_INVALID   = 22;  // rejected: byte 1 == CT_HSI_INVALID
 //     document's SINT8-versus-range contradiction (#81 question 4). Its ABSENCE
 //     settles nothing and must not be read as evidence of signedness.
 const CT_DIAG_I_HSI_MAX_RAW   = 23;
+// ---- v4, #165: page 0x00 ----------------------------------------------------
+// Frames whose page byte is 0x00 -- the CBT general-information page, which
+// carries the pod's own data-quality rating and its heart-rate-support state.
+//
+// It is a SEPARATE tally from CT_DIAG_I_PAGE_OTHER, not a replacement for it.
+// Slot 8's key is "page byte != 0x01" and page 0x00 still satisfies it, so
+// every key ever written against an already-recorded file keeps working, and
+// pageOther - page0 is the count of pages that are still genuinely unknown.
+//
+// Zero here with pageOther > 0 says the non-page-1 traffic was something else
+// entirely; zero here with pageOther == 0 says the pod sent nothing but page 1.
+// The two are different findings and neither is recoverable from the flag bits,
+// which is why this is a slot and not another bit.
+const CT_DIAG_I_PAGE0         = 24;
 // Slot 20 answers #84 in the AFFIRMATIVE ONLY. PERIOD_A is always tried first,
 // so 16384 proves nothing about the fallback; only 8192 is evidence that
 // PERIOD_B can acquire. And it reads 0 on precisely the zero-frame rows where
@@ -259,6 +300,68 @@ const CT_DIAG_F_EVER_SEEN    = 4;   // a reading was accepted at some point
 // not happened YET -- an absence, and a diagnosis resting on an absence is
 // exactly what #102 exists to stop.
 const CT_DIAG_F_RETRY_LOST   = 8;
+
+// v4, #165: WHICH page-0x00 codes were ever observed. Two contiguous runs of
+// four, so ctQualityBit / ctHrSupportBit can shift rather than branch; the
+// contiguity is pinned by test_cr_c1_theNewFlagBitsAreContiguousAndDistinct
+// because the shift depends on it.
+//
+// A MASK, not a latest-value nibble, and not a "worst seen" code. #165 calls
+// the quality field a 0-4 reliability rating and NOTHING HERE KNOWS ITS
+// POLARITY -- whether 4 means "trust this" or "disregard this" is not settled
+// by anything this repository has read. A worst-seen encoding would have to
+// assume one; a mask assumes nothing and lets the question be answered later
+// from a row that has already been recorded.
+//
+// Q1..Q4 are the codes (payload[2] & 0x03) + 1 can produce. The
+// PARENTHESISATION IS LOAD-BEARING: the vendor example #165 was read from writes
+// `payload[2] & 0x03 + 1`, which under C-family precedence binds as
+// `payload[2] & 4` -- their defect, deliberately not reproduced, and
+// test_cr_c1_theQualityTableAvoidsTheVendorPrecedenceBug is what would catch it
+// coming back.
+const CT_DIAG_F_Q1        = 0x0010;
+const CT_DIAG_F_Q2        = 0x0020;
+const CT_DIAG_F_Q3        = 0x0040;
+const CT_DIAG_F_Q4        = 0x0080;
+// payload[2] == 0xFF: the pod's own "disregard this broadcast" marker. ITS OWN
+// BIT rather than a fifth quality code, because it is an ABSENCE of a rating,
+// not a rating -- the same distinction #86/#107 cost this repository twice, and
+// the same reason decodeHsi returns null instead of 25.5.
+const CT_DIAG_F_Q_NONE    = 0x0100;
+// heartRateSupport = (payload[3] & 0xC0) >> 6, one bit per observed code.
+// Per #165: 1 means the pod is REQUESTING a heart rate and is running its
+// estimate without one; 2 means it has one. 0 and 3 are given no meaning by
+// anything read for #165, so they are recorded and not interpreted.
+//
+// HR1 set on a row is the evidence for the transmit-path follow-up: it says the
+// pod asked, on this row, and got no answer. NOTHING IN THIS BRANCH REPLIES --
+// see the scope note on notePageZero.
+const CT_DIAG_F_HR0       = 0x0200;
+const CT_DIAG_F_HR1       = 0x0400;
+const CT_DIAG_F_HR2       = 0x0800;
+const CT_DIAG_F_HR3       = 0x1000;
+
+// ---- #165: page 0x00, the general-information page --------------------------
+//
+// EVIDENCE CLASS FIRST, because it governs what may be written about these
+// fields anywhere in the repository.
+//
+// The byte offsets, the masks and the 0xFF marker are DOCUMENT AGREEMENT with a
+// single source: greenTEG's own Connect IQ example for this profile, read for
+// facts only (it carries no licence file, and no code from it is in this
+// repository). That example's last code commit predates CORE 2 entirely. The
+// formally authoritative ANT+ device profile is behind an adopter login and was
+// NOT read. NO CORE POD WAS INVOLVED. So nothing here or downstream may state
+// what a pod transmits -- only what this code READS.
+//
+// It is a strictly weaker evidence class than page 1's, which at least has
+// three independent decoders agreeing plus one real row of decodes behind it.
+// That is precisely why this branch RECORDS these values into the diagnostic
+// array and changes no decoded value, no clamp and no freshness window with
+// them: if the layout is wrong, the cost is two meaningless flag bits.
+const CT_PAGE_GENERAL     = 0x00;   // the page byte this block is about
+const CT_PAGE_TEMPERATURE = 0x01;   // the page decodeCoreC/decodeSkinC read
+const CT_PAGE0_Q_INVALID  = 0xFF;   // byte 2: "disregard this broadcast"
 
 // Listens for a CORE (greenTEG) body-temperature pod over a generic ANT+
 // channel (ANT+ Core Body Temperature profile, device type 127). Connect IQ's
@@ -334,6 +437,13 @@ class CoreTempSensor {
     hidden var mDiagHsiOk;
     hidden var mDiagHsiInvalid;
     hidden var mDiagHsiMaxRaw;
+    // #165. Page-0x00 frames reaching the decoder, and the OR of every
+    // ctQualityBit/ctHrSupportBit ever observed on one. Accumulated rather than
+    // latest-wins, and sticky like mDiagRetryLost, for the reason the
+    // CT_DIAG_F_Q1 block gives: the question is which codes the pod ever
+    // emitted, not which one it emitted last.
+    hidden var mDiagPage0;
+    hidden var mDiagPage0Flags;
     // Set once and never cleared when scheduleReopen could not arm a retry
     // timer; read out as CT_DIAG_F_RETRY_LOST. A plain Boolean rather than a
     // counter: one more slot would be a wire-format growth, and the question
@@ -394,6 +504,8 @@ class CoreTempSensor {
         mDiagHsiOk         = 0;
         mDiagHsiInvalid    = 0;
         mDiagHsiMaxRaw     = $.CT_DIAG_NONE;
+        mDiagPage0         = 0;
+        mDiagPage0Flags    = 0;
         mDiagRetryLost     = false;
         mDiagFlags         = -1;
     }
@@ -559,6 +671,66 @@ class CoreTempSensor {
     // become -2048 and the comparison can never fire.
     static function ctSkinSentinel(p) {
         return skinRaw12(p[3], p[4]) == $.CT_SKIN_INVALID;
+    }
+
+    // ---- #165 page-0x00 field extraction ------------------------------------
+    // Pure and parameter-based, so the whole of what this branch understands
+    // about page 0x00 is (:test)-able without a channel, a clock or a pod --
+    // which matters more here than anywhere else in this file, because the
+    // layout rests on ONE unmeasured source (see the CT_PAGE_GENERAL block).
+
+    // The pod's own data-quality code from a page-0x00 payload: 1..4, or NULL
+    // when byte 2 is the 0xFF "disregard" marker.
+    //
+    // NULL, NOT A NUMBER, for the marker. Every value the expression can produce
+    // is a legal rating, so there is no in-band code point that could stand for
+    // "the pod told us not to trust this frame" -- the same argument decodeHsi
+    // makes for its own scale, and the same trap (#86/#107) this repository has
+    // fallen into twice by rendering absence as a value.
+    //
+    // THE PARENTHESES ARE LOAD-BEARING. The vendor example this layout was read
+    // from writes `payload[2] & 0x03 + 1`, which under C-family precedence binds
+    // as `payload[2] & (0x03 + 1)` -- i.e. `payload[2] & 4`, a completely
+    // different function that returns 0 or 4 and never 1, 2 or 3. That is their
+    // defect; it is not reproduced here, and
+    // test_cr_c1_theQualityTableAvoidsTheVendorPrecedenceBug is the case that
+    // separates the two functions on a code point where they disagree.
+    static function ctPage0Quality(p) {
+        var raw = p[2] & 0xFF;
+        if (raw == $.CT_PAGE0_Q_INVALID) { return null; }
+        return (raw & 0x03) + 1;
+    }
+
+    // The heart-rate-support code from a page-0x00 payload: byte 3, bits 6:7.
+    //
+    // Per #165, 1 means the pod is REQUESTING a heart rate and is running its
+    // core-temperature estimate without one, and 2 means it has one. 0 and 3
+    // are given no meaning by the source this was read from, so they are
+    // recorded and not interpreted.
+    //
+    // The shift is applied to the MASKED byte, and the mask is parenthesised,
+    // for the reason stated on sext12: `p[3] & 0xC0 >> 6` would bind as
+    // `p[3] & (0xC0 >> 6)` = `p[3] & 3` and read the UTC-request field instead.
+    static function ctPage0HrSupport(p) {
+        return (p[3] & 0xC0) >> 6;
+    }
+
+    // The CT_DIAG_I_FLAGS bit for a quality code, or 0 for anything outside
+    // 1..4 (including the null the marker produces). The shift depends on
+    // CT_DIAG_F_Q1..Q4 being contiguous, which
+    // test_cr_c1_theNewFlagBitsAreContiguousAndDistinct pins.
+    static function ctQualityBit(q) {
+        if (q == null || q < 1 || q > 4) { return 0; }
+        return $.CT_DIAG_F_Q1 << (q - 1);
+    }
+
+    // The CT_DIAG_I_FLAGS bit for a heart-rate-support code, or 0 outside 0..3.
+    // The range guard is not decorative: the extractor above masks to two bits
+    // so it cannot exceed 3 today, and this function must stay total if a future
+    // edit widens the field.
+    static function ctHrSupportBit(h) {
+        if (h == null || h < 0 || h > 3) { return 0; }
+        return $.CT_DIAG_F_HR0 << h;
     }
 
     // Clamp a counter into the UINT16 range for the ct_diag field. Applied
@@ -1137,6 +1309,9 @@ class CoreTempSensor {
         // Unlike the three above, this one is not a live reading of state: it
         // is already sticky, so latching it at close() loses nothing.
         if (mDiagRetryLost)   { f |= $.CT_DIAG_F_RETRY_LOST; }
+        // #165: already sticky, so latching it at close() loses nothing --
+        // exactly the argument the line above makes for itself.
+        f |= mDiagPage0Flags;
         return f;
     }
 
@@ -1223,6 +1398,7 @@ class CoreTempSensor {
         a[$.CT_DIAG_I_HSI_OK]          = ctDiagClamp(mDiagHsiOk);
         a[$.CT_DIAG_I_HSI_INVALID]     = ctDiagClamp(mDiagHsiInvalid);
         a[$.CT_DIAG_I_HSI_MAX_RAW]     = ctDiagClamp(mDiagHsiMaxRaw);
+        a[$.CT_DIAG_I_PAGE0]           = ctDiagClamp(mDiagPage0);
         return a;
     }
 
