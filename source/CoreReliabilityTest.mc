@@ -1152,12 +1152,21 @@ function relHrByte(code) {
                      "the search found the pod");
         ok = false;
     }
-    // ...and the reset must be a reset, not a one-off: the ladder climbs again
-    // from the burst rather than resuming where it left off.
-    for (var i = 0; i < 4; i++) { p.closeEvent(); }
+    // ...and the reset must be a RESET, not a one-off suppression: the ladder
+    // climbs again from the bottom of the burst rather than resuming where it
+    // left off.
+    //
+    // THREE more closes, not four, and the arithmetic is worth spelling out
+    // because an earlier version of this case got it wrong and asserted 30000
+    // one close too early. The burst is CT_BURST_TRIES = 4 long and mFails
+    // equals the number of closes SINCE the reset, so closes 1, 2 and 3 ask for
+    // 0 and the FOURTH -- the one already spent above -- is the first deferred
+    // one. The count here is therefore CT_BURST_TRIES - 1.
+    for (var i = 0; i < $.CT_BURST_TRIES - 1; i++) { p.closeEvent(); }
     if (p.lastAsk() != $.CT_BACKOFF_BASE_MS) {
-        logger.error("four closes after the reset asked for " + p.lastAsk() + ", expected " +
-                     $.CT_BACKOFF_BASE_MS + ": the ladder must restart at the bottom");
+        logger.error("close " + $.CT_BURST_TRIES + " after the reset asked for " + p.lastAsk() +
+                     ", expected " + $.CT_BACKOFF_BASE_MS + ": the ladder must restart at the " +
+                     "bottom of the burst, not resume where it left off");
         ok = false;
     }
     return ok;
