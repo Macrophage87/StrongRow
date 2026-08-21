@@ -202,6 +202,14 @@ test_grid_restAndGateShowTheGridAndDropTheSubRow
 test_grid_coolAndDoneKeepTheLiveRowsAndTheSubRow
 test_grid_noLatchedSetMeansNoGridOnAnyScreen
 
+# source/GridGateTest.mc -- inside `module GridGate`, so the names carry the
+# module: the simulator prints `GridGate.test_gg_...` for a (:test) declared
+# inside a module block, and this pin has to carry the name the RUNNER prints.
+# The module exists to spend ONE fenix6 globals member instead of one per test;
+# see the CEILING note at the top of that file.
+GridGate.test_gg_c1_workWithALatchedSetDrawsNoGrid
+GridGate.test_gg_c1_aNullCellRendersADashNeverAZero
+
 # source/CueZoneTest.mc
 #
 # Names are MODULE-QUALIFIED: every (:test) lives inside `module CueFix`, which
