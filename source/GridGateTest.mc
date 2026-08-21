@@ -22,16 +22,29 @@ using Toybox.Lang;
 //
 //     CEILING 9617605 fenix6: 243 used of 253, 10 free -- the 11th file-scope (:test) added reds
 //
-// And WITH this file in the tree (N=9 builds, N=10 reports 254):
+// With THIS FILE ALONE added to that tree (N=9 builds, N=10 reports 254):
 //
-//     CEILING v08-display-fixes fenix6: 244 used of 253, 9 free -- the 10th file-scope (:test) added reds
+//     CEILING v08-grid-gate fenix6: 244 used of 253, 9 free -- the 10th file-scope (:test) added reds
 //
-// The limit is INCLUSIVE, which is what makes 9 free and the 10th the one that
+// And with ALL THREE of this branch's new suites in the tree -- this file,
+// source/WorkStrokeTest.mc and source/StepMarkTest.mc (N=7 builds, N=8 reports
+// 254):
+//
+//     CEILING v08-display-fixes fenix6: 246 used of 253, 7 free -- the 8th file-scope (:test) added reds
+//
+// The limit is INCLUSIVE, which is what makes 7 free and the 8th the one that
 // reds. The first figure is unchanged from the erg-r5 note in
 // source/ErgUnitsTest.mc, and that it did not move is itself the measurement:
-// nothing was removed at file scope between them. The second says what this
-// whole file costs -- ONE member for every case and helper it holds, which is
-// the module block's entire justification stated as arithmetic.
+// nothing was removed at file scope between them.
+//
+// THE SECOND AND THIRD ARE THE MODULE BLOCK'S JUSTIFICATION AS ARITHMETIC:
+// 244 - 243 = 1 for this file's 5 cases and 1 helper class, and 246 - 243 = 3
+// for THREE suites holding 16 cases and 5 helper classes between them. At file
+// scope the same declarations would need 21 members and the build would fail on
+// all four fenix6-family devices with an error naming neither the test nor the
+// file -- while fr965 (which run-tests uses) and release-build stayed green, so
+// a green local run would prove nothing. Re-bisect before adding a fourth
+// suite: seven slots is not many.
 //
 // WHY THIS FILE EXISTS -- two gaps in source/SetGridLayoutTest.mc, both of
 // which were confirmed by MUTATION rather than by reading:
