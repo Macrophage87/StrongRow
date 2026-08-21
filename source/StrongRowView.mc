@@ -894,6 +894,96 @@ const PIP_DOT_R_MIN  = 3;
 const PIP_GAP_FRAC   = 0.009;   // between the CT label and the mark
 const PIP_GAP_MIN    = 2;
 
+// ============ THE STEP MARKS: step_type and interval_num =====================
+//
+// THE PROBLEM, measured on a real file rather than imagined. In the FIT this
+// app writes, A LAP IS JUST A LAP: activity i178249719 carries 17 laps and
+// nothing in the file distinguishes the eight 180 s work pieces from the rests,
+// the warm-up or the cool-down. Every downstream consumer has to GUESS from
+// duration, and the analyses in #124 and #149 all did exactly that -- filtering
+// laps on "170 <= duration <= 190". That heuristic is wrong in both directions:
+//
+//   * it DROPS a shortened piece. One interval was aborted for chop at 820 s of
+//     a planned 900 and simply vanished from the analysis;
+//   * it MISCLASSIFIES a rest that happens to run a work piece's length, which
+//     on a 3'/3' session is every rest.
+//
+// So the app writes down what it already knows. mStepIdx, the STEP_* kinds and
+// the per-interval counter mSetNum are all live at every tick; two developer
+// fields carry them into the file.
+//
+// THE WIRE MAPPING. These numbers ARE the format: a code whose meaning lives
+// only in a commit message is useless to whoever reads a file in a year, and
+// renumbering one silently re-labels every second already recorded.
+//
+//   step_type   id 17, RECORD scope, UINT8
+//
+//     0  SFIT_NONE   no workout step is in force. FREE-ROW mode for its whole
+//                    length, and any record committed before START. This is a
+//                    VALUE, not a silence, and that is the whole reason it
+//                    exists: record-scope fields LATCH (#36, byte level on
+//                    fr965 / SDK 9.2.0), so withholding the write on a free row
+//                    would re-emit whatever the last workout row left behind
+//                    rather than leaving a gap. 0 is out of band for every
+//                    real step because the codes below start at 1.
+//     1  SFIT_WARM   STEP_WARM   warm-up, user-ended
+//     2  SFIT_WORK   STEP_WORK   a work interval -- THE PIECES
+//     3  SFIT_REST   STEP_REST   timed rest between pieces
+//     4  SFIT_GATE   STEP_GATE   press-START gate (restMinutes = 0)
+//     5  SFIT_COOL   STEP_COOL   cool-down, user-ended
+//     6  SFIT_DONE   STEP_DONE   finished, waiting for BACK
+//
+//   interval_num  id 18, RECORD scope, UINT16
+//
+//     0            IVL_NONE. NOT in a work interval -- warm-up, rest, gate,
+//                  cool-down, done, free row, and every record before START.
+//                  Unambiguous because interval numbers are 1-based by
+//                  construction (buildWorkout counts i from 1).
+//     1..65534     the 1-based work interval this record belongs to.
+//     65535        NEVER WRITTEN. It is the UINT16 "no data" pattern -- the
+//                  same fact RR_INVALID records -- so intervalNumOf saturates
+//                  at IVL_MAX one below it rather than letting a sideloaded
+//                  numIntervals turn a real interval into an apparent absence.
+//                  (loadSettings clamps numIntervals only at the LOW end; that
+//                  is #21, and this does not depend on it being fixed.)
+//
+// THE FIT CODES ARE NOT THE CLASS ORDINALS, deliberately. STEP_WORK is 0
+// internally, and a 0 that means "the pieces" cannot also mean "no workout at
+// all" -- which is the encoding a latching record field most needs. The two
+// numbering schemes are bridged by stepTypeCode alone, and the mirror it reads
+// (SFIT_ORD_*) is pinned against the shipping class constants by
+// StepMark.test_sm_c1_theMirroredOrdinalsAreTheShippingConstants, so a reorder
+// of the internal enum reds a test instead of silently re-labelling the file.
+//
+// WHAT IS NOT CLAIMED. Everything above is about what this code CALLS. No
+// (:test) can obtain a Session, so nothing in this repository observes a
+// field_description message, a record's bytes or what any decoder renders --
+// the acceptance criterion is proved on the QUERY side by
+// scripts/fit_step_marks.py against a synthetic file, and the [Local] issue
+// filed with this change owns the simulator session and the real decode.
+const SFIT_NONE = 0;
+const SFIT_WARM = 1;
+const SFIT_WORK = 2;
+const SFIT_REST = 3;
+const SFIT_GATE = 4;
+const SFIT_COOL = 5;
+const SFIT_DONE = 6;
+
+// The class-scope STEP_* ordinals, mirrored at module scope because a `static`
+// cannot name an instance member -- the same constraint rateColour states for
+// its boolean parameter, met here with a mirror instead because the mapping is
+// six-way and a boolean cannot carry it. PINNED against the real constants; a
+// mirror nothing checks is a copy waiting to drift.
+const SFIT_ORD_WORK = 0;
+const SFIT_ORD_REST = 1;
+const SFIT_ORD_GATE = 2;
+const SFIT_ORD_DONE = 3;
+const SFIT_ORD_WARM = 4;
+const SFIT_ORD_COOL = 5;
+
+const IVL_NONE = 0;
+const IVL_MAX  = 65534;
+
 // ---- #130: the DONE screen's grid base --------------------------------------
 //
 // How far UP the set-summary grid moves on STEP_DONE, as a fraction of display
@@ -3293,6 +3383,59 @@ class StrongRowView extends Ui.View {
         return mmssStr + " work left";
     }
 
+    // Pure: the step_type code for a record or a lap.
+    //
+    // `type` is the class-scope STEP_* ordinal of the step in force, or
+    // anything else (curStepType returns -1) when there is none. The wire
+    // mapping and the reason the codes are not the ordinals are on the SFIT_*
+    // block; this function is the ONLY bridge between the two numbering
+    // schemes.
+    //
+    // NO WORKOUT IS A VALUE, NOT A SILENCE. Free-row mode and the pre-START
+    // window both return SFIT_NONE, and the caller writes it on every tick,
+    // because record-scope fields LATCH: withholding the write would re-emit
+    // the previous row's step rather than leaving a gap.
+    //
+    // AN UNKNOWN ORDINAL FALLS TO SFIT_NONE rather than to a guess. If a step
+    // kind is ever added and this table is not extended, the file says "not a
+    // workout step" -- which is wrong but honest and cannot be mistaken for a
+    // work interval. The alternative (passing the ordinal through) would make a
+    // new kind indistinguishable from an existing code.
+    static function stepTypeCode(type, workoutEnabled, started) {
+        if (!workoutEnabled || !started) { return $.SFIT_NONE; }
+        if (type == $.SFIT_ORD_WARM) { return $.SFIT_WARM; }
+        if (type == $.SFIT_ORD_WORK) { return $.SFIT_WORK; }
+        if (type == $.SFIT_ORD_REST) { return $.SFIT_REST; }
+        if (type == $.SFIT_ORD_GATE) { return $.SFIT_GATE; }
+        if (type == $.SFIT_ORD_COOL) { return $.SFIT_COOL; }
+        if (type == $.SFIT_ORD_DONE) { return $.SFIT_DONE; }
+        return $.SFIT_NONE;
+    }
+
+    // Pure: the interval_num for a record or a lap.
+    //
+    // `setNum` is mSetNum -- the SAME quantity that gates the heart-rate fold,
+    // the erg work integrator and the footer's stroke count. That identity is
+    // the point rather than a convenience: the file's notion of "inside a work
+    // interval" is then the app's own notion by construction, so a consumer
+    // selecting on this field selects exactly the seconds the app itself
+    // counted as work.
+    //
+    // 0 IS "NOT IN AN INTERVAL" AND IS UNAMBIGUOUS: buildWorkout numbers
+    // intervals from 1, so no real interval can collide with it.
+    //
+    // SATURATES AT IVL_MAX, one below the UINT16 no-data pattern 0xFFFF. A
+    // sideloaded numIntervals is not re-clamped on load (#21), so this is not
+    // an unreachable branch by anything this file can prove -- and saturating
+    // ONTO 0xFFFF would turn a real interval into an apparent absence, which is
+    // the same trap LOCK_LOW_MAX avoids on the run counter.
+    static function intervalNumOf(workoutEnabled, started, setNum) {
+        if (!workoutEnabled || !started) { return $.IVL_NONE; }
+        if (setNum <= 0)                 { return $.IVL_NONE; }
+        if (setNum > $.IVL_MAX)          { return $.IVL_MAX; }
+        return setNum;
+    }
+
     // Pure: does this stroke belong to the figure the footer reports?
     //
     // #125's whole boundary, in one place and reachable from a (:test) -- the
@@ -5067,6 +5210,20 @@ class StrongRowView extends Ui.View {
         return true;
     }
 
+    // The class-scope STEP_* ordinal of the step in force, or -1 when there is
+    // none -- free-row mode, or a workout that has not been started.
+    //
+    // ONE reader for a condition that had two copies. onUpdate computed
+    // `(mWorkoutEnabled && mStarted) ? mSteps[mStepIdx] : null` inline, and the
+    // step marks need the identical question at a different call site; two
+    // copies of it would be two places for a future edit to disagree about what
+    // "no step" means -- and here that disagreement would land IN THE FILE,
+    // where a decoder cannot see that it happened.
+    hidden function curStepType() {
+        if (!mWorkoutEnabled || !mStarted) { return -1; }
+        return mSteps[mStepIdx][:type];
+    }
+
     hidden function stepRemaining() {
         var st = mSteps[mStepIdx];
         if (!st.hasKey(:dur)) { return 0.0; }
@@ -6415,7 +6572,11 @@ class StrongRowView extends Ui.View {
         // exactly as before and the early return below is untouched. Free row
         // has no step types at all, so none of this applies to it.
         var st = (mWorkoutEnabled && mStarted) ? mSteps[mStepIdx] : null;
-        var type = (st != null) ? st[:type] : -1;
+        // curStepType() is the same condition as the line above, and the two
+        // are deliberately kept as one question: `st` is still needed here for
+        // st[:idx] and st[:nextn], so the dictionary lookup stays, but the TYPE
+        // now comes from the one reader the FIT step marks also use.
+        var type = curStepType();
         var isWork = (type == STEP_WORK);
         var fs = footState(mSensorOk, mPaused, mStarted, mRecFailed);
 
