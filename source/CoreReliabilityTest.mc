@@ -408,6 +408,191 @@ function relHrByte(code) {
     return ok;
 }
 
+// ---- #122 c1: the new ladder shape, as pure arithmetic ----------------------
+// Green from the commit that adds ctSearchDelayMs/ctDutyPerMille onward, and
+// green after the fix wires mPodEverNear in. They assert what must NOT move.
+
+// #161'S BOUND, RE-PROVED ON THE NEW FUNCTION, and it is the case in this file
+// that matters most.
+//
+// scheduleReopen(0) calls openChannel() straight back from inside openChannel's
+// own failure handler. That chain unwinds only because mFails rises on every
+// pass and the ladder stops returning 0 once the burst is spent -- an ARITHMETIC
+// bound, capped at CT_BURST_TRIES frames, not a structural one. #161 is the
+// stack overflow that happened when a path could ask for an immediate reopen
+// forever: MEASURED on fr965 / SDK 9.2.0 as "Error: Stack Overflow Error" on a
+// stack alternating scheduleReopen and openChannel down to initialize(), i.e.
+// the app dying during onLayout and taking the recording with it.
+//
+// #122 puts a new function in front of that decision, so the bound has to be
+// re-proved THROUGH it -- for both values of podNear, and far past the cap. A
+// single 0 anywhere in the right-hand loop is an unbounded recursion.
+(:test) function test_cr_c1_theNearLadderNeverAsksForZeroPastTheBurst(logger) {
+    var ok = true;
+    var flags = [false, true];
+    for (var k = 0; k < flags.size(); k++) {
+        var near = flags[k];
+        for (var f = 0; f < $.CT_BURST_TRIES; f++) {
+            if (CoreTempSensor.ctSearchDelayMs(f, near) != 0) {
+                logger.error("ctSearchDelayMs(" + f + ", " + near + ") = " +
+                             CoreTempSensor.ctSearchDelayMs(f, near) +
+                             "; inside the burst the ladder must still reopen immediately, or " +
+                             "#26's pod donned after rigging is lost again");
+                ok = false;
+            }
+        }
+        for (var f = $.CT_BURST_TRIES; f <= $.CT_BURST_TRIES + 64; f++) {
+            if (CoreTempSensor.ctSearchDelayMs(f, near) <= 0) {
+                logger.error("ctSearchDelayMs(" + f + ", " + near + ") = " +
+                             CoreTempSensor.ctSearchDelayMs(f, near) +
+                             "; a zero here makes openChannel <-> scheduleReopen recurse without " +
+                             "bound -- that is #161, which crashed the app during onLayout");
+                ok = false;
+            }
+        }
+        if (CoreTempSensor.ctSearchDelayMs(100000, near) <= 0) {
+            logger.error("ctSearchDelayMs(100000, " + near + ") = " +
+                         CoreTempSensor.ctSearchDelayMs(100000, near) +
+                         "; the cap must be a ceiling, not a wrap");
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// THE TWO LADDERS, side by side, called rather than restated.
+//
+// The left column is #26's ladder, which this branch does not move; the right
+// is the same ladder capped once a broadcast has been tracked. The cap sits
+// ABOVE CT_BACKOFF_BASE_MS on purpose: a cap at or below the base would flatten
+// the ladder into a fixed interval and delete the doubling #26 exists for.
+(:test) function test_cr_c1_theTwoLaddersDifferOnlyInTheirCap(logger) {
+    var cold = [0, 0, 0, 0, 30000, 60000, 120000, 240000, 300000, 300000];
+    var near = [0, 0, 0, 0, 30000, 60000,  60000,  60000,  60000,  60000];
+    var ok = true;
+    if ($.CT_BACKOFF_NEAR_MAX_MS >= $.CT_BACKOFF_MAX_MS) {
+        logger.error("CT_BACKOFF_NEAR_MAX_MS = " + $.CT_BACKOFF_NEAR_MAX_MS + " is not below " +
+                     "CT_BACKOFF_MAX_MS = " + $.CT_BACKOFF_MAX_MS + "; then #122 changes nothing");
+        ok = false;
+    }
+    if ($.CT_BACKOFF_NEAR_MAX_MS <= $.CT_BACKOFF_BASE_MS) {
+        logger.error("CT_BACKOFF_NEAR_MAX_MS = " + $.CT_BACKOFF_NEAR_MAX_MS + " is at or below the " +
+                     "base " + $.CT_BACKOFF_BASE_MS + "; that flattens the ladder into a fixed " +
+                     "interval and deletes the doubling #26 exists for");
+        ok = false;
+    }
+    for (var f = 0; f < cold.size(); f++) {
+        var gc = CoreTempSensor.ctSearchDelayMs(f, false);
+        var gn = CoreTempSensor.ctSearchDelayMs(f, true);
+        if (gc != cold[f]) {
+            logger.error("ctSearchDelayMs(" + f + ", false) = " + gc + ", expected " + cold[f]);
+            ok = false;
+        }
+        if (gn != near[f]) {
+            logger.error("ctSearchDelayMs(" + f + ", true) = " + gn + ", expected " + near[f]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// THE DUTY ARITHMETIC IN THE SOURCE, EXECUTED.
+//
+// The CT_BACKOFF_NEAR_MAX_MS block states 9.1 % and 33.3 %. Those are not hand
+// figures in a comment -- they are ctDutyPerMille applied to constants in the
+// same file, and this case is what makes a later edit to any of those constants
+// red instead of silently falsifying the prose. That discipline is the point:
+// this repository has withdrawn several claims that were arithmetic nobody
+// re-ran.
+//
+// It is a DUTY CYCLE and nothing else. No milliamp-hour figure appears here or
+// in the source, because none has been measured on any watch.
+(:test) function test_cr_c1_theDutyArithmeticIsTheOneStatedHere(logger) {
+    var ok = true;
+    // The window the arithmetic uses and the number the radio is actually told
+    // must agree, or every figure below is about a search that never happens.
+    if ($.CT_SEARCH_WINDOW_MS != $.CT_SEARCH_TIMEOUT_LP * 2500) {
+        logger.error("CT_SEARCH_WINDOW_MS = " + $.CT_SEARCH_WINDOW_MS + " but the DeviceConfig is " +
+                     "told searchTimeoutLowPriority = " + $.CT_SEARCH_TIMEOUT_LP + ", i.e. " +
+                     ($.CT_SEARCH_TIMEOUT_LP * 2500) + " ms");
+        ok = false;
+    }
+    var coldDuty = CoreTempSensor.ctDutyPerMille($.CT_SEARCH_WINDOW_MS, $.CT_BACKOFF_MAX_MS);
+    var nearDuty = CoreTempSensor.ctDutyPerMille($.CT_SEARCH_WINDOW_MS, $.CT_BACKOFF_NEAR_MAX_MS);
+    if (coldDuty != 91) {
+        logger.error("steady-state cold duty = " + coldDuty + " per mille, expected 91 (9.1 %) -- " +
+                     "the figure #122 was filed on");
+        ok = false;
+    }
+    if (nearDuty != 333) {
+        logger.error("steady-state near-pod duty = " + nearDuty + " per mille, expected 333 (33.3 %)");
+        ok = false;
+    }
+    if (nearDuty <= coldDuty) {
+        logger.error("the near-pod ladder listens no more than the cold one (" + nearDuty + " vs " +
+                     coldDuty + " per mille); then #122 is not fixed");
+        ok = false;
+    }
+    // ...and it must not be a return to the pre-#26 behaviour, which is the
+    // other half of the tension #122 describes.
+    if (nearDuty >= 1000) {
+        logger.error("near-pod duty = " + nearDuty + " per mille: that is a continuous search, " +
+                     "which is exactly what #26 was filed to stop");
+        ok = false;
+    }
+    // Endpoints, so the helper itself is pinned rather than trusted.
+    if (CoreTempSensor.ctDutyPerMille(30000, 0) != 1000) {
+        logger.error("ctDutyPerMille(30000, 0) = " + CoreTempSensor.ctDutyPerMille(30000, 0) +
+                     ", expected 1000: no idle time is a 100 % duty");
+        ok = false;
+    }
+    if (CoreTempSensor.ctDutyPerMille(0, 30000) != 0) {
+        logger.error("ctDutyPerMille(0, 30000) = " + CoreTempSensor.ctDutyPerMille(0, 30000) +
+                     ", expected 0");
+        ok = false;
+    }
+    if (CoreTempSensor.ctDutyPerMille(0, 0) != 0) {
+        logger.error("ctDutyPerMille(0, 0) = " + CoreTempSensor.ctDutyPerMille(0, 0) +
+                     ", expected 0 rather than a division by zero");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE NON-VACUITY GUARD for every #122 differential below.
+//
+// The shortened cap could be "delivered" by applying it unconditionally, which
+// would hand a podless row a 33.3 % search duty for the whole session and
+// reopen #26 with the change meant to fix #122. This case is what reds if that
+// happens: a sensor that has never had a broadcast frame must still walk the
+// COLD ladder all the way to CT_BACKOFF_MAX_MS, measured through the SHIPPING
+// path rather than through the pure function.
+(:test) function test_cr_c1_aPodNeverNearStillWalksTheColdLadder(logger) {
+    var p = new RelOkProbe();
+    p.reset();
+    for (var i = 0; i < 9; i++) { p.closeEvent(); }
+    var exp = [0, 0, 0, 30000, 60000, 120000, 240000, 300000, 300000];
+    var got = p.asks();
+    var ok = true;
+    if (got.size() != exp.size()) {
+        logger.error("delays requested = " + got.size() + ", expected " + exp.size());
+        return false;
+    }
+    for (var i = 0; i < exp.size(); i++) {
+        if (got[i] != exp[i]) {
+            logger.error("delay[" + i + "] = " + got[i] + ", expected " + exp[i] +
+                         " -- a pod that was never heard from gets #26's ladder unchanged");
+            ok = false;
+        }
+    }
+    if (p.slot($.CT_DIAG_I_BCAST) != 0) {
+        logger.error("bcast = " + p.slot($.CT_DIAG_I_BCAST) + "; this probe must never have tracked " +
+                     "a frame, or the case is not about a never-near pod");
+        ok = false;
+    }
+    return ok;
+}
+
 // ---- #151 c1: the shared failure handler ------------------------------------
 // Green from the commit that extracts noteOpenFailure() onward, and green after
 // the fix. It asserts what must NOT move while a second caller is added.

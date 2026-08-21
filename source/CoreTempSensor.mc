@@ -65,6 +65,73 @@ const CT_BURST_TRIES     = 4;     // back-to-back searches before backoff starts
 const CT_BACKOFF_BASE_MS = 30000;
 const CT_BACKOFF_MAX_MS  = 300000;
 
+// ---- #122: the post-loss listen duty ---------------------------------------
+//
+// THE SEARCH WINDOW, hoisted out of the DeviceConfig literal below so that the
+// duty arithmetic in this file is computed from the SAME number the radio is
+// actually told. The two used to be a literal 12 and a comment saying "30 s",
+// which is precisely the shape of claim this repository keeps having to
+// withdraw. searchTimeoutLowPriority counts units of 2.5 s, so the pair is
+// nailed together by test_cr_c1_theSearchWindowIsTheOneTheRadioIsTold rather
+// than by a constant expression the compiler might or might not fold.
+const CT_SEARCH_TIMEOUT_LP = 12;      // DeviceConfig units: 2.5 s each
+const CT_SEARCH_WINDOW_MS  = 30000;   // == CT_SEARCH_TIMEOUT_LP * 2500
+//
+// THE MEASUREMENT THIS EXISTS TO FIX. Two real rows recorded on v0.7.1, read
+// out of their ct_diag arrays:
+//
+//   i174014735 (2x15, 38 min): 22 broadcasts, 19 valid decodes, 13 closures
+//   i178249719 (8x3,  50 min):  3 broadcasts,  3 valid decodes, 24 closures,
+//                               maxFails 11
+//
+// Three broadcast frames in fifty minutes. With maxFails 11 the ladder sat at
+// CT_BACKOFF_MAX_MS for most of the row, and
+//
+//   ctDutyPerMille(CT_SEARCH_WINDOW_MS, CT_BACKOFF_MAX_MS) = 91
+//
+// i.e. 9.1 % -- roughly thirty seconds of listening in every 330. A pod that
+// stops broadcasting and later resumes is therefore likely to be missed, and
+// the worst-case blind gap (a pod resuming just after a window closes) is the
+// whole CT_BACKOFF_MAX_MS: 300 s.
+//
+// THE TENSION IS REAL. Before #26 the post-loss branch re-searched forever at
+// ~100 % duty; that found a returning pod at once and held the radio open all
+// session, which is what #26 was filed about. Reverting is not available.
+//
+// WHAT THIS BRANCH DOES: keep #26's ladder exactly as it is for a pod that has
+// never been heard from, and CAP it lower once a broadcast frame has actually
+// been tracked this session. The two ladders, in ms:
+//
+//   never near:  0, 0, 0, 30000, 60000, 120000, 240000, 300000, 300000, ...
+//   pod near:    0, 0, 0, 30000, 60000,  60000,  60000,  60000,  60000, ...
+//
+//   ctDutyPerMille(CT_SEARCH_WINDOW_MS, CT_BACKOFF_MAX_MS)      =  91  (9.1 %)
+//   ctDutyPerMille(CT_SEARCH_WINDOW_MS, CT_BACKOFF_NEAR_MAX_MS) = 333 (33.3 %)
+//
+// so the steady-state blind gap for a pod that was there falls 300 s -> 60 s
+// and the listen duty rises 9.1 % -> 33.3 %, which is still a third of the
+// pre-#26 behaviour rather than a return to it. Both figures are computed by
+// ctDutyPerMille from the constants in this file and pinned by
+// test_cr_c1_theDutyArithmeticIsTheOneStatedHere -- no number in this comment
+// is a hand calculation.
+//
+// BATTERY IS NOT MEASURED AND IS NOT CLAIMED. Every figure above is a DUTY
+// CYCLE: the fraction of wall-clock time the search window is open. Nothing in
+// this repository has measured milliamp-hours on any watch, and 33.3 % duty is
+// not "3.7x the battery cost" of 9.1 % -- radio current is not proportional to
+// search-window occupancy in any way this code has evidence for.
+//
+// THE COST, stated rather than left to be discovered: the gate is STICKY for
+// the life of the sensor, so a pod that is heard once and then removed holds
+// the shorter cap for the rest of the app run. A decaying gate would need a
+// clock on the ANT callback path and a second tunable, and what it would buy --
+// falling back to the 300 s cap after a long absence -- is exactly the
+// behaviour #122 was filed against. The bound that would actually fit is a
+// recording-state gate (search hard while recording, relax after stopAndSave),
+// which needs a lifecycle hook in StrongRowView and is #11's coordination
+// point; it is deliberately not built here.
+const CT_BACKOFF_NEAR_MAX_MS = 60000;
+
 // ---- #102 diagnostic counters ----------------------------------------------
 //
 // A 68-minute row logged core_temperature = 0.0 in all 4109 records and the
@@ -221,6 +288,22 @@ class CoreTempSensor {
     hidden var mSkinMs;
     hidden var mHsiMs;
     hidden var mEverSeen;
+    // #122. "A broadcast frame has reached this sensor at some point during this
+    // app run", which is the evidence the search pacing should turn on: it means
+    // the carrier was TRACKED, so a pod is -- or was -- physically in range.
+    //
+    // DELIBERATELY NOT mEverSeen, and the difference is not cosmetic. mEverSeen
+    // means "a temperature cleared the plausibility clamps", which is strictly
+    // narrower: a pod broadcasting undonned is fully tracked while producing
+    // nothing that clears them. And mEverSeen gates the PERIOD_A/PERIOD_B
+    // alternation in onChannelClosed, so widening what sets it would change
+    // radio behaviour on a path nothing in this repository can measure -- the
+    // same argument the heat-strain block in onBroadcast makes for not touching
+    // it either.
+    //
+    // Sticky for the life of the sensor; see the CT_BACKOFF_NEAR_MAX_MS block
+    // for why, and for what that costs.
+    hidden var mPodEverNear;
     hidden var mFails;
     hidden var mClosed;
     hidden var mRetryTimer;
@@ -274,6 +357,7 @@ class CoreTempSensor {
         mSkinMs     = 0;
         mHsiMs      = 0;
         mEverSeen   = false;
+        mPodEverNear = false;    // #122
         mFails      = 0;
         mClosed     = false;
         mRetryTimer = null;
@@ -352,6 +436,47 @@ class CoreTempSensor {
             if (ms >= $.CT_BACKOFF_MAX_MS) { return $.CT_BACKOFF_MAX_MS; }
         }
         return ms;
+    }
+
+    // THE DELAY THE SHIPPING CODE ACTUALLY ASKS FOR (#122): the ladder above,
+    // capped lower once a broadcast frame has been tracked this session. See the
+    // CT_BACKOFF_NEAR_MAX_MS block at the top of this file for the duty
+    // arithmetic and for what is and is not claimed about battery.
+    //
+    // A SEPARATE FUNCTION rather than a second parameter on ctBackoffMs, for two
+    // reasons that are both about evidence. ctBackoffMs is #26's ladder and is
+    // pinned by name in three places; leaving it byte-identical is what lets
+    // test_cr_c0_theColdLadderIsUnchanged be a characterization pin rather than
+    // a rewrite of one. And the clamp is the whole of the change, so it can be
+    // read, tested and reverted on its own.
+    //
+    // #161'S BOUND SURVIVES BY CONSTRUCTION, not by inspection of a table. This
+    // returns 0 if and only if ctBackoffMs returns 0: the clamp branch is
+    // reachable only when ms is already ABOVE CT_BACKOFF_NEAR_MAX_MS, and it
+    // returns CT_BACKOFF_NEAR_MAX_MS, which is positive. So the zero-delay
+    // reopen -- the one that re-enters openChannel() from inside its own failure
+    // handler -- still happens for exactly the first CT_BURST_TRIES failures and
+    // never again, whatever podNear says.
+    // test_cr_c1_theNearLadderNeverAsksForZeroPastTheBurst is the pin.
+    static function ctSearchDelayMs(fails, podNear) {
+        var ms = ctBackoffMs(fails);
+        if (podNear && ms > $.CT_BACKOFF_NEAR_MAX_MS) { return $.CT_BACKOFF_NEAR_MAX_MS; }
+        return ms;
+    }
+
+    // The listening DUTY, in parts per thousand, of a search that listens for
+    // `searchMs` and then waits `idleMs` before listening again. Rounded to
+    // nearest, so 9.1 % reads 91 rather than the 90 plain integer truncation
+    // would give -- the figure #122 states, reproduced rather than approximated.
+    //
+    // It exists so the duty figures in this file's comments are EXECUTED by a
+    // test instead of being hand arithmetic that a later edit to a constant
+    // would silently falsify. That is the only thing it is for: it says nothing
+    // about current draw, and a duty cycle is not a battery measurement.
+    static function ctDutyPerMille(searchMs, idleMs) {
+        var period = searchMs + idleMs;
+        if (period <= 0) { return 0; }
+        return (1000 * searchMs + period / 2) / period;
     }
 
     // Core temperature in C from a page-1 payload, or null when the frame
@@ -533,7 +658,10 @@ class CoreTempSensor {
                 :transmissionType => 0,
                 :messagePeriod => mPeriod,
                 :radioFrequency => RF_FREQ,
-                :searchTimeoutLowPriority => 12, // 30 s per attempt
+                // #122: the constant, not a literal with a
+                // comment claiming what it means. CT_SEARCH_WINDOW_MS is
+                // derived from it and is what the duty arithmetic reads.
+                :searchTimeoutLowPriority => $.CT_SEARCH_TIMEOUT_LP,
                 :searchThreshold => 0
             }));
             // Ant.GenericChannel.open() reports failure TWO ways: it throws,
@@ -614,7 +742,11 @@ class CoreTempSensor {
         // onChannelClosed) because mFails is incremented in exactly those two
         // places; keep them together.
         if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
-        scheduleReopen(ctBackoffMs(mFails));
+        // #122: podNear is hard-FALSE here at the commit that introduces
+        // ctSearchDelayMs, which makes this line behaviour-identical to the
+        // ctBackoffMs(mFails) it replaces. The fix commit is the one that
+        // passes mPodEverNear.
+        scheduleReopen(ctSearchDelayMs(mFails, false));
     }
 
     // Allocation split out so a test can substitute a timer it controls --
@@ -771,6 +903,13 @@ class CoreTempSensor {
         // the carrier was tracked, however unusable its contents.
         if (mDiagAcqPeriod == 0) { mDiagAcqPeriod = mPeriod; }
 
+        // #122, set for the same reason and at the same place: a payload
+        // arriving at all means the carrier was tracked, however unusable its
+        // contents, so this is the earliest honest point for "a pod is in
+        // range". WRITTEN from the commit that introduces the field; the commit
+        // that makes the ladder READ it is the fix.
+        mPodEverNear = true;
+
         if (p == null || p.size() < 8) { mDiagShortPay++; return; }
 
         // Behaviour-identical to the single expression this replaces; the local
@@ -912,7 +1051,8 @@ class CoreTempSensor {
         if (!mEverSeen) {
             mPeriod = (mPeriod == PERIOD_A) ? PERIOD_B : PERIOD_A;
         }
-        scheduleReopen(ctBackoffMs(mFails));
+        // #122: hard-FALSE here too at this commit -- see noteOpenFailure.
+        scheduleReopen(ctSearchDelayMs(mFails, false));
     }
 
     // ---- accessors ----------------------------------------------------------
