@@ -222,6 +222,23 @@ jobs:
         # fails it loudly. It proves the QUERY side only: nothing in this
         # repository can decode a file this app actually wrote.
         run: python3 scripts/fit_step_marks.py
+      - name: Cross-reference checker self-test (runner-free RED/GREEN)
+        # Hermetic scratch trees only, same shape as the suites above.
+        run: python3 scripts/test_check_source_refs.py
+      - name: Check that every test named in a source/ comment exists
+        # source/CoreTempSensor.mc named a guard, in the block arguing that this
+        # repository must stop asserting what it has not pinned, that was never
+        # written -- `git log -S` shows the name entering on the comment line
+        # itself. Nothing automated could see it: check_expected_tests.sh scopes
+        # itself to pin-vs-source drift, and comments are stripped from the
+        # build, so the compiler never objects either. Three reviewers found it
+        # by hand across two rounds; this step is what makes the fourth
+        # unnecessary.
+        #
+        # In test-tooling for the reason the CEILING step gives directly above:
+        # `ci-required` gates on a fixed `needs:` list, so a new JOB would be
+        # unrequired and could red unnoticed.
+        run: python3 scripts/check_source_refs.py
 
   # 3) Compile the unit-test build for EVERY manifest device in ONE job, so the
   #    SDK image is pulled once (not once per device via a matrix). A per-device

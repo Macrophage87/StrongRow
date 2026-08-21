@@ -318,15 +318,20 @@ class DeadTimerProbe extends LadderProbe {
         logger.error("CT_DIAG_F_RETRY_LOST = " + $.CT_DIAG_F_RETRY_LOST + "; a zero bit can never be read back");
         ok = false;
     }
-    if ($.CT_DIAG_SLOTS != 24) {
-        logger.error("CT_DIAG_SLOTS = " + $.CT_DIAG_SLOTS + "; the flag bit must not grow the " +
-                     "array -- the createField :count reads this constant and a longer setData " +
-                     "array is an uncatchable System Error at save");
+    // #165 grew the array by one slot and bumped the version to 4 in the same
+    // commit as this line. The assertion's SUBJECT is unchanged and is what
+    // matters here: CT_DIAG_F_RETRY_LOST is a BIT in an existing slot and did
+    // not, by itself, cost any array growth. The number is a pin on the
+    // wire format's current length, which the createField :count must equal --
+    // a longer setData array is an uncatchable System Error at save.
+    if ($.CT_DIAG_SLOTS != 25) {
+        logger.error("CT_DIAG_SLOTS = " + $.CT_DIAG_SLOTS + "; the array length and the " +
+                     "createField :count must move together, and only with a CT_DIAG_VERSION bump");
         ok = false;
     }
-    if ($.CT_DIAG_VERSION != 3) {
+    if ($.CT_DIAG_VERSION != 4) {
         logger.error("CT_DIAG_VERSION = " + $.CT_DIAG_VERSION + "; extending the flags key " +
-                     "without bumping the version leaves a reader unable to tell the bit from residue");
+                     "without bumping the version leaves a reader unable to tell a bit from residue");
         ok = false;
     }
     var armed = new ArmedProbe();

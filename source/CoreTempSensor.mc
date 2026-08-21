@@ -65,6 +65,86 @@ const CT_BURST_TRIES     = 4;     // back-to-back searches before backoff starts
 const CT_BACKOFF_BASE_MS = 30000;
 const CT_BACKOFF_MAX_MS  = 300000;
 
+// ---- #122: the post-loss listen duty ---------------------------------------
+//
+// THE SEARCH WINDOW, hoisted out of the DeviceConfig literal below so that the
+// duty arithmetic in this file is computed from the SAME number the radio is
+// actually told. The two used to be a literal 12 and a comment saying "30 s",
+// which is precisely the shape of claim this repository keeps having to
+// withdraw. searchTimeoutLowPriority counts units of 2.5 s, so the pair is
+// nailed together by the FIRST assertion in
+// CoreRel.test_cr_c1_theDutyArithmeticIsTheOneStatedHere
+// (source/CoreReliabilityTest.mc) rather than by a constant expression the
+// compiler might or might not fold.
+//
+// THAT NAME IS A CORRECTION, and the correction is the point. This line used to
+// cite a case that has never existed anywhere in the tree -- a forward reference
+// to a guard that was never written, sitting three lines under the sentence
+// about claims this repository keeps having to withdraw. The property was pinned
+// all along, by the case now cited; the cost was purely misplaced trust. Nothing
+// automated could see it, which is why scripts/check_source_refs.py now exists:
+// it resolves every test_* named in a source/ comment against the declarations
+// and reds if one does not. The retracted name is quoted in that script's
+// docstring rather than here, because quoting it here would red the very check
+// it motivated -- which is the check working, not a hole in it.
+const CT_SEARCH_TIMEOUT_LP = 12;      // DeviceConfig units: 2.5 s each
+const CT_SEARCH_WINDOW_MS  = 30000;   // == CT_SEARCH_TIMEOUT_LP * 2500
+//
+// THE MEASUREMENT THIS EXISTS TO FIX. Two real rows recorded on v0.7.1, read
+// out of their ct_diag arrays:
+//
+//   i174014735 (2x15, 38 min): 22 broadcasts, 19 valid decodes, 13 closures
+//   i178249719 (8x3,  50 min):  3 broadcasts,  3 valid decodes, 24 closures,
+//                               maxFails 11
+//
+// Three broadcast frames in fifty minutes. With maxFails 11 the ladder sat at
+// CT_BACKOFF_MAX_MS for most of the row, and
+//
+//   ctDutyPerMille(CT_SEARCH_WINDOW_MS, CT_BACKOFF_MAX_MS) = 91
+//
+// i.e. 9.1 % -- roughly thirty seconds of listening in every 330. A pod that
+// stops broadcasting and later resumes is therefore likely to be missed, and
+// the worst-case blind gap (a pod resuming just after a window closes) is the
+// whole CT_BACKOFF_MAX_MS: 300 s.
+//
+// THE TENSION IS REAL. Before #26 the post-loss branch re-searched forever at
+// ~100 % duty; that found a returning pod at once and held the radio open all
+// session, which is what #26 was filed about. Reverting is not available.
+//
+// WHAT THIS BRANCH DOES: keep #26's ladder exactly as it is for a pod that has
+// never been heard from, and CAP it lower once a broadcast frame has actually
+// been tracked this session. The two ladders, in ms:
+//
+//   never near:  0, 0, 0, 30000, 60000, 120000, 240000, 300000, 300000, ...
+//   pod near:    0, 0, 0, 30000, 60000,  60000,  60000,  60000,  60000, ...
+//
+//   ctDutyPerMille(CT_SEARCH_WINDOW_MS, CT_BACKOFF_MAX_MS)      =  91  (9.1 %)
+//   ctDutyPerMille(CT_SEARCH_WINDOW_MS, CT_BACKOFF_NEAR_MAX_MS) = 333 (33.3 %)
+//
+// so the steady-state blind gap for a pod that was there falls 300 s -> 60 s
+// and the listen duty rises 9.1 % -> 33.3 %, which is still a third of the
+// pre-#26 behaviour rather than a return to it. Both figures are computed by
+// ctDutyPerMille from the constants in this file and pinned by
+// test_cr_c1_theDutyArithmeticIsTheOneStatedHere -- no number in this comment
+// is a hand calculation.
+//
+// BATTERY IS NOT MEASURED AND IS NOT CLAIMED. Every figure above is a DUTY
+// CYCLE: the fraction of wall-clock time the search window is open. Nothing in
+// this repository has measured milliamp-hours on any watch, and 33.3 % duty is
+// not "3.7x the battery cost" of 9.1 % -- radio current is not proportional to
+// search-window occupancy in any way this code has evidence for.
+//
+// THE COST, stated rather than left to be discovered: the gate is STICKY for
+// the life of the sensor, so a pod that is heard once and then removed holds
+// the shorter cap for the rest of the app run. A decaying gate would need a
+// clock on the ANT callback path and a second tunable, and what it would buy --
+// falling back to the 300 s cap after a long absence -- is exactly the
+// behaviour #122 was filed against. The bound that would actually fit is a
+// recording-state gate (search hard while recording, relax after stopAndSave),
+// which needs a lifecycle hook in StrongRowView and is #11's coordination
+// point; it is deliberately not built here.
+const CT_BACKOFF_NEAR_MAX_MS = 60000;
+
 // ---- #102 diagnostic counters ----------------------------------------------
 //
 // A 68-minute row logged core_temperature = 0.0 in all 4109 records and the
@@ -102,7 +182,7 @@ const CT_BACKOFF_MAX_MS  = 300000;
 // 65535 messages is ~4.6 h at PERIOD_B, ~9.1 h at PERIOD_A. Only quantitative
 // ratios degrade there; every discrimination below turns on zero versus
 // non-zero, which survives any session length.
-const CT_DIAG_SLOTS   = 24;
+const CT_DIAG_SLOTS   = 25;
 const CT_DIAG_MAX     = 65535;    // UINT16 ceiling; readout clamps, not the counter
 const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
 
@@ -117,9 +197,50 @@ const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
 // constant BOTH diagSnapshot() and the createField `:count` read (a setData
 // array longer than :count is an uncatchable System Error at save time).
 //
-// VERSION 3 ADDS NO SLOT. CT_DIAG_SLOTS stays 24 and every index below keeps
-// its number, so the createField `:count` is untouched and the uncatchable
-// too-long-array failure above is not in play. What changed is that
+// VERSION 4 (#165) ADDS ONE SLOT, CT_DIAG_I_PAGE0 at index 24, and NINE BITS to
+// CT_DIAG_I_FLAGS. Slots 0-23 keep their numbers and their meanings, and every
+// v1/v2/v3 flag bit keeps its value, so an older key still answers every
+// question it could answer before -- test_cr_c0_theFourFlagBitsKeepTheirValues
+// nails the flag VALUES and test_ct_c0_diagSlotKeyIsZeroToTwenty nails the slot
+// NUMBERS, 0 to 24 inclusive.
+//
+// THE SECOND HALF OF THAT SENTENCE WAS FALSE WHEN IT WAS WRITTEN, and is fixed
+// rather than reworded. test_ct_c0_diagSlotKeyIsZeroToTwenty asserted indices
+// 0-20 only -- its name is literal -- so slots 21, 22 and 23 were claimed here
+// to be pinned while nothing in the tree held them to a number. The only other
+// coverage was test_ct_diagSlotIndicesDistinct, which the file's own comment
+// describes as invariant under a wholesale renumbering, and CoreRel's
+// CT_DIAG_I_PAGE0 != 24. A permutation confined to 21-23 -- swapping HSI_OK and
+// HSI_INVALID, say -- therefore re-keyed the three heat-strain slots of every
+// v2/v3/v4 file already recorded with the whole suite green. Review round 4
+// found it; the pin now covers 0-24 and that permutation reds it. Its NAME is
+// left alone, because renaming costs an edit to scripts/expected_tests.txt and
+// buys no assertion.
+//
+// THE LENGTH GREW, so this is the version bump that actually matters: the
+// createField `:count` in StrongRowView reads $.CT_DIAG_SLOTS, and a setData
+// array LONGER than :count is an uncatchable System Error that kills the app at
+// save time and takes the whole activity with it. Both sites read the one
+// constant; neither may substitute a literal.
+//
+// WHY A SLOT FOR THE PAGE-0 COUNT AND BITS FOR THE REST. The count is a tally,
+// and a tally packed into bits stops being an ordinary readable integer, which
+// is the property the whole array was designed around. The two things page 0x00
+// says about itself -- a 1-4 quality code and a 0-3 heart-rate-support code --
+// are small enums, and what a reader wants of them is WHICH VALUES WERE EVER
+// SEEN, which is a bitmask by nature. Nine free bits of an existing slot cost no
+// array growth and no :count risk.
+//
+// A MASK RATHER THAN "THE LAST VALUE" OR "THE WORST VALUE", and that is a
+// deliberate refusal to guess. #165 calls the quality field "a 0-4 reliability
+// rating" and nothing here knows its POLARITY -- whether 4 is good or bad. A
+// "worst observed" slot would have to assume one. A mask assumes nothing: it
+// reports exactly which codes the pod emitted, and the polarity question can be
+// settled later from a row without re-recording anything.
+//
+// VERSION 3 ADDED NO SLOT. CT_DIAG_SLOTS stayed 24 and every index below kept
+// its number, so the createField `:count` was untouched and the uncatchable
+// too-long-array failure above was not in play. What changed is that
 // CT_DIAG_I_FLAGS carries one more bit -- CT_DIAG_F_RETRY_LOST, "a deferred
 // retry was dropped for want of a Timer". Every v2 bit keeps its meaning, so a
 // v2 key applied to a v3 array still answers every question it could answer
@@ -127,7 +248,7 @@ const CT_DIAG_NONE    = 0xFFFF;   // "never observed" for the page-byte slots
 // documented signal rather than residue, and so that this decision is visible
 // in the file rather than only here (test_ct_diagLayoutConstants is the pin
 // that forces it to be deliberate).
-const CT_DIAG_VERSION = 3;        // value stored in slot CT_DIAG_I_VERSION
+const CT_DIAG_VERSION = 4;        // value stored in slot CT_DIAG_I_VERSION
 
 const CT_DIAG_I_VERSION       = 0;
 const CT_DIAG_I_OPEN_ATTEMPTS = 1;   // openChannel() entries
@@ -149,6 +270,25 @@ const CT_DIAG_I_SKIN_SENTINEL = 13;  // rejected: raw12 == CT_SKIN_INVALID
 const CT_DIAG_I_SKIN_CLAMP    = 14;  // rejected: outside CT_SKIN_MIN_C..MAX_C
 const CT_DIAG_I_CHAN_CLOSED   = 15;  // onChannelClosed() entries
 const CT_DIAG_I_MAX_FAILS     = 16;  // HIGHEST mFails reached (mFails itself resets)
+// V4 CHANGED WHAT THIS SLOT COUNTS, so it is NOT comparable across the v3/v4
+// boundary. The slot's DEFINITION is unmoved -- it is still the high-water mark
+// of mFails -- but the rule that generates mFails moved twice in this version,
+// in opposite directions:
+//   * the reset WIDENED. Through v3 only a page-0x01 frame that passed the
+//     length guard zeroed mFails; from v4 any broadcast payload reaching
+//     onBroadcast does, including a null or truncated one (see the block above
+//     `mFails = 0`). A pod broadcasting only page 0x00, or over a link
+//     delivering malformed frames, climbed the ladder on v3 and holds it at the
+//     bottom on v4. This pushes maxFails DOWN.
+//   * #151 made a QUIET open() failure count. A false return from open() now
+//     reaches noteOpenFailure and increments mFails where on v3 it was counted
+//     in slot 1 and otherwise ignored. This pushes maxFails UP, and #122's
+//     CT_BACKOFF_NEAR_MAX_MS cap fires retries more often per blind period,
+//     which pushes it up again.
+// The net direction is not predictable, so the difference between a v3 maxFails
+// and a v4 one is NOT a measurement of whether #122 helped. i178249719's
+// maxFails 11 is a v3 figure and must not be differenced against a v4 row.
+// README.md carries the same warning for a reader who never opens this file.
 const CT_DIAG_I_FLAGS         = 17;  // see CT_DIAG_F_* below
 const CT_DIAG_I_PAGE_FIRST    = 18;  // first page byte ever observed
 const CT_DIAG_I_PAGE_OTHER_LAST = 19; // most recent page byte != 0x01
@@ -170,6 +310,29 @@ const CT_DIAG_I_HSI_INVALID   = 22;  // rejected: byte 1 == CT_HSI_INVALID
 //     document's SINT8-versus-range contradiction (#81 question 4). Its ABSENCE
 //     settles nothing and must not be read as evidence of signedness.
 const CT_DIAG_I_HSI_MAX_RAW   = 23;
+// ---- v4, #165: page 0x00 ----------------------------------------------------
+// Frames whose page byte is 0x00 -- the CBT general-information page, which
+// carries the pod's own data-quality rating and its heart-rate-support state.
+//
+// It is a SEPARATE tally from CT_DIAG_I_PAGE_OTHER, not a replacement for it.
+// Slot 8's key is "page byte != 0x01" and page 0x00 still satisfies it, so
+// every key ever written against an already-recorded file keeps working, and
+// pageOther - page0 is the number of FRAMES that arrived on pages other than
+// 0x00 and 0x01.
+//
+// A FRAME TALLY, NOT A COUNT OF DISTINCT PAGE TYPES. Both counters increment
+// once per frame, so forty frames of one undocumented page read 40, not 1. This
+// comment said "the count of pages that are still genuinely unknown" in four
+// places on this branch and it was wrong in all four -- a reader following it
+// would open an investigation into a page zoo that does not exist.
+// CT_DIAG_I_PAGE_OTHER_LAST names one such page byte and is the only thing in
+// the array that says anything about WHICH pages they were.
+//
+// Zero here with pageOther > 0 says the non-page-1 traffic was something else
+// entirely; zero here with pageOther == 0 says the pod sent nothing but page 1.
+// The two are different findings and neither is recoverable from the flag bits,
+// which is why this is a slot and not another bit.
+const CT_DIAG_I_PAGE0         = 24;
 // Slot 20 answers #84 in the AFFIRMATIVE ONLY. PERIOD_A is always tried first,
 // so 16384 proves nothing about the fallback; only 8192 is evidence that
 // PERIOD_B can acquire. And it reads 0 on precisely the zero-frame rows where
@@ -192,6 +355,63 @@ const CT_DIAG_F_EVER_SEEN    = 4;   // a reading was accepted at some point
 // not happened YET -- an absence, and a diagnosis resting on an absence is
 // exactly what #102 exists to stop.
 const CT_DIAG_F_RETRY_LOST   = 8;
+
+// v4, #165: WHICH page-0x00 codes were ever observed. Two contiguous runs of
+// four, so ctQualityBit / ctHrSupportBit can shift rather than branch; the
+// contiguity is pinned by test_cr_c1_theNewFlagBitsAreContiguousAndDistinct
+// because the shift depends on it.
+//
+// A MASK, not a latest-value nibble, and not a "worst seen" code. #165 calls
+// the quality field a 0-4 reliability rating and NOTHING HERE KNOWS ITS
+// POLARITY -- whether 4 means "trust this" or "disregard this" is not settled
+// by anything this repository has read. A worst-seen encoding would have to
+// assume one; a mask assumes nothing and lets the question be answered later
+// from a row that has already been recorded.
+//
+// Q1..Q4 are the codes (payload[2] & 0x03) + 1 can produce.
+const CT_DIAG_F_Q1        = 0x0010;
+const CT_DIAG_F_Q2        = 0x0020;
+const CT_DIAG_F_Q3        = 0x0040;
+const CT_DIAG_F_Q4        = 0x0080;
+// payload[2] == 0xFF: the pod's own "disregard this broadcast" marker. ITS OWN
+// BIT rather than a fifth quality code, because it is an ABSENCE of a rating,
+// not a rating -- the same distinction #86/#107 cost this repository twice, and
+// the same reason decodeHsi returns null instead of 25.5.
+const CT_DIAG_F_Q_NONE    = 0x0100;
+// heartRateSupport = (payload[3] & 0xC0) >> 6, one bit per observed code.
+// Per #165: 1 means the pod is REQUESTING a heart rate and is running its
+// estimate without one; 2 means it has one. 0 and 3 are given no meaning by
+// anything read for #165, so they are recorded and not interpreted.
+//
+// HR1 set on a row is the evidence for the transmit-path follow-up: it says the
+// pod asked, on this row, and got no answer. NOTHING IN THIS BRANCH REPLIES --
+// see the scope note on notePageZero.
+const CT_DIAG_F_HR0       = 0x0200;
+const CT_DIAG_F_HR1       = 0x0400;
+const CT_DIAG_F_HR2       = 0x0800;
+const CT_DIAG_F_HR3       = 0x1000;
+
+// ---- #165: page 0x00, the general-information page --------------------------
+//
+// EVIDENCE CLASS FIRST, because it governs what may be written about these
+// fields anywhere in the repository.
+//
+// The byte offsets, the masks and the 0xFF marker are DOCUMENT AGREEMENT with a
+// single source: greenTEG's own Connect IQ example for this profile, read for
+// facts only (it carries no licence file, and no code from it is in this
+// repository). That example's last code commit predates CORE 2 entirely. The
+// formally authoritative ANT+ device profile is behind an adopter login and was
+// NOT read. NO CORE POD WAS INVOLVED. So nothing here or downstream may state
+// what a pod transmits -- only what this code READS.
+//
+// It is a strictly weaker evidence class than page 1's, which at least has
+// three independent decoders agreeing plus one real row of decodes behind it.
+// That is precisely why this branch RECORDS these values into the diagnostic
+// array and changes no decoded value, no clamp and no freshness window with
+// them: if the layout is wrong, the cost is two meaningless flag bits.
+const CT_PAGE_GENERAL     = 0x00;   // the page byte this block is about
+const CT_PAGE_TEMPERATURE = 0x01;   // the page decodeCoreC/decodeSkinC read
+const CT_PAGE0_Q_INVALID  = 0xFF;   // byte 2: "disregard this broadcast"
 
 // Listens for a CORE (greenTEG) body-temperature pod over a generic ANT+
 // channel (ANT+ Core Body Temperature profile, device type 127). Connect IQ's
@@ -221,6 +441,22 @@ class CoreTempSensor {
     hidden var mSkinMs;
     hidden var mHsiMs;
     hidden var mEverSeen;
+    // #122. "A broadcast frame has reached this sensor at some point during this
+    // app run", which is the evidence the search pacing should turn on: it means
+    // the carrier was TRACKED, so a pod is -- or was -- physically in range.
+    //
+    // DELIBERATELY NOT mEverSeen, and the difference is not cosmetic. mEverSeen
+    // means "a temperature cleared the plausibility clamps", which is strictly
+    // narrower: a pod broadcasting undonned is fully tracked while producing
+    // nothing that clears them. And mEverSeen gates the PERIOD_A/PERIOD_B
+    // alternation in onChannelClosed, so widening what sets it would change
+    // radio behaviour on a path nothing in this repository can measure -- the
+    // same argument the heat-strain block in onBroadcast makes for not touching
+    // it either.
+    //
+    // Sticky for the life of the sensor; see the CT_BACKOFF_NEAR_MAX_MS block
+    // for why, and for what that costs.
+    hidden var mPodEverNear;
     hidden var mFails;
     hidden var mClosed;
     hidden var mRetryTimer;
@@ -251,6 +487,13 @@ class CoreTempSensor {
     hidden var mDiagHsiOk;
     hidden var mDiagHsiInvalid;
     hidden var mDiagHsiMaxRaw;
+    // #165. Page-0x00 frames reaching the decoder, and the OR of every
+    // ctQualityBit/ctHrSupportBit ever observed on one. Accumulated rather than
+    // latest-wins, and sticky like mDiagRetryLost, for the reason the
+    // CT_DIAG_F_Q1 block gives: the question is which codes the pod ever
+    // emitted, not which one it emitted last.
+    hidden var mDiagPage0;
+    hidden var mDiagPage0Flags;
     // Set once and never cleared when scheduleReopen could not arm a retry
     // timer; read out as CT_DIAG_F_RETRY_LOST. A plain Boolean rather than a
     // counter: one more slot would be a wire-format growth, and the question
@@ -274,6 +517,7 @@ class CoreTempSensor {
         mSkinMs     = 0;
         mHsiMs      = 0;
         mEverSeen   = false;
+        mPodEverNear = false;    // #122
         mFails      = 0;
         mClosed     = false;
         mRetryTimer = null;
@@ -310,6 +554,8 @@ class CoreTempSensor {
         mDiagHsiOk         = 0;
         mDiagHsiInvalid    = 0;
         mDiagHsiMaxRaw     = $.CT_DIAG_NONE;
+        mDiagPage0         = 0;
+        mDiagPage0Flags    = 0;
         mDiagRetryLost     = false;
         mDiagFlags         = -1;
     }
@@ -352,6 +598,47 @@ class CoreTempSensor {
             if (ms >= $.CT_BACKOFF_MAX_MS) { return $.CT_BACKOFF_MAX_MS; }
         }
         return ms;
+    }
+
+    // THE DELAY THE SHIPPING CODE ACTUALLY ASKS FOR (#122): the ladder above,
+    // capped lower once a broadcast frame has been tracked this session. See the
+    // CT_BACKOFF_NEAR_MAX_MS block at the top of this file for the duty
+    // arithmetic and for what is and is not claimed about battery.
+    //
+    // A SEPARATE FUNCTION rather than a second parameter on ctBackoffMs, for two
+    // reasons that are both about evidence. ctBackoffMs is #26's ladder and is
+    // pinned by name in three places; leaving it byte-identical is what lets
+    // test_cr_c0_theColdLadderIsUnchanged be a characterization pin rather than
+    // a rewrite of one. And the clamp is the whole of the change, so it can be
+    // read, tested and reverted on its own.
+    //
+    // #161'S BOUND SURVIVES BY CONSTRUCTION, not by inspection of a table. This
+    // returns 0 if and only if ctBackoffMs returns 0: the clamp branch is
+    // reachable only when ms is already ABOVE CT_BACKOFF_NEAR_MAX_MS, and it
+    // returns CT_BACKOFF_NEAR_MAX_MS, which is positive. So the zero-delay
+    // reopen -- the one that re-enters openChannel() from inside its own failure
+    // handler -- still happens for exactly the first CT_BURST_TRIES failures and
+    // never again, whatever podNear says.
+    // test_cr_c1_theNearLadderNeverAsksForZeroPastTheBurst is the pin.
+    static function ctSearchDelayMs(fails, podNear) {
+        var ms = ctBackoffMs(fails);
+        if (podNear && ms > $.CT_BACKOFF_NEAR_MAX_MS) { return $.CT_BACKOFF_NEAR_MAX_MS; }
+        return ms;
+    }
+
+    // The listening DUTY, in parts per thousand, of a search that listens for
+    // `searchMs` and then waits `idleMs` before listening again. Rounded to
+    // nearest, so 9.1 % reads 91 rather than the 90 plain integer truncation
+    // would give -- the figure #122 states, reproduced rather than approximated.
+    //
+    // It exists so the duty figures in this file's comments are EXECUTED by a
+    // test instead of being hand arithmetic that a later edit to a constant
+    // would silently falsify. That is the only thing it is for: it says nothing
+    // about current draw, and a duty cycle is not a battery measurement.
+    static function ctDutyPerMille(searchMs, idleMs) {
+        var period = searchMs + idleMs;
+        if (period <= 0) { return 0; }
+        return (1000 * searchMs + period / 2) / period;
     }
 
     // Core temperature in C from a page-1 payload, or null when the frame
@@ -434,6 +721,89 @@ class CoreTempSensor {
     // become -2048 and the comparison can never fire.
     static function ctSkinSentinel(p) {
         return skinRaw12(p[3], p[4]) == $.CT_SKIN_INVALID;
+    }
+
+    // ---- #165 page-0x00 field extraction ------------------------------------
+    // Pure and parameter-based, so the whole of what this branch understands
+    // about page 0x00 is (:test)-able without a channel, a clock or a pod --
+    // which matters more here than anywhere else in this file, because the
+    // layout rests on ONE unmeasured source (see the CT_PAGE_GENERAL block).
+
+    // The pod's own data-quality code from a page-0x00 payload: 1..4, or NULL
+    // when byte 2 is the 0xFF "disregard" marker.
+    //
+    // NULL, NOT A NUMBER, for the marker. Every value the expression can produce
+    // is a legal rating, so there is no in-band code point that could stand for
+    // "the pod told us not to trust this frame" -- the same argument decodeHsi
+    // makes for its own scale, and the same trap (#86/#107) this repository has
+    // fallen into twice by rendering absence as a value.
+    //
+    // A RETRACTION, kept here rather than deleted, because it is the kind of
+    // claim this file is strict about. An earlier version of this comment said
+    // the parentheses around `raw & 0x03` were LOAD-BEARING, and that the vendor
+    // example's own `payload[2] & 0x03 + 1` was a precedence defect binding as
+    // `payload[2] & 4`. #165 says the same thing. BOTH ARE WRONG FOR MONKEY C,
+    // and the vendor's file is Monkey C.
+    //
+    // MEASURED, fr965 / SDK 9.2.0, by evaluating all three spellings in a
+    // throwaway (:test) and printing them:
+    //
+    //     raw = 2:  raw & 0x03 + 1  ->  3
+    //               (raw & 0x03) + 1 ->  3
+    //               raw & (0x03 + 1) ->  0
+    //
+    // so `&` binds TIGHTER than `+` here, not looser, and the unparenthesised
+    // spelling computes what it looks like it computes. The parentheses are
+    // KEPT because they say what is meant without the reader having to know
+    // that -- but they are clarity, not correctness, and no test can distinguish
+    // the two spellings. What the sweep in
+    // test_cr_c1_theQualityCodeIsTheLowTwoBitsPlusOne actually guards is a wrong
+    // MASK or a missing +1, which is a live risk; the precedence one is not.
+    static function ctPage0Quality(p) {
+        var raw = p[2] & 0xFF;
+        if (raw == $.CT_PAGE0_Q_INVALID) { return null; }
+        return (raw & 0x03) + 1;
+    }
+
+    // The heart-rate-support code from a page-0x00 payload: byte 3, bits 6:7.
+    //
+    // Per #165, 1 means the pod is REQUESTING a heart rate and is running its
+    // core-temperature estimate without one, and 2 means it has one. 0 and 3
+    // are given no meaning by the source this was read from, so they are
+    // recorded and not interpreted.
+    //
+    // The parentheses are clarity, not correctness, and the retraction on
+    // ctPage0Quality above is why that is stated rather than assumed. MEASURED,
+    // fr965 / SDK 9.2.0, on the same throwaway probe:
+    //
+    //     p3 = 0x40:  p3 & 0xC0 >> 6  ->  1
+    //                 (p3 & 0xC0) >> 6 ->  1
+    //                 p3 & (0xC0 >> 6) ->  0
+    //
+    // The REAL confusion risk in this byte is not precedence, it is reading the
+    // wrong field: bits 2:3 carry the UTC request, and `(p[3] & 0x0C) >> 2`
+    // returns equally plausible small integers. That is what the 256-value sweep
+    // in test_cr_c1_theHeartRateSupportFieldIsTheTopTwoBits separates.
+    static function ctPage0HrSupport(p) {
+        return (p[3] & 0xC0) >> 6;
+    }
+
+    // The CT_DIAG_I_FLAGS bit for a quality code, or 0 for anything outside
+    // 1..4 (including the null the marker produces). The shift depends on
+    // CT_DIAG_F_Q1..Q4 being contiguous, which
+    // test_cr_c1_theNewFlagBitsAreContiguousAndDistinct pins.
+    static function ctQualityBit(q) {
+        if (q == null || q < 1 || q > 4) { return 0; }
+        return $.CT_DIAG_F_Q1 << (q - 1);
+    }
+
+    // The CT_DIAG_I_FLAGS bit for a heart-rate-support code, or 0 outside 0..3.
+    // The range guard is not decorative: the extractor above masks to two bits
+    // so it cannot exceed 3 today, and this function must stay total if a future
+    // edit widens the field.
+    static function ctHrSupportBit(h) {
+        if (h == null || h < 0 || h > 3) { return 0; }
+        return $.CT_DIAG_F_HR0 << h;
     }
 
     // Clamp a counter into the UINT16 range for the ct_diag field. Applied
@@ -533,7 +903,10 @@ class CoreTempSensor {
                 :transmissionType => 0,
                 :messagePeriod => mPeriod,
                 :radioFrequency => RF_FREQ,
-                :searchTimeoutLowPriority => 12, // 30 s per attempt
+                // #122: the constant, not a literal with a
+                // comment claiming what it means. CT_SEARCH_WINDOW_MS is
+                // derived from it and is what the duty arithmetic reads.
+                :searchTimeoutLowPriority => $.CT_SEARCH_TIMEOUT_LP,
                 :searchThreshold => 0
             }));
             // Ant.GenericChannel.open() reports failure TWO ways: it throws,
@@ -545,54 +918,104 @@ class CoreTempSensor {
             // hypothesis, inside the discriminator built to prevent exactly
             // that.
             //
-            // The return value is NOT acted on beyond counting: no retry is
-            // scheduled, no channel released, nothing that was not done
-            // before. This stays diagnostic-only.
+            // #103 counted this return and DELIBERATELY DID NOT ACT ON IT --
+            // "no retry is scheduled, no channel released, nothing that was not
+            // done before" -- which was the right scope for a diagnostics change
+            // and left the recovery gap #151 was filed on.
+            //
+            // #151 CLOSES IT: a false return is answered exactly as a throw is,
+            // through the SAME handler. See the note on noteOpenFailure. Two
+            // things the gap cost, both fixed by that one call:
+            //
+            //   * the retry ladder never engaged. Nothing else can re-enter
+            //     openChannel(): no MSG_CODE_EVENT_CHANNEL_CLOSED can arrive on
+            //     a channel that never opened, and onChannelClosed is the only
+            //     other route in. CORE was dead for the rest of the app run,
+            //     with nothing on the screen to say so.
+            //   * mChannel stayed non-null, so the `if (mChannel == null)` guard
+            //     above would hand the channel that just failed straight back to
+            //     the next attempt. Releasing it matters as much as scheduling
+            //     the retry, and noteOpenFailure does both, in that order.
             //
             // NOT MEASURED: whether open() ever actually returns false on this
             // path. There is no ANT radio in any environment this repository
-            // can run, so the false-return branch has never been observed --
-            // the API documents it and the previous code assumed it away. If
-            // it never fires, openOk is unchanged from before.
+            // can run, so the false-return branch has never been observed -- the
+            // API documents it and the pre-#103 code assumed it away.
+            // i174014735's open_attempts 13 against open_ok 12 is a residual of
+            // one that is CONSISTENT with it and does not prove it.
             var opened = mChannel.open();
 
             // #102: reached only when nothing above threw. openAttempts minus
             // openOk is not the throw count -- openThrow is counted explicitly
             // below -- because that difference has to stay readable even if a
-            // future edit adds a return path between here and the catch. With
-            // the guard below, attempts - openOk - openThrow is exactly the
-            // quiet-failure count; before it, that residual was always zero.
-            if (opened) { mDiagOpenOk++; }
+            // future edit adds a return path between here and the catch.
+            //
+            // attempts - openOk - openThrow is STILL exactly the quiet-failure
+            // count after #151, and only its magnitude moves: every retry a
+            // quiet failure now causes is another attempt with no openOk and no
+            // openThrow, so the residual counts all of them rather than the
+            // single one that used to end the run.
+            if (opened) {
+                mDiagOpenOk++;
+            } else {
+                noteOpenFailure();
+            }
         } catch (e) {
             // #102: the counter this issue was filed on. This catch was
             // completely silent, so a channel that could never be acquired and
             // a channel that opened and heard nothing left identical files.
+            //
+            // Counted HERE rather than inside noteOpenFailure(): openThrow means
+            // "the catch was entered", and the handler below is shared with a
+            // failure that does not throw. Folding the increment into the shared
+            // handler would redefine slot 3 silently, which is the exact defect
+            // the openOk key was corrected for.
             mDiagOpenThrow++;
-
-            // Hand the channel back before dropping the reference. ANT channels
-            // are a scarce hardware resource, and the `if (mChannel == null)`
-            // guard above only protects the ALLOCATION -- setDeviceConfig() and
-            // open() run on every call, so a throw on the re-search path
-            // discards an already-assigned channel too. Once the reference is
-            // gone close() can no longer release it. #18.
-            discardChannel();
-
-            // ...and schedule a retry, because releasing alone fixes the leak
-            // but not the outage: after this catch mChannel is null, so no
-            // further CHANNEL_CLOSED can arrive and nothing re-enters
-            // openChannel() -- CORE would stay dead for the rest of the app
-            // run. This is also why #18 and #26 must ship together: the ladder
-            // re-enters openChannel(), which against the un-fixed catch would
-            // have turned a one-shot leak into one orphaned channel per retry.
-            mFails++;
-            // #102 high-water mark. mFails is reset to 0 by any tracked page-1
-            // frame, so at save time it carries the CURRENT ladder depth and
-            // says nothing about the depth reached. Two copies of this line
-            // exist (here and in onChannelClosed) because mFails is incremented
-            // in exactly those two places; keep them together.
-            if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
-            scheduleReopen(ctBackoffMs(mFails));
+            noteOpenFailure();
         }
+    }
+
+    // THE SINGLE ANSWER TO A FAILED OPEN, extracted (#151) so that the two ways
+    // Ant.GenericChannel.open() can fail cannot drift apart. Behaviour-
+    // preserving at the commit that introduces it: the body is exactly the four
+    // statements it replaces, in the same order, and openChannel's catch is its
+    // only caller. What changes later is that a SECOND caller appears.
+    //
+    // Hand the channel back before dropping the reference. ANT channels are a
+    // scarce hardware resource, and the `if (mChannel == null)` guard in
+    // openChannel only protects the ALLOCATION -- setDeviceConfig() and open()
+    // run on every call, so a failure on the re-search path leaves an
+    // already-assigned channel behind too. Once the reference is gone close()
+    // can no longer release it. #18.
+    //
+    // ...and schedule a retry, because releasing alone fixes the leak but not
+    // the outage: afterwards mChannel is null, so no further CHANNEL_CLOSED can
+    // arrive and nothing re-enters openChannel() -- CORE would stay dead for the
+    // rest of the app run. This is also why #18 and #26 had to ship together:
+    // the ladder re-enters openChannel(), which against the un-fixed catch would
+    // have turned a one-shot leak into one orphaned channel per retry.
+    //
+    // THE RECURSION BOUND LIVES HERE and is arithmetic, not structural.
+    // scheduleReopen(0) calls openChannel() straight back, and the chain unwinds
+    // only because mFails rises on every pass and the ladder stops returning 0
+    // once the burst is spent -- so the depth is capped at CT_BURST_TRIES
+    // frames. #161 is the stack overflow that happened when a path could ask for
+    // an immediate reopen forever. Any new caller of this function inherits that
+    // bound and must be pinned against it.
+    hidden function noteOpenFailure() {
+        discardChannel();
+        mFails++;
+        // #102 high-water mark. mFails is reset to 0 by a tracked frame, so at
+        // save time it carries the CURRENT ladder depth and says nothing about
+        // the depth reached. Two copies of this line exist (here and in
+        // onChannelClosed) because mFails is incremented in exactly those two
+        // places; keep them together.
+        if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
+        // #122. Once a broadcast frame has been tracked this session the ladder
+        // is capped at CT_BACKOFF_NEAR_MAX_MS instead of CT_BACKOFF_MAX_MS --
+        // see the block at the top of this file for the duty arithmetic and for
+        // what is and is not claimed about battery.
+        scheduleReopen(ctSearchDelayMs(mFails, mPodEverNear));
     }
 
     // Allocation split out so a test can substitute a timer it controls --
@@ -618,11 +1041,25 @@ class CoreTempSensor {
         if (delayMs <= 0) {
             // The burst, reopening now so discovery keeps exactly the timing it
             // had before #26. This IS a re-entry into openChannel() from inside
-            // openChannel()'s own catch, and it unwinds only because mFails
-            // rises on every pass and ctBackoffMs stops returning 0 once the
-            // burst is spent -- an ARITHMETIC bound, capped at CT_BURST_TRIES
-            // frames, not a structural one. It therefore has a test standing in
-            // front of it: RetryBound.test_rb_c0_onlyTheBurstEverAsksForZeroDelay.
+            // openChannel() ITSELF -- from its catch, and since #151 from its
+            // try block as well, when open() returns false; both arrive here
+            // through noteOpenFailure(). It unwinds only because mFails rises on
+            // every pass and the shipping ladder, ctSearchDelayMs, stops
+            // returning 0 once the burst is spent -- an ARITHMETIC bound, capped
+            // at CT_BURST_TRIES frames, not a structural one.
+            //
+            // Three tests stand in front of it, named rather than numbered
+            // because line numbers drift:
+            //   RetryBound.test_rb_c0_onlyTheBurstEverAsksForZeroDelay
+            //     -- ctBackoffMs, the source of the zero;
+            //   CoreRel.test_cr_c1_theNearLadderNeverAsksForZeroPastTheBurst
+            //     -- ctSearchDelayMs, the function actually called here, for
+            //        both podNear values;
+            //   CoreRel.test_cr_c2_aQuietlyFailedOpenIsBoundedByTheBurst
+            //     -- the try-block caller #151 adds, end to end.
+            // The sentence above used to name the catch alone and ctBackoffMs
+            // alone; noteOpenFailure's own copy of it was updated when #151
+            // landed and this one was not, which is how the pair drifted.
             openChannel();
             return;
         }
@@ -749,6 +1186,36 @@ class CoreTempSensor {
         // the carrier was tracked, however unusable its contents.
         if (mDiagAcqPeriod == 0) { mDiagAcqPeriod = mPeriod; }
 
+        // #122, set for the same reason and at the same place: a payload
+        // arriving at all means the carrier was tracked, however unusable its
+        // contents, so this is the earliest honest point for "a pod is in
+        // range".
+        mPodEverNear = true;
+
+        // #122. THE SEARCH PACING RESETS HERE, above every guard below it.
+        //
+        // It used to sit after the page-0x01 test, so only a temperature frame
+        // cleared it. That was too narrow twice over, and this comment used to
+        // argue only the first of the two:
+        //
+        //   * it is not about an ACCEPTED reading. A pod broadcasting undonned
+        //     is fully tracked while producing nothing that clears the
+        //     plausibility clamps. (That much the old placement already got
+        //     right, and it is preserved.)
+        //   * it is not about the PAGE either, and that is the correction.
+        //     mFails counts consecutive FAILED SEARCHES -- it is the ladder's
+        //     input, and the ladder paces the search. A payload arriving at all
+        //     means the search FOUND the pod, whatever page the frame carried.
+        //     A pod broadcasting only the general-information page (#165) left
+        //     the ladder climbing to five minutes while its frames were
+        //     arriving.
+        //
+        // Deliberately above the length guard too: a null or short payload still
+        // reached onBroadcast, which means the radio delivered a broadcast on
+        // this channel, which means the search succeeded. Counting that as a
+        // failed search would be counting the frame's contents, not the search.
+        mFails = 0;
+
         if (p == null || p.size() < 8) { mDiagShortPay++; return; }
 
         // Behaviour-identical to the single expression this replaces; the local
@@ -757,20 +1224,23 @@ class CoreTempSensor {
         // point at different defects.
         var page = p[0] & 0xFF;
         if (mDiagPageFirst == $.CT_DIAG_NONE) { mDiagPageFirst = page; }
-        if (page != 0x01) {                      // CBT data page 1 only
+        if (page != $.CT_PAGE_TEMPERATURE) {     // CBT data page 1 only
             mDiagPageOther++;
             mDiagPageOtherLast = page;
+            // #165. Page 0x00 stays counted above -- slot 8's key is "page byte
+            // != 0x01" and must keep meaning that, or every key ever written
+            // against an already-recorded file changes under a reader's feet.
+            // What is added is a SECOND, narrower record, so pageOther - page0
+            // is the number of FRAMES on pages other than 0x00 and 0x01. Both
+            // counters are per-frame, so that difference is a frame tally and
+            // NOT a count of distinct unknown page types; the slot key at the
+            // top of this file states it once and this is the pointer to it.
+            if (page == $.CT_PAGE_GENERAL) { notePageZero(p); }
             return;
         }
         mDiagPage1++;
 
         var now = System.getTimer();
-
-        // Any tracked page-1 frame resets the search pacing, not merely an
-        // ACCEPTED reading: a pod broadcasting undonned is fully tracked while
-        // producing zero readings that clear the plausibility clamps, and the
-        // counter should mean what its name says.
-        mFails = 0;
 
         // Each field stamps its OWN clock, inside its own acceptance gate. The
         // stamp used to live only inside the core-valid branch, so a frame with
@@ -853,6 +1323,49 @@ class CoreTempSensor {
         }
     }
 
+    // #165: record what a page-0x00 (general information) frame said about
+    // itself. Called only from onBroadcast's non-page-1 branch, on a payload
+    // already known to be at least 8 bytes long.
+    //
+    // READ-ONLY, AND THAT IS THE SCOPE BOUNDARY RATHER THAN AN OMISSION. The
+    // pod uses these fields to ASK for things -- a heart rate for its own
+    // core-temperature estimate, and a UTC time -- and answering means sending
+    // an acknowledged message, which is a TRANSMIT path on the ANT channel.
+    // Nothing in this class has ever transmitted. That change is materially
+    // bigger than this one, carries its own risks, and needs a real row to
+    // validate; it has its own issue. What this function does is make the ask
+    // VISIBLE in the saved file, which is the thing that was missing: a reader
+    // could not previously tell that the pod had been running its estimate
+    // without a heart rate the watch had all along.
+    //
+    // THE UTC-REQUEST FIELD, byte 3 bits 2:3, is deliberately not extracted.
+    // It is the same shape of ask, it would need the same transmit path to
+    // answer, and recording it would spend two more flag bits on a question the
+    // follow-up issue owns. It is named in that issue instead.
+    //
+    // NOTHING HERE FEEDS A DECODED VALUE, A CLAMP OR A FRESHNESS WINDOW. The
+    // page-0x00 layout rests on one unmeasured source (see the CT_PAGE_GENERAL
+    // block); if it is wrong, the cost is two meaningless flag bits and a
+    // correct frame count.
+    hidden function notePageZero(p) {
+        mDiagPage0++;
+        // The quality code, or null when the pod said to disregard the frame.
+        // The null case gets its OWN bit rather than a code, because it is an
+        // absence of a rating and not a rating -- ctQualityBit answers 0 for it,
+        // so the OR below cannot smuggle it in as a value.
+        var q = ctPage0Quality(p);
+        if (q == null) {
+            mDiagPage0Flags |= $.CT_DIAG_F_Q_NONE;
+        } else {
+            mDiagPage0Flags |= ctQualityBit(q);
+        }
+        // ...and which heart-rate-support state the pod reported. Accumulated,
+        // not latest-wins: the question a reader has is which states occurred
+        // during the row, and "the pod asked for a heart rate at some point" is
+        // exactly the evidence the transmit follow-up needs.
+        mDiagPage0Flags |= ctHrSupportBit(ctPage0HrSupport(p));
+    }
+
     // Search timed out or the pod dropped.
     //
     // This used to be `if (mEverSeen || mTries < 3)`, and BOTH branches were
@@ -868,13 +1381,29 @@ class CoreTempSensor {
     // replacing one cap with a larger cap would only move the threshold. The
     // ladder paces retries instead, and never gives up:
     //
-    //   searches at 0-30, 30-60, 60-90, 90-120 s  -- identical to today --
-    //   then 150-180, 240-270, 390-420, 660-690, 990-1020, every 330 s after.
+    //   never near -- searches at 0-30, 30-60, 60-90, 90-120 s (identical to
+    //   the pre-#26 timing), then 150-180, 240-270, 390-420, 660-690, 990-1020,
+    //   every 330 s after.
     //
-    // A pod donned at t=5 min is acquired in the 390-420 s window where today
-    // it never would be, and steady-state radio duty after a permanent loss
-    // falls from ~100 % to 30/330 = 9.1 %. Battery drain in mAh is NOT measured
-    // and is not claimed; this is a duty-cycle argument only.
+    // A pod donned at t=5 min is acquired in the 390-420 s window where pre-#26
+    // it never would be, and steady-state radio duty for a channel that never
+    // heard a pod falls from ~100 % to 30 s in every 330.
+    //
+    // THAT TABLE IS THE NEVER-NEAR COLUMN ONLY, and it used to be stated here
+    // unqualified, in the present tense, with "after a permanent loss" attached
+    // to the duty figure -- which is precisely the case for which it is FALSE.
+    // #122 capped the ladder once any broadcast frame has been tracked this
+    // session, and a loss presupposes the pod was tracked, so every post-loss
+    // re-search walks the CAPPED ladder: the same first six windows, then one
+    // every 90 s rather than every 330. The duty figures for BOTH columns are
+    // computed by ctDutyPerMille from the constants and stated ONCE, in the
+    // CT_BACKOFF_NEAR_MAX_MS block at the top of this file, where
+    // test_cr_c1_theDutyArithmeticIsTheOneStatedHere pins them and
+    // test_cr_c2_aNearPodsWorstCaseListenDutyIsTheShortenedOne drives ten real
+    // onChannelClosed() calls and asserts the near figure end to end.
+    // Deliberately not repeated here: two copies is how this pair drifted apart.
+    // Battery drain in mAh is NOT measured and is not claimed; both figures are
+    // duty-cycle arguments only.
     //
     // A recording-state gate is deliberately NOT added here: it needs a
     // lifecycle hook in StrongRowView, which is #11's coordination point.
@@ -890,7 +1419,13 @@ class CoreTempSensor {
         if (!mEverSeen) {
             mPeriod = (mPeriod == PERIOD_A) ? PERIOD_B : PERIOD_A;
         }
-        scheduleReopen(ctBackoffMs(mFails));
+        // #122. The site that matters most: this is the post-loss re-search, so
+        // it is where the near cap does its work. The 9.1 % duty #122 was filed
+        // ON was measured here, on v0.7.1's uncapped ladder; it is NOT the duty
+        // this line now produces, because a loss presupposes the pod was tracked
+        // and mPodEverNear is therefore true on every post-loss re-search. See
+        // the block above this function and noteOpenFailure.
+        scheduleReopen(ctSearchDelayMs(mFails, mPodEverNear));
     }
 
     // ---- accessors ----------------------------------------------------------
@@ -975,6 +1510,9 @@ class CoreTempSensor {
         // Unlike the three above, this one is not a live reading of state: it
         // is already sticky, so latching it at close() loses nothing.
         if (mDiagRetryLost)   { f |= $.CT_DIAG_F_RETRY_LOST; }
+        // #165: already sticky, so latching it at close() loses nothing --
+        // exactly the argument the line above makes for itself.
+        f |= mDiagPage0Flags;
         return f;
     }
 
@@ -1061,6 +1599,7 @@ class CoreTempSensor {
         a[$.CT_DIAG_I_HSI_OK]          = ctDiagClamp(mDiagHsiOk);
         a[$.CT_DIAG_I_HSI_INVALID]     = ctDiagClamp(mDiagHsiInvalid);
         a[$.CT_DIAG_I_HSI_MAX_RAW]     = ctDiagClamp(mDiagHsiMaxRaw);
+        a[$.CT_DIAG_I_PAGE0]           = ctDiagClamp(mDiagPage0);
         return a;
     }
 
