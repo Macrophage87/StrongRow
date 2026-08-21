@@ -863,19 +863,72 @@ const CUE_PERSIST_IN_MS  = 1000;  // ms a change back into the band must hold
 // can carry, so the heat-strain indicator is NOT a text pip.
 //
 // WHAT SHIPS: a small circular mark, right-aligned against the chord, with the
-// CT label moved left just enough to make room. Its cost, measured, is the
-// RR-to-CT gap:
+// CT label moved left just enough to make room. Its cost is the RR-to-CT gap.
 //
-//   device        gap today   gap after
-//   454 px family    25.0        9.0
-//   fenix843mm       22.3        9.9
-//   epix2pro47mm     22.3       21.9
-//   fenix7/7pro/6/6pro 15.6     12.7
-//   fenix6spro       15.6        7.2
-//   fenix6xpro       15.6       12.9
+// THE TABLE BELOW WAS WRONG AND IS CORRECTED HERE (#141). The shipped geometry
+// was and is fine; only these numbers were wrong -- which is the harder defect
+// to catch, because nothing renders differently and a table of plausible pixel
+// figures reads as a measurement.
 //
-// The CT label itself gains bezel clearance (it moves inward); the mark takes
-// the tight end. Nothing here says how any of it looks on a wrist.
+// HOW MANY ROWS WERE WRONG DEPENDS ON THE TOLERANCE, and both counts are given
+// because #141 states one of them. At half a pixel -- the precision the old
+// one-decimal table was written to -- FOUR of the six disagree, which is #141's
+// figure. At the 0.05 px the corrected rows carry, FIVE do: the 454 px family
+// joins them, out by 0.44 and 0.39. Only fenix6spro was right under either
+// reading. What was claimed, against what the shipped constants and this file's
+// own measured font widths actually produce:
+//
+//   device               claimed        derived
+//   454 px family        25.0 / 9.0     24.56 / 8.61
+//   fenix843mm           22.3 / 9.9     22.24 / 9.20
+//   epix2pro47mm         22.3 / 21.9    30.24 / 17.20
+//   fenix7/7pro/6/6pro   15.6 / 12.7    18.40 / 10.00
+//   fenix6spro           15.6 / 7.2     15.60 / 7.15
+//   fenix6xpro           15.6 / 12.9    21.20 / 12.85
+//
+// The dangerous one is fenix7/7pro/6/6pro: the claimed headroom after the move
+// was 12.7 px where the real figure is 10.00, so a future author spending that
+// "headroom" lands the gap under the 5.0 px floor this row works to. Three
+// rows had simply been copied from a neighbour (epix2pro47mm's "today" from
+// fenix843mm; fenix6xpro's and the fenix7 family's from fenix6spro).
+//
+// HOW THE DERIVED COLUMN IS PRODUCED, and why prose cannot drift from it
+// again. scripts/check_pip_geometry.py recomputes every row from the SHIPPED
+// constants and the SHIPPED formulas -- pipChordXMax, pipDotR, pipGap,
+// pipDotCx, pipCtCx, whose bodies it also pins, so an edit to any of them fails
+// the check instead of silently invalidating this table -- and compares them
+// against the machine-readable rows below. That is the same move
+// scripts/check_ceiling_notes.py makes for the globals notes: prose keeps the
+// argument, one marked line per row carries the arithmetic.
+//
+//   gap    = (CT box left) - (RR box right), both labels centre-justified at
+//            FONT_XTINY, taken at the row's text-box TOP where the chord is
+//            narrowest
+//   edge   = (chord limit) - (CT box right), the label's own bezel clearance
+//   today  = the pre-#80 layout, CT centred at 0.66w
+//   after  = CT centred at pipCtCx(w, h)
+//
+//   PIPGEOM-BASE ct_today=0.66
+//   PIPGEOM 454px-family       w=454 ct=39 rr=39 gap_today=24.56 gap_after=8.61 edge_today=1.98 edge_after=17.93
+//   PIPGEOM fenix843mm         w=416 ct=36 rr=36 gap_today=22.24 gap_after=9.20 edge_today=1.68 edge_after=14.72
+//   PIPGEOM epix2pro47mm       w=416 ct=28 rr=28 gap_today=30.24 gap_after=17.20 edge_today=5.68 edge_after=18.72
+//   PIPGEOM fenix7-7pro-6-6pro w=260 ct=18 rr=18 gap_today=18.40 gap_after=10.00 edge_today=3.30 edge_after=11.70
+//   PIPGEOM fenix6spro         w=240 ct=18 rr=18 gap_today=15.60 gap_after=7.15 edge_today=2.35 edge_after=10.80
+//   PIPGEOM fenix6xpro         w=280 ct=18 rr=18 gap_today=21.20 gap_after=12.85 edge_today=4.25 edge_after=12.60
+//
+// ONE INPUT IS ASSUMED RATHER THAN MEASURED, and it is called out here because
+// every figure above depends on it: `rr` is the rendered width of the "RR"
+// label, and NO MEASUREMENT OF IT EXISTS IN THIS REPOSITORY. Only the "CT"
+// widths were measured (see PIP_CT_W_FRAC). Both labels are two upper-case
+// characters at FONT_XTINY, so each row assumes rr == ct. If that is ever
+// measured and differs, every gap figure shifts by (rr - ct)/2 uniformly and
+// the rows above must be re-derived -- the marked rows carry `rr` explicitly so
+// that correction is one edit per device rather than a re-derivation. A
+// [Local] issue owns the measurement.
+//
+// The CT label itself gains bezel clearance (it moves inward, from 1.68-5.68 px
+// to 10.80-18.72); the mark takes the tight end. Nothing here says how any of
+// it looks on a wrist.
 const PIP_ROW_Y_FRAC = 0.045;   // top of the status row's text box, in h
 
 // Upper BOUND on the rendered width of the "CT" label, in w. MEASURED at
@@ -6046,10 +6099,29 @@ class StrongRowView extends Ui.View {
         //
         // Moved left from the 0.66w it used to sit at, to make room for the
         // heat-strain mark at the row's right end. It is not a free move and
-        // the numbers are on the PIP_* constants: the gap to the RR pip falls
-        // to 7.15-21.9 px from 15.6-25.0, while this label's own clearance to
-        // the display edge IMPROVES, from 0.7-2.4 px to 4.06-7.04. GPS and RR
-        // do not move at all.
+        // the per-device numbers are on the PIP_* constants.
+        //
+        // BOTH RANGES IN THIS PARAGRAPH WERE WRONG AND ARE CORRECTED (#141).
+        // It used to read "the gap to the RR pip falls to 7.15-21.9 px from
+        // 15.6-25.0, while this label's own clearance to the display edge
+        // IMPROVES, from 0.7-2.4 px to 4.06-7.04". Both UPPER gap bounds were
+        // wrong -- 21.9 and 25.0 against the 17.20 and 30.24 the shipped
+        // constants give -- and the clearance pair could not be reproduced by
+        // any derivation from those constants at all, so it is replaced rather
+        // than adjusted. The retracted figures are quoted here rather than
+        // deleted, because a reader who remembers them needs to know they were
+        // withdrawn.
+        //
+        // The line below is the checked one: scripts/check_pip_geometry.py
+        // derives it from the same functions and constants this comment names
+        // and fails if the prose and the code disagree.
+        //
+        //   PIPGEOM-RANGE gap_today=15.60-30.24 gap_after=7.15-17.20 edge_today=1.68-5.68 edge_after=10.80-18.72
+        //
+        // In words: the gap to the RR pip falls to 7.15-17.20 px from
+        // 15.60-30.24, while this label's own clearance to the display edge
+        // IMPROVES, from 1.68-5.68 px to 10.80-18.72. GPS and RR do not move at
+        // all.
         var ccol = Gfx.COLOR_DK_GRAY;
         if (mCoreSensor != null && mCoreSensor.isFresh()) {
             ccol = Gfx.COLOR_GREEN;

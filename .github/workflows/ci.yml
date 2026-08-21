@@ -146,6 +146,25 @@ jobs:
         # unrequired and could red for months without blocking anything -- the
         # exact failure mode this check exists to prevent, one level up.
         run: python3 scripts/check_ceiling_notes.py
+      - name: Pip-geometry checker self-test (runner-free RED/GREEN)
+        # Hermetic scratch trees only, same shape as the ceiling-note suite. Its
+        # headline case feeds the checker the six status-row gap figures EXACTLY
+        # as they shipped before #141 and requires the wrong ones to be named --
+        # the defect reproduced, not described.
+        run: python3 scripts/test_check_pip_geometry.py
+      - name: Check the CT status-row geometry table against the real tree
+        # #141: the "gap today / gap after" table and the in-line summary that
+        # quotes it did not reproduce from the shipped constants. The geometry
+        # was fine and the numbers were not, which is a defect no render can
+        # show. This re-derives every row from PIP_*, from the RR pip's own
+        # drawText call and from the five shipped pip* formulas (whose bodies it
+        # pins), and fails if prose and code disagree.
+        #
+        # In test-tooling rather than a job of its own, for the reason the
+        # ceiling check states: ci-required gates on a fixed needs: list, so a
+        # new job would be unrequired and could red for months without blocking
+        # anything.
+        run: python3 scripts/check_pip_geometry.py
       - name: Step-mark harness self-test (runner-free RED/GREEN)
         # scripts/fit_step_marks.py is the ONLY thing in this repository that
         # checks the step marks' acceptance criterion -- "from the FIT alone,
