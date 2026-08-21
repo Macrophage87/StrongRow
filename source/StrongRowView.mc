@@ -1868,6 +1868,38 @@ class StrongRowView extends Ui.View {
             if (mFitRateBase != null) {
                 mFitRateBase.setData(rateBaseOf(mRateBase));
             }
+            // THE STEP MARKS, written on EVERY tick under this same gate.
+            //
+            // Unconditional for the reason the lock and gate diagnostics above
+            // are: record-scope fields LATCH, so a withheld write re-emits the
+            // previous step rather than leaving a gap -- and here that would
+            // fabricate work seconds that did not happen, which is the exact
+            // opposite of what these two fields exist to prevent. Both have an
+            // in-band value for "no workout step" (SFIT_NONE, IVL_NONE), so
+            // absence has an encoding and does not need a silence.
+            //
+            // ONE READ of the step type for both fields, so the kind and the
+            // interval number in a record cannot describe two different
+            // instants -- the same rule the erg block states for its power
+            // sample.
+            //
+            // THE BOUNDARY IS ONE TICK COARSE, and that is stated rather than
+            // glossed: onTick advances the step machine AFTER this block, so
+            // the tick in which a step ends still carries the outgoing step.
+            // A record therefore lands on the correct side of a boundary to
+            // within one 250 ms tick -- and records commit on the engine's own
+            // schedule, not this one, so the true granularity is the record
+            // interval. Nothing in the acceptance criterion depends on
+            // sub-record alignment.
+            var stepT = curStepType();
+            if (mFitStepType != null) {
+                mFitStepType.setData(
+                    stepTypeCode(stepT, mWorkoutEnabled, mStarted));
+            }
+            if (mFitIvlNum != null) {
+                mFitIvlNum.setData(
+                    intervalNumOf(mWorkoutEnabled, mStarted, mSetNum));
+            }
             // ---- ERG MODE: the power sample, its record, and two integrators.
             //
             // ONE READ of the power for the whole tick, so the recorded watts,
@@ -4908,6 +4940,84 @@ class StrongRowView extends Ui.View {
                     mFitRateRaw = null;
                     mFitRateBase = null;
                 }
+                // ---- THE STEP MARKS. Record scope, ids 17-18. Lap scope,
+                // ids 25-26.
+                //
+                // ITS OWN try/catch, per #74 and for the reason every group
+                // above gives for theirs: a throw here must not null handles
+                // that were already created successfully.
+                //
+                // NOT GATED ON THE WORKOUT BEING ENABLED, unlike the erg and
+                // CORE blocks. A free row records step_type = SFIT_NONE on
+                // every record, and that is a value worth having rather than a
+                // cost: a consumer holding a stack of files can then tell a
+                // free row from a workout row FROM THE FILE, instead of
+                // inferring it from the absence of a field. The cost is two
+                // field_description messages on a free row.
+                //
+                // WHY 17 AND 18, and why the lap copies are NOT 19 and 20.
+                // Every developer field id in this file was enumerated before
+                // choosing: 0..11 (row_stroke_rate, dist_per_stroke,
+                // rr_interval, rmssd, avg_rmssd, corrective_rate,
+                // total_corrective_strokes, core_temperature, skin_temperature,
+                // max_core_temperature, ct_diag, heat_strain_index), 12..16
+                // (erg_power, erg_joules_per_stroke, erg_diag, erg_work_total,
+                // erg_cadence) and 20..24 (lock_rate, lock_confidence,
+                // lock_lowconf_run, rate_raw, rate_base). 17..19 were the free
+                // run and the record pair takes the first two of it.
+                //
+                // A DEVELOPER FIELD ID IS UNIQUE PER FIELD_DESCRIPTION, so the
+                // lap-scope copies cannot reuse 17 and 18 -- they need ids of
+                // their own, and one free id (19) is not two. They take 25-26,
+                // the next contiguous pair above the lock block's 24, which
+                // keeps them adjacent to each other and leaves 19 free.
+                //
+                // MESG_TYPE_LAP IS AVAILABLE AND THAT WAS CHECKED, NOT ASSUMED.
+                // Compiled for fr965 and fenix6 under SDK 9.2.0, and its value
+                // read at runtime in the simulator: Fit.MESG_TYPE_LAP == 19,
+                // against MESG_TYPE_RECORD == 20 and MESG_TYPE_SESSION == 18 --
+                // which are the FIT global message numbers for lap, record and
+                // session, so the symbol means what its name says. What is NOT
+                // established by that: whether createField ACCEPTS lap scope at
+                // runtime, and whether a lap message in a saved file carries
+                // the value. Both are [Local] questions and the issue filed
+                // with this change owns them; if the answer is no, the catch
+                // below nulls the two handles and the record-scope pair -- the
+                // more robust half anyway -- is unaffected.
+                //
+                // WHAT IS NOT MEASURED, and it is deliberately not claimed.
+                // #77 measured eleven developer fields created and saved on
+                // fr965 / SDK 9.2.0 and found no cap below 256; #80 measured
+                // twelve. TWENTY-SIX fields, with a non-contiguous id set, is
+                // beyond both -- so this is EXPECTED to behave and has not been
+                // observed to. #154 owns the field-count question.
+                try {
+                    mFitStepType = mSession.createField(
+                        "step_type", 17, Fit.DATA_TYPE_UINT8,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "n" });
+                    mFitIvlNum = mSession.createField(
+                        "interval_num", 18, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_RECORD, :units => "n" });
+                } catch (e) {
+                    mFitStepType = null;
+                    mFitIvlNum   = null;
+                }
+                // A SECOND try, not the same one. The record pair is the half
+                // the acceptance criterion rests on and the half whose scope is
+                // already proven in this file; the lap pair uses a message type
+                // this app has never written. A throw from the lap createField
+                // must not take the record handles down with it.
+                try {
+                    mFitLapStep = mSession.createField(
+                        "lap_step_type", 25, Fit.DATA_TYPE_UINT8,
+                        { :mesgType => Fit.MESG_TYPE_LAP, :units => "n" });
+                    mFitLapIvl = mSession.createField(
+                        "lap_interval_num", 26, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_LAP, :units => "n" });
+                } catch (e) {
+                    mFitLapStep = null;
+                    mFitLapIvl  = null;
+                }
                 // ---- ERG MODE's fields. Record scope, ids 12-14 and 16;
                 // session scope, id 15.
                 //
@@ -5253,6 +5363,11 @@ class StrongRowView extends Ui.View {
                 mPaused = false;
                 mStartMs = System.getTimer();
                 beginSessionAccum();
+                // FREE ROW's one lap gets a mark too, and it is SFIT_NONE by
+                // construction (mWorkoutEnabled is false here). A file whose
+                // laps all read "no workout step" is a free row, stated in the
+                // file rather than inferred from a missing field.
+                markLap();
                 alert(STEP_WORK);
             } else {
                 togglePause();
@@ -5291,6 +5406,13 @@ class StrongRowView extends Ui.View {
         // interval and never passes through advanceStep.
         var s0 = mSteps[0];
         if (s0[:type] == STEP_WORK) { beginWorkAccum(s0[:idx]); }
+        // The session's FIRST lap is opened by createSession, not by addLap, so
+        // it gets its mark here -- after beginWorkAccum, which is what sets
+        // mSetNum when mSteps[0] is a work interval (warmupCooldown off).
+        // Without this the first lap would carry whatever a lap-scope field
+        // reads before any write, which is precisely the "absence or a stale
+        // value" ambiguity these fields exist to remove.
+        markLap();
         alert(mSteps[0][:type]);
     }
 
@@ -5302,12 +5424,55 @@ class StrongRowView extends Ui.View {
         mStepIdx++;
         var st = mSteps[mStepIdx];
         var t = st[:type];
-        if (t == STEP_WORK || t == STEP_REST || t == STEP_COOL) {
+        // WHICH STEPS OPEN A LAP is unchanged -- WORK, REST and COOL -- and
+        // the flag exists only so the step marks can be written at the same
+        // three moments without a second copy of the condition.
+        var opened = (t == STEP_WORK || t == STEP_REST || t == STEP_COOL);
+        if (opened) {
             if (mSession != null) { try { mSession.addLap(); } catch (e) {} }
             mStepStartMs = System.getTimer();
         }
         if (t == STEP_WORK) { beginWorkAccum(st[:idx]); }
+        // AFTER beginWorkAccum, because that is what sets mSetNum, and AFTER
+        // addLap, because addLap CLOSES the outgoing lap -- so this writes into
+        // the lap that has just been opened rather than into the one that just
+        // ended.
+        if (opened) { markLap(); }
         alert(t);
+    }
+
+    // Stamp the lap now in progress with the step that OPENED it.
+    //
+    // LAP SCOPE IS THE CONVENIENCE HALF, and its limits are stated here rather
+    // than discovered later. A lap is labelled by the step it STARTED in, and
+    // the app opens a lap only for WORK, REST and COOL -- so:
+    //
+    //   * with restMinutes > 0 every step gets its own lap and the label is
+    //     exact;
+    //   * with restMinutes = 0 the sequence is WORK/GATE/WORK, no lap is opened
+    //     for the gate, and the gate's seconds fall inside the PRECEDING WORK
+    //     lap. That lap reads SFIT_WORK, which is what it started as and not
+    //     what all of it was;
+    //   * STEP_DONE likewise falls inside the cool-down lap (or the last work
+    //     lap when there is no cool-down).
+    //
+    // That is exactly why the RECORD-scope pair is the primary one and the one
+    // the acceptance criterion is written against: per-record marks do not
+    // depend on lap boundaries aligning with steps, and here they demonstrably
+    // do not always align. A consumer wanting the work seconds should select on
+    // step_type per record; a consumer wanting a quick lap-level cut can read
+    // the lap field and accept the gate seconds inside it.
+    //
+    // Handles are null when creation failed or lap scope was refused, so this
+    // is a no-op on those devices rather than a throw.
+    hidden function markLap() {
+        var t = curStepType();
+        if (mFitLapStep != null) {
+            mFitLapStep.setData(stepTypeCode(t, mWorkoutEnabled, mStarted));
+        }
+        if (mFitLapIvl != null) {
+            mFitLapIvl.setData(intervalNumOf(mWorkoutEnabled, mStarted, mSetNum));
+        }
     }
 
     // ---- #109 accumulator lifecycle --------------------------------------
