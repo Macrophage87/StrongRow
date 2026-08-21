@@ -6007,10 +6007,30 @@ class StrongRowView extends Ui.View {
             // must not be confusable at a glance. Colour and layout only -- no
             // tone, no vibration, no flash (#114).
             foot = "NOT RECORDING"; fcol = Gfx.COLOR_ORANGE;
+        // #125: THE FIGURE IS mWorkStrokes, NOT mStrokeCount, and the token
+        // says so. The rule is on strokeCounts; the short version is that the
+        // strokes taken before the first interval are positioning strokes --
+        // "quicker and lower force", in the maintainer's words -- and rest
+        // paddling is the same, so a session count of every stroke biases the
+        // figure UP and hardest on the short sessions.
+        //
+        // "wk" RATHER THAN "str", because the number's meaning changed and a
+        // label that no longer describes its number is worse than no label --
+        // the rule drawSetGrid states for the metres cells, applied here.
+        // Two characters where three stood, so the widest footer this app can
+        // draw ("REC 199:59 12.35km 9999str") gets NARROWER by one character.
+        // That is a CHARACTER bound and not a clearance: no (:test) that runs
+        // in CI can obtain a font metric (#121), so nothing here claims a
+        // measured margin -- only that this row cannot have become the binding
+        // constraint by this edit.
+        //
+        // BOTH FORMS, deliberately. A paused footer reporting one set of
+        // strokes and a recording footer reporting another would be a defect
+        // the athlete meets on the same screen seconds apart.
         } else if (fs == $.FOOT_PAUSED) {
-            foot = "PAUSED  " + mStrokeCount.toString() + "str"; fcol = Gfx.COLOR_YELLOW;
+            foot = "PAUSED  " + mWorkStrokes.toString() + "wk"; fcol = Gfx.COLOR_YELLOW;
         } else if (fs == $.FOOT_REC) {
-            foot = "REC " + totalElapsed() + " " + km + " " + mStrokeCount.toString() + "str";
+            foot = "REC " + totalElapsed() + " " + km + " " + mWorkStrokes.toString() + "wk";
             fcol = Gfx.COLOR_RED;
         } else {
             foot = "START to record";
