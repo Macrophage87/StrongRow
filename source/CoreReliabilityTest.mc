@@ -1064,4 +1064,103 @@ function relHrByte(code) {
     return ok;
 }
 
+// ---- #122 c2: red differentials ---------------------------------------------
+
+// THE FIX ITSELF. A pod that has been heard from this session must never be
+// asked to wait longer than CT_BACKOFF_NEAR_MAX_MS, and the cap must actually be
+// REACHED in the run -- an assertion that only the ceiling holds is satisfiable
+// by a ladder that never climbs.
+//
+// Before the fix the ninth ask is CT_BACKOFF_MAX_MS: five minutes of silence
+// after a pod that was broadcasting a moment ago.
+(:test) function test_cr_c2_aPodThatWasNearGetsTheShorterCap(logger) {
+    var p = new RelOkProbe();
+    p.reset();
+    p.feed($.ctPayload(660, 0x0C8, 3742));   // a tracked page-1 frame: the pod is near
+    for (var i = 0; i < 10; i++) { p.closeEvent(); }
+    var a = p.asks();
+    var ok = true;
+    if (a.size() != 10) {
+        logger.error("delays requested = " + a.size() + ", expected 10");
+        return false;
+    }
+    for (var i = 0; i < a.size(); i++) {
+        if (a[i] > $.CT_BACKOFF_NEAR_MAX_MS) {
+            logger.error("delay[" + i + "] = " + a[i] + " exceeds CT_BACKOFF_NEAR_MAX_MS " +
+                         $.CT_BACKOFF_NEAR_MAX_MS + "; a pod that was broadcasting a moment ago " +
+                         "must not be left unheard that long");
+            ok = false;
+        }
+    }
+    if (p.worstAsk() != $.CT_BACKOFF_NEAR_MAX_MS) {
+        logger.error("the longest delay asked for was " + p.worstAsk() + ", expected the cap " +
+                     $.CT_BACKOFF_NEAR_MAX_MS + "; a ladder that never reaches its cap makes the " +
+                     "ceiling assertion above vacuous");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE SAME THING IN THE UNITS #122 IS ABOUT. The worst wait a near pod is
+// actually subjected to, run through the same duty function the source comment
+// quotes -- so this case fails with the number the issue was filed on (91)
+// rather than with a raw millisecond count.
+(:test) function test_cr_c2_aNearPodsWorstCaseListenDutyIsTheShortenedOne(logger) {
+    var p = new RelOkProbe();
+    p.reset();
+    p.feed($.ctPayload(660, 0x0C8, 3742));
+    for (var i = 0; i < 10; i++) { p.closeEvent(); }
+    var worst = p.worstAsk();
+    if (worst < 0) {
+        logger.error("no delay was ever requested; nothing to measure");
+        return false;
+    }
+    var duty = CoreTempSensor.ctDutyPerMille($.CT_SEARCH_WINDOW_MS, worst);
+    if (duty != 333) {
+        logger.error("steady-state listen duty for a pod that WAS near = " + duty + " per mille " +
+                     "(worst wait " + worst + " ms); expected 333. 91 is the 9.1 % #122 was filed on.");
+        return false;
+    }
+    return true;
+}
+
+// THE PACING RESET IS ABOUT THE SEARCH, NOT ABOUT THE PAGE.
+//
+// mFails counts consecutive FAILED SEARCHES. A payload arriving at all means the
+// search found the pod, whatever page the frame was on -- so the reset belongs
+// above the page filter, not below it. Before the fix a pod broadcasting only
+// the general-information page left the ladder climbing to five minutes while
+// its frames were arriving.
+//
+// The assertion is that the next ask is ZERO, which isolates the reset: with the
+// shorter cap alone the ask would be 60000, not 0.
+(:test) function test_cr_c2_aTrackedFrameOfAnyPageResetsThePacing(logger) {
+    var p = new RelOkProbe();
+    p.reset();
+    for (var i = 0; i < 6; i++) { p.closeEvent(); }
+    if (p.lastAsk() <= 0) {
+        logger.error("the ladder had not climbed before the frame (last ask = " + p.lastAsk() +
+                     "); the case would be vacuous");
+        return false;
+    }
+    p.feed(relPage0(0x01, relHrByte(1)));   // page 0x00: tracked, not decodable
+    p.closeEvent();
+    var ok = true;
+    if (p.lastAsk() != 0) {
+        logger.error("after a tracked page-0x00 frame the next delay was " + p.lastAsk() +
+                     ", expected 0: mFails paces the SEARCH, and a frame arriving at all means " +
+                     "the search found the pod");
+        ok = false;
+    }
+    // ...and the reset must be a reset, not a one-off: the ladder climbs again
+    // from the burst rather than resuming where it left off.
+    for (var i = 0; i < 4; i++) { p.closeEvent(); }
+    if (p.lastAsk() != $.CT_BACKOFF_BASE_MS) {
+        logger.error("four closes after the reset asked for " + p.lastAsk() + ", expected " +
+                     $.CT_BACKOFF_BASE_MS + ": the ladder must restart at the bottom");
+        ok = false;
+    }
+    return ok;
+}
+
 }
