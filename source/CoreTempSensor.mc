@@ -938,11 +938,11 @@ class CoreTempSensor {
         // onChannelClosed) because mFails is incremented in exactly those two
         // places; keep them together.
         if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
-        // #122: podNear is hard-FALSE here at the commit that introduces
-        // ctSearchDelayMs, which makes this line behaviour-identical to the
-        // ctBackoffMs(mFails) it replaces. The fix commit is the one that
-        // passes mPodEverNear.
-        scheduleReopen(ctSearchDelayMs(mFails, false));
+        // #122. Once a broadcast frame has been tracked this session the ladder
+        // is capped at CT_BACKOFF_NEAR_MAX_MS instead of CT_BACKOFF_MAX_MS --
+        // see the block at the top of this file for the duty arithmetic and for
+        // what is and is not claimed about battery.
+        scheduleReopen(ctSearchDelayMs(mFails, mPodEverNear));
     }
 
     // Allocation split out so a test can substitute a timer it controls --
@@ -1102,9 +1102,32 @@ class CoreTempSensor {
         // #122, set for the same reason and at the same place: a payload
         // arriving at all means the carrier was tracked, however unusable its
         // contents, so this is the earliest honest point for "a pod is in
-        // range". WRITTEN from the commit that introduces the field; the commit
-        // that makes the ladder READ it is the fix.
+        // range".
         mPodEverNear = true;
+
+        // #122. THE SEARCH PACING RESETS HERE, above every guard below it.
+        //
+        // It used to sit after the page-0x01 test, so only a temperature frame
+        // cleared it. That was too narrow twice over, and this comment used to
+        // argue only the first of the two:
+        //
+        //   * it is not about an ACCEPTED reading. A pod broadcasting undonned
+        //     is fully tracked while producing nothing that clears the
+        //     plausibility clamps. (That much the old placement already got
+        //     right, and it is preserved.)
+        //   * it is not about the PAGE either, and that is the correction.
+        //     mFails counts consecutive FAILED SEARCHES -- it is the ladder's
+        //     input, and the ladder paces the search. A payload arriving at all
+        //     means the search FOUND the pod, whatever page the frame carried.
+        //     A pod broadcasting only the general-information page (#165) left
+        //     the ladder climbing to five minutes while its frames were
+        //     arriving.
+        //
+        // Deliberately above the length guard too: a null or short payload still
+        // reached onBroadcast, which means the radio delivered a broadcast on
+        // this channel, which means the search succeeded. Counting that as a
+        // failed search would be counting the frame's contents, not the search.
+        mFails = 0;
 
         if (p == null || p.size() < 8) { mDiagShortPay++; return; }
 
@@ -1122,12 +1145,6 @@ class CoreTempSensor {
         mDiagPage1++;
 
         var now = System.getTimer();
-
-        // Any tracked page-1 frame resets the search pacing, not merely an
-        // ACCEPTED reading: a pod broadcasting undonned is fully tracked while
-        // producing zero readings that clear the plausibility clamps, and the
-        // counter should mean what its name says.
-        mFails = 0;
 
         // Each field stamps its OWN clock, inside its own acceptance gate. The
         // stamp used to live only inside the core-valid branch, so a frame with
@@ -1247,8 +1264,9 @@ class CoreTempSensor {
         if (!mEverSeen) {
             mPeriod = (mPeriod == PERIOD_A) ? PERIOD_B : PERIOD_A;
         }
-        // #122: hard-FALSE here too at this commit -- see noteOpenFailure.
-        scheduleReopen(ctSearchDelayMs(mFails, false));
+        // #122. The site that matters most: this is the post-loss re-search, and
+        // it is where the 9.1 % duty was measured. See noteOpenFailure.
+        scheduleReopen(ctSearchDelayMs(mFails, mPodEverNear));
     }
 
     // ---- accessors ----------------------------------------------------------
