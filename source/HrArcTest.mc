@@ -271,6 +271,17 @@ class HrProbe extends StrongRowView {
     // The step-type constants are class `hidden const`s, i.e. instance members,
     // so a (:test) free function cannot name them. Exposed here rather than
     // transcribed into the layout suite, where a copy could drift.
+    // The two settings that decide whether a GATE exists, read back as
+    // loadSettings left them. Exposed because the lap-scope note's whole
+    // correction turns on the pair being INDEPENDENT: buildWorkout adds a gate
+    // on `if (mGate)` alone, so a workout can have restMinutes > 0 AND a gate,
+    // which is the shipped default and the configuration an earlier revision
+    // of that note said could not happen. A case asserting about the gate
+    // without asserting these two would be pinning a sequence without its
+    // premise.
+    function restSec() { return mRestSec; }
+    function gateOn()  { return mGate; }
+
     function kindWork() { return STEP_WORK; }
     function kindRest() { return STEP_REST; }
     function kindGate() { return STEP_GATE; }
@@ -370,6 +381,23 @@ class HrProbe extends StrongRowView {
     // shipping lifecycle rather than a copy of it.
     function beginWork(num) { beginWorkAccum(num); }
     function latchWork()    { latchWorkAccum(); }
+
+    // #126/#125: the SESSION-scope reset, which is the boundary neither of the
+    // two above crosses.
+    //
+    // WITHOUT THIS SEAM THE TWO LINES CARRYING #126's GUARANTEE RUN ONLY WHERE
+    // NOTHING CAN SEE THEM. beginSessionAccum is `hidden`, and its three
+    // shipping callers are initialize() -- where `mStrokeCount = 0` and
+    // `mWorkStrokes = 0` are both redundant, because the field declarations
+    // have just run -- and two arms behind startSession(), which needs a real
+    // Session and is not reachable in-process (CoreFieldGateTest.mc:10-12). So
+    // deleting either reset was a semantic no-op on every execution a (:test)
+    // could reach, and the suite was green by construction rather than by
+    // observation.
+    //
+    // Safe to call from a (:test): the body is scalar assignment only -- no
+    // Fit, Session or Activity call anywhere in it.
+    function beginSession() { beginSessionAccum(); }
 
     // Read-only views of the latched interval's work pair. BOTH, because the
     // whole point of the pair is that the number alone cannot say whether the
@@ -484,7 +512,12 @@ class HrProbe extends StrongRowView {
     //     is "30x60'", the interval label "WORK 30/30", and the rest and gate
     //     sub-rows "next: WORK 30" / "to start WORK 30";
     //   * a long session with a large distance and stroke count gives
-    //     drawFoot's widest form, "REC 199:59 12.35km 9999str".
+    //     drawFoot's widest form, "REC 199:59 12.35km 9999wk". #125 replaced
+    //     the "str" token with "wk", one character narrower; an earlier
+    //     revision of this bullet still named the old form, which is a string
+    //     the app is now contractually incapable of drawing
+    //     (WorkStroke.test_ws_c2_bothFooterFormsNameTheStrokesTheyCount
+    //     forbids "str" on the drawn footer).
     function setWorkoutShape(n, workSec) {
         mNumWork = n;
         mWorkSec = workSec;

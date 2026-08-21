@@ -1,6 +1,7 @@
 using Toybox.Test;
 using Toybox.System;
 using Toybox.Lang;
+using Toybox.Math;
 
 // ---------------------------------------------------------------------------
 // #142 / #130 -- the set-summary grid's GATE, and its no-data arm.
@@ -119,6 +120,24 @@ class GgCase {
             if (SgCase.indexOf(geo, lab[j]) < 0) { return false; }
         }
         return true;
+    }
+
+    // How many arcs this render put on each EDGE, as [left, right].
+    //
+    // TAKEN FROM THE RECORDED GEOMETRY, not from a total. Both arcs are centred
+    // on the same cx, so x cannot separate them; the ANGLE can, and this is the
+    // same discriminator HrDc already uses (HrArcTest.mc): every left-edge
+    // angle has cos < 0 (152..208) and every right-edge angle has cos > 0
+    // (332..28). A plain count could not tell "both edges drew" from "one edge
+    // drew twice", which is the whole question below.
+    static function arcsByEdge(geo) {
+        var l = 0;
+        var r = 0;
+        for (var i = 0; i < geo.arcs.size(); i++) {
+            var deg = geo.arcs[i][4] * 1.0;
+            if (Math.cos(deg * Math.PI / 180.0) < 0) { l += 1; } else { r += 1; }
+        }
+        return [ l, r ];
     }
 
     // The same probe SgCase.latchedProbeAt builds, but with an interval whose
@@ -475,6 +494,91 @@ const GG_SMALL_H_FRAC = 0.1214;
                  (row[3] / h).format("%.4f") + "h, grid box ends " +
                  (gridEnd / h).format("%.4f") + "h, sub row " +
                  (subY / h).format("%.4f") + "h");
+    return true;
+}
+
+// -- c3: the arcs and the grid SHARE the REST screen -------------------------
+
+// A LATCHED REST DRAWS THE GRID AND BOTH EDGE ARCS, IN THE SAME RENDER.
+//
+// WHY THIS CASE EXISTS. drawSetGrid's geometry note quotes two clearances --
+// 13.4 px on the left to the #110 heart-rate arc and 15.4 px on the right
+// reserved for #123's -- and a revision of it then said the edge arcs were
+// drawn on "no screen the grid appears on", which would have made both figures
+// moot. That was true of GATE and DONE and generalised from them. REST is the
+// counterexample and it is the grid's ORIGINAL and most frequent screen:
+// onUpdate's arc gate is `type == STEP_WORK || type == STEP_REST` and its grid
+// gate includes STEP_REST, so on a latched REST all three are on screen at
+// once. The consequence is not cosmetic: an author who believes the arcs are
+// absent and spends that clearance moves the grid's columns into the annuli.
+//
+// SO THE CONSTRAINT IS PINNED RATHER THAN DESCRIBED, and by mutation rather
+// than by reading. Narrowing the arc gate to WORK alone -- the edit that would
+// make the retracted sentence TRUE -- reds this case first, on "Got 0
+// left-edge and 0 right-edge arc(s)" (331/335 on fr965; the other three are
+// HrLayout's arc-envelope cases). Dropping STEP_DONE from the grid gate reds
+// it too, on the DONE witness leg (331/335, with the three #130 cases).
+//
+// DONE IS THE DISCRIMINATION WITNESS, and it is not decoration. Without it,
+// "REST drew an arc on each edge" could hold because arcsByEdge counts
+// something every screen draws; DONE renders the same latched interval, draws
+// the SAME grid, and must draw NO arc at all. One render each, so the pair
+// separates the arc gate from the grid gate instead of asserting about the
+// screen as a whole.
+//
+// WHAT IS NOT ASSERTED. Nothing here measures a pixel, an annulus or an
+// overlap: no (:test) that runs in CI can obtain a font metric (#121). This
+// says the arcs and the grid COEXIST, which is the premise the measured
+// clearances rest on -- not that they clear one another.
+(:test) function test_gg_c3_aLatchedRestDrawsTheGridWithBothEdgeArcs(logger) {
+    var k = new HrProbe();
+    var p = SgCase.latchedProbeAt(k.kindRest());
+    if (p == null) {
+        logger.error("#130/#123: the shipping latchWorkAccum refused the " +
+                     "seeded interval on REST, so this case would assert " +
+                     "nothing");
+        return false;
+    }
+    var geo = SgCase.render(p);
+    if (!GgCase.gridUp(geo)) {
+        logger.error("#109/#130: a latched REST must draw the set grid -- it " +
+                     "is the screen the grid was built for, and without it " +
+                     "the arc assertion below has no subject. Drew:\n" +
+                     SgCase.log(geo));
+        return false;
+    }
+    var e = GgCase.arcsByEdge(geo);
+    if (e[0] <= 0 || e[1] <= 0) {
+        logger.error("#123/#110: a latched REST draws the grid AND both edge " +
+                     "arcs, and drawSetGrid's left/right clearances are " +
+                     "measured to those arcs on exactly this screen. Got " +
+                     e[0] + " left-edge and " + e[1] + " right-edge arc(s). " +
+                     "If the arc gate has been narrowed, re-derive those two " +
+                     "figures rather than deleting them. Drew:\n" +
+                     SgCase.log(geo));
+        return false;
+    }
+    // The witness: the same latched interval on DONE draws the same grid and
+    // NO arc, so the counts above are reading the arc gate and not a constant.
+    var pd = SgCase.latchedProbeAt(k.kindDone());
+    if (pd == null) {
+        logger.error("#130: the shipping latchWorkAccum refused the seeded " +
+                     "interval on DONE");
+        return false;
+    }
+    var gd = SgCase.render(pd);
+    var ed = GgCase.arcsByEdge(gd);
+    if (!GgCase.gridUp(gd) || ed[0] + ed[1] != 0) {
+        logger.error("#130: DONE must draw the SAME grid with NO arc -- that " +
+                     "is what makes REST's two counts a measurement of the arc " +
+                     "gate rather than of something every screen does. grid=" +
+                     GgCase.gridUp(gd) + " left=" + ed[0] + " right=" + ed[1] +
+                     ". Drew:\n" + SgCase.log(gd));
+        return false;
+    }
+    logger.debug("latched REST: grid up, arcs left=" + e[0] + " right=" + e[1] +
+                 "; latched DONE: grid up, arcs left=" + ed[0] +
+                 " right=" + ed[1]);
     return true;
 }
 

@@ -240,6 +240,57 @@ class WsCase {
     return true;
 }
 
+// A SECOND RECORDING STARTS BOTH STROKE COUNTERS AT ZERO.
+//
+// #126's guarantee, extended to the counter that replaced the one #126 was
+// filed on. beginSessionAccum clears mStrokeCount and mWorkStrokes together --
+// "cleared WITH the session total, never separately" -- and until this case
+// existed NOTHING could observe either line. Both are redundant at their only
+// reachable call site (initialize, where the fields have just been declared),
+// and the other two call sites sit behind startSession(), which needs a real
+// Session. Deleting either line was a semantic no-op on every execution the
+// suite could reach.
+//
+// WHAT IT WOULD COST ON A WRIST. mWorkStrokes is app-lifetime otherwise --
+// resetDetector deliberately leaves the stroke counters alone -- so the second
+// row of an unrelaunched app would open with the FIRST row's strokes already on
+// the footer, and the athlete would read a work-stroke total for a piece they
+// have not rowed yet.
+//
+// THE PRE-ASSERTION IS THE NON-VACUITY WITNESS, and it is not ceremony: a fresh
+// probe reads 0 on both counters either way, so making them non-zero first is
+// the only way the reset can be observed at all.
+//
+// MUTATION-VERIFIED, BOTH LINES, ON fr965. Deleting `mWorkStrokes = 0` reds
+// this case and only this case, 334/335, with "session=0 work=6"; deleting
+// `mStrokeCount = 0` likewise, 334/335, with "session=6 work=0". The second
+// closes a gap that pre-dates this branch -- the mStrokeCount reset IS #126's
+// own fix line, and it was unpinned by the same argument.
+(:test) function test_ws_c1_aSecondRecordingStartsBothCountersAtZero(logger) {
+    var k = new HrProbe();
+    var p = WsCase.probeAt(k.kindWork());
+    p.beginWork(1);
+    p.strokeTrainFrom(0.0, 7);              // six accepted; both counters move
+    if (p.sessionStrokes() == 0 || p.workStrokes() == 0) {
+        logger.error("#126/#125: both counters must be NON-ZERO before the " +
+                     "second recording, or the assertion below holds because " +
+                     "nothing registered at all; session=" + p.sessionStrokes() +
+                     " work=" + p.workStrokes());
+        return false;
+    }
+    p.beginSession();                       // the second row of an unrelaunched app
+    if (p.sessionStrokes() != 0 || p.workStrokes() != 0) {
+        logger.error("#126/#125: a new recording must start BOTH stroke " +
+                     "counters at zero -- otherwise the second row's footer " +
+                     "opens with the first row's strokes on it, which is #126 " +
+                     "reproduced on the counter that replaced the one it was " +
+                     "filed on; session=" + p.sessionStrokes() + " work=" +
+                     p.workStrokes());
+        return false;
+    }
+    return true;
+}
+
 // -- c2: the footer itself. RED until the row reads the work counter ---------
 
 // THE FOOTER REPORTS THE STROKES TAKEN ON THE PIECES, NOT EVERY STROKE.
@@ -270,8 +321,7 @@ class WsCase {
     var f = WsCase.footer(geo);
     if (f == null) {
         logger.error("#125: the REST screen must draw the recording footer for " +
-                     "this case to have a subject. Drew:
-" + SgCase.log(geo));
+                     "this case to have a subject. Drew:\n" + SgCase.log(geo));
         return false;
     }
     if (f.find("6wk") == null) {
@@ -296,12 +346,15 @@ class WsCase {
 // label no longer describes it is the trap this file's own grid note states
 // ("a number whose label still says metres is worse than no number").
 //
-// "wk" rather than "wstr" or "work": the widest footer the app can draw is
-// "REC 199:59 12.35km 9999str" at FONT_XTINY, and no (:test) in CI can measure
-// a string (#121). Two characters where three stood is STRICTLY NARROWER in
-// characters than the token it replaces, so this cannot become the row's
-// binding constraint. That is a character argument and not a clearance
-// measurement, which is exactly how the erg pace row's bound is stated too.
+// "wk" rather than "wstr" or "work": the widest footer the app COULD draw
+// before this change was "REC 199:59 12.35km 9999str" at FONT_XTINY, and no
+// (:test) in CI can measure a string (#121). Two characters where three stood
+// is STRICTLY NARROWER in characters than the token it replaces, so this cannot
+// become the row's binding constraint. That is a character argument and not a
+// clearance measurement, which is exactly how the erg pace row's bound is
+// stated too. The widest form the app draws NOW is
+// "REC 199:59 12.35km 9999wk", and this case is what makes that true rather
+// than asserted: it requires "6wk" on the drawn footer and forbids "str".
 (:test) function test_ws_c2_bothFooterFormsNameTheStrokesTheyCount(logger) {
     var k     = new HrProbe();
     var pause = [ false, true ];
@@ -317,8 +370,7 @@ class WsCase {
         var f = WsCase.footer(geo);
         if (f == null) {
             logger.error("#125: the " + names[i] + " footer must be on screen " +
-                         "for this case to say anything. Drew:
-" +
+                         "for this case to say anything. Drew:\n" +
                          SgCase.log(geo));
             return false;
         }

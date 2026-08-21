@@ -89,7 +89,28 @@ module StepMark {
 //     SFIT_NONE, which is a VALUE and not a silence, because record-scope
 //     fields latch and a withheld write would re-emit the previous step;
 //   * SFIT_WORK is DISTINCT from every other code, so "select the work
-//     seconds" is an equality test and never a range or an exclusion list.
+//     seconds" is an equality test and never a range or an exclusion list;
+//   * the codes are THE LITERAL NUMBERS 0..6 in the documented order.
+//
+// THE LITERAL PIN AT THE END REPLACES A DEAD ONE. An earlier revision carried
+//
+//     if (i > 0 && want[i] == $.SFIT_WORK && got != $.SFIT_WORK) { ... }
+//
+// which cannot fail: control only reaches it after `if (got != want[i]) return
+// false`, so `got == want[i]` is an invariant there and the condition reduces
+// to `want[i] == SFIT_WORK && want[i] != SFIT_WORK`. It read as a fourth
+// assertion and was a strict duplicate of the first. Deleted, and replaced by
+// the one thing the sweep genuinely could NOT see: the sweep compares
+// stepTypeCode's output against the same $.SFIT_* constants stepTypeCode
+// returns, so a wholesale RENUMBERING of the wire codes is invisible to it --
+// and scripts/fit_step_marks.py reads those same constants out of the source,
+// so the query side is invisible to it too. Renumbering silently re-labels
+// every second in every file already written, which is exactly what the block
+// this case is named for calls "the format".
+//
+// MUTATION-VERIFIED: setting SFIT_WORK to 7 reds this case and ONLY this case
+// (334/335 on fr965). Everything else in the file follows the renumbering
+// silently, which is the whole argument for the literal.
 (:test) function test_sm_c1_theWireMappingIsTheDocumentedTable(logger) {
     var k    = new HrProbe();
     var kind = [ k.kindWarm(), k.kindWork(), k.kindRest(),
@@ -109,10 +130,6 @@ module StepMark {
                          "reserved for 'no workout step at all' -- a real step " +
                          "sharing that code makes a free row and a workout " +
                          "indistinguishable in the file");
-            return false;
-        }
-        if (i > 0 && want[i] == $.SFIT_WORK && got != $.SFIT_WORK) {
-            logger.error("the WORK code must be exact");
             return false;
         }
         // Every OTHER kind must differ from the work code, or "select the work
@@ -140,6 +157,30 @@ module StepMark {
     // existing code, least of all for the work one.
     if (StrongRowView.stepTypeCode(99, true, true) != $.SFIT_NONE) {
         logger.error("an unknown step ordinal must fall to SFIT_NONE");
+        return false;
+    }
+    // THE LITERAL NUMBERS. Everything above compares one reading of the wire
+    // codes against another, so all of it survives a renumbering; this does
+    // not.
+    if ($.SFIT_NONE != 0 || $.SFIT_WARM != 1 || $.SFIT_WORK != 2 ||
+        $.SFIT_REST != 3 || $.SFIT_GATE != 4 || $.SFIT_COOL != 5 ||
+        $.SFIT_DONE != 6) {
+        logger.error("the wire codes ARE the format, not an internal " +
+                     "numbering: they must be 0..6 in the order NONE, WARM, " +
+                     "WORK, REST, GATE, COOL, DONE. Renumbering one silently " +
+                     "re-labels every second already recorded, and no other " +
+                     "assertion in this repository can see it -- the sweep " +
+                     "above and scripts/fit_step_marks.py both read these " +
+                     "same constants. Got " + $.SFIT_NONE + ", " + $.SFIT_WARM +
+                     ", " + $.SFIT_WORK + ", " + $.SFIT_REST + ", " +
+                     $.SFIT_GATE + ", " + $.SFIT_COOL + ", " + $.SFIT_DONE);
+        return false;
+    }
+    if ($.IVL_NONE != 0 || $.IVL_MAX != 65534) {
+        logger.error("IVL_NONE must be the out-of-band 0 the table documents " +
+                     "and IVL_MAX must stay one below the UINT16 no-data " +
+                     "pattern 65535, or a real interval becomes an apparent " +
+                     "absence; got " + $.IVL_NONE + " and " + $.IVL_MAX);
         return false;
     }
     return true;
@@ -389,10 +430,50 @@ class SmCase {
 // the same non-alignment lands on the work lap instead. Neither variant is
 // reachable from this case, which drives the shipped defaults; both are stated
 // so the limit is not read as narrower than it is.)
+//
+// THE PREMISE IS ASSERTED, NOT ASSUMED, and that is what this case gained. The
+// markLap note used to read "with restMinutes > 0 every step gets its own lap
+// and the label is exact", and the wire table used to gloss SFIT_GATE as
+// "(restMinutes = 0)". Both are false on the shipped defaults for the same
+// reason: buildWorkout adds the gate on `if (mGate)` ALONE, independently of
+// mRestSec, and pressToContinue defaults to true. This case already drove that
+// exact configuration and already required the lap count NOT to move across
+// GATE1 -- so it was the counterexample to both sentences and never said so.
+//
+// WHAT REDS, MEASURED rather than asserted. Nesting the gate under
+// `mRestSec <= 0` -- the shape BOTH retracted sentences describe -- reds this
+// case on the lap count, and four others besides (330/335 on fr965). The two
+// premise checks below did NOT fire under that mutant, and they are not
+// claimed to: they read the state the walk depends on and say WHY it matters,
+// so a future change that reaches them fails with the reason rather than with
+// an off-by-one in a sequence. FLIPPING A DEFAULT DOES NOT REACH THEM EITHER --
+// measured, both ways: `pressToContinue` set to false in loadSettings' code
+// default AND in resources/settings/properties.xml each left the suite at
+// 335/335, so in the local simulator the probe's mGate follows neither. Not
+// diagnosed further here; the structural mutant above is the evidence this
+// case rests on.
 (:test) function test_sm_c2_theLapMarkNamesTheStepThatOpenedTheLap(logger) {
     var k = new HrProbe();
     var f = SmCase.fields();
     var p = SmCase.probe(k.kindWarm(), f);
+
+    // THE PREMISE. A gate exists here WITH a rest configured -- the pair is
+    // what the corrected notes turn on.
+    if (!(p.restSec() > 0)) {
+        logger.error("this case is written against the SHIPPED DEFAULTS, " +
+                     "where restMinutes is 2 -- the whole point of the walk " +
+                     "below is that a GATE exists even though a rest is " +
+                     "configured. mRestSec=" + p.restSec());
+        return false;
+    }
+    if (p.gateOn() != true) {
+        logger.error("pressToContinue defaults to TRUE, and the gate this " +
+                     "case walks across exists because of that setting alone " +
+                     "-- NOT because restMinutes is 0. With it off there is no " +
+                     "GATE1 to advance into and the sequence below is a " +
+                     "different workout; mGate=" + p.gateOn());
+        return false;
+    }
 
     // No lap is opened by entering WARM through the seam: the session's first
     // lap is stamped in startWorkout, which needs a real Session and is out of

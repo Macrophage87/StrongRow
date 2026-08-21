@@ -176,7 +176,7 @@ test_hr_arcStaysWithinItsYEnvelope
 
 # source/WorkLayoutTest.mc
 test_lay_c0_freeRowDrawsTheFullScreen
-test_lay_c0_warmCoolDoneKeepTheFullScreen
+test_lay_c0_warmAndCoolKeepTheFullScreen
 test_lay_c0_preStartKeepsTheFullScreen
 test_lay_c0_restAndGateKeepPipsAndFooter
 test_lay_c0_workKeepsTheTargetCaption
@@ -212,6 +212,7 @@ GridGate.test_gg_c1_aNullCellRendersADashNeverAZero
 GridGate.test_gg_c2_theGridIsUpOnEveryRecoveryStepAndNowhereElse
 GridGate.test_gg_c2_doneShowsTheFinalIntervalAndKeepsBackToSave
 GridGate.test_gg_c2_theDoneGridClearsTheTitleAndTheSubRow
+GridGate.test_gg_c3_aLatchedRestDrawsTheGridWithBothEdgeArcs
 
 # source/WorkStrokeTest.mc -- inside `module WorkStroke`, so the names carry the
 # module, for the same fenix6 globals reason.
@@ -219,6 +220,7 @@ WorkStroke.test_ws_c1_theCountingRuleIsTheIntervalOrTheWholeFreeRow
 WorkStroke.test_ws_c1_onlyIntervalStrokesReachTheWorkCounter
 WorkStroke.test_ws_c1_freeRowCountsEveryStroke
 WorkStroke.test_ws_c1_pausedStrokesReachNeitherCounter
+WorkStroke.test_ws_c1_aSecondRecordingStartsBothCountersAtZero
 WorkStroke.test_ws_c2_theFooterReportsWorkStrokesNotEveryStroke
 WorkStroke.test_ws_c2_bothFooterFormsNameTheStrokesTheyCount
 
