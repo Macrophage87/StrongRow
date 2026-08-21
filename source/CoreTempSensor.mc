@@ -313,12 +313,7 @@ const CT_DIAG_F_RETRY_LOST   = 8;
 // assume one; a mask assumes nothing and lets the question be answered later
 // from a row that has already been recorded.
 //
-// Q1..Q4 are the codes (payload[2] & 0x03) + 1 can produce. The
-// PARENTHESISATION IS LOAD-BEARING: the vendor example #165 was read from writes
-// `payload[2] & 0x03 + 1`, which under C-family precedence binds as
-// `payload[2] & 4` -- their defect, deliberately not reproduced, and
-// test_cr_c1_theQualityTableAvoidsTheVendorPrecedenceBug is what would catch it
-// coming back.
+// Q1..Q4 are the codes (payload[2] & 0x03) + 1 can produce.
 const CT_DIAG_F_Q1        = 0x0010;
 const CT_DIAG_F_Q2        = 0x0020;
 const CT_DIAG_F_Q3        = 0x0040;
@@ -688,13 +683,27 @@ class CoreTempSensor {
     // makes for its own scale, and the same trap (#86/#107) this repository has
     // fallen into twice by rendering absence as a value.
     //
-    // THE PARENTHESES ARE LOAD-BEARING. The vendor example this layout was read
-    // from writes `payload[2] & 0x03 + 1`, which under C-family precedence binds
-    // as `payload[2] & (0x03 + 1)` -- i.e. `payload[2] & 4`, a completely
-    // different function that returns 0 or 4 and never 1, 2 or 3. That is their
-    // defect; it is not reproduced here, and
-    // test_cr_c1_theQualityTableAvoidsTheVendorPrecedenceBug is the case that
-    // separates the two functions on a code point where they disagree.
+    // A RETRACTION, kept here rather than deleted, because it is the kind of
+    // claim this file is strict about. An earlier version of this comment said
+    // the parentheses around `raw & 0x03` were LOAD-BEARING, and that the vendor
+    // example's own `payload[2] & 0x03 + 1` was a precedence defect binding as
+    // `payload[2] & 4`. #165 says the same thing. BOTH ARE WRONG FOR MONKEY C,
+    // and the vendor's file is Monkey C.
+    //
+    // MEASURED, fr965 / SDK 9.2.0, by evaluating all three spellings in a
+    // throwaway (:test) and printing them:
+    //
+    //     raw = 2:  raw & 0x03 + 1  ->  3
+    //               (raw & 0x03) + 1 ->  3
+    //               raw & (0x03 + 1) ->  0
+    //
+    // so `&` binds TIGHTER than `+` here, not looser, and the unparenthesised
+    // spelling computes what it looks like it computes. The parentheses are
+    // KEPT because they say what is meant without the reader having to know
+    // that -- but they are clarity, not correctness, and no test can distinguish
+    // the two spellings. What the sweep in
+    // test_cr_c1_theQualityCodeIsTheLowTwoBitsPlusOne actually guards is a wrong
+    // MASK or a missing +1, which is a live risk; the precedence one is not.
     static function ctPage0Quality(p) {
         var raw = p[2] & 0xFF;
         if (raw == $.CT_PAGE0_Q_INVALID) { return null; }
@@ -708,9 +717,18 @@ class CoreTempSensor {
     // are given no meaning by the source this was read from, so they are
     // recorded and not interpreted.
     //
-    // The shift is applied to the MASKED byte, and the mask is parenthesised,
-    // for the reason stated on sext12: `p[3] & 0xC0 >> 6` would bind as
-    // `p[3] & (0xC0 >> 6)` = `p[3] & 3` and read the UTC-request field instead.
+    // The parentheses are clarity, not correctness, and the retraction on
+    // ctPage0Quality above is why that is stated rather than assumed. MEASURED,
+    // fr965 / SDK 9.2.0, on the same throwaway probe:
+    //
+    //     p3 = 0x40:  p3 & 0xC0 >> 6  ->  1
+    //                 (p3 & 0xC0) >> 6 ->  1
+    //                 p3 & (0xC0 >> 6) ->  0
+    //
+    // The REAL confusion risk in this byte is not precedence, it is reading the
+    // wrong field: bits 2:3 carry the UTC request, and `(p[3] & 0x0C) >> 2`
+    // returns equally plausible small integers. That is what the 256-value sweep
+    // in test_cr_c1_theHeartRateSupportFieldIsTheTopTwoBits separates.
     static function ctPage0HrSupport(p) {
         return (p[3] & 0xC0) >> 6;
     }

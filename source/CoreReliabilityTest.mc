@@ -459,42 +459,51 @@ function relHrByte(code) {
 // the function it is documented to be rather than the vendor's buggy one, and
 // that absence is not rendered as a value.
 
-// THE PRECEDENCE TRAP, on a code point where the two functions DISAGREE.
+// THE MASK AND THE OFFSET, swept over the whole domain byte 2 can carry.
 //
-// The vendor example #165 was read from writes `payload[2] & 0x03 + 1`, which
-// under C-family precedence is `payload[2] & (0x03 + 1)` = `payload[2] & 4`.
-// That is not a near-miss of the intended `(payload[2] & 0x03) + 1`: it returns
-// only 0 or 4, never 1, 2 or 3.
+// A RETRACTION LIVES HERE, and it is why this case is named what it is. An
+// earlier version was called ...AvoidsTheVendorPrecedenceBug and claimed to
+// separate `(payload[2] & 0x03) + 1` from the vendor example's unparenthesised
+// `payload[2] & 0x03 + 1`, which #165 calls a precedence defect binding as
+// `payload[2] & 4`. THAT IS WRONG FOR MONKEY C, and the vendor's file is Monkey
+// C. Reverting the source to the unparenthesised spelling was run as a mutant
+// and the whole suite stayed GREEN -- 342 passed -- which is what prompted the
+// direct measurement: on fr965 / SDK 9.2.0, `raw & 0x03 + 1` with raw = 2
+// evaluates to 3, i.e. `&` binds TIGHTER than `+`, not looser. So no test can
+// distinguish the two spellings, and a case named for that distinction was
+// claiming an assurance it did not provide.
 //
-// The sweep below asserts the whole 0x00..0xFE domain against the low two bits,
-// and then names one specific divergence, so a failure message says WHAT went
-// wrong rather than only that something did. Spot-checking would be enough to
-// catch this particular bug -- the two readings disagree on every code point --
-// but the sweep is what would also catch a mask widened to three bits, which
-// they agree on for half the domain.
-(:test) function test_cr_c1_theQualityTableAvoidsTheVendorPrecedenceBug(logger) {
+// WHAT THE SWEEP DOES GUARD, which is a live risk rather than a phantom one: a
+// mask widened to three bits (`& 0x07` agrees with `& 0x03` on half the domain
+// and is caught here), a missing or doubled +1, and a read of the wrong byte.
+(:test) function test_cr_c1_theQualityCodeIsTheLowTwoBitsPlusOne(logger) {
     var ok = true;
     for (var b = 0x00; b <= 0xFE; b++) {
         var got = CoreTempSensor.ctPage0Quality(relPage0(b, 0));
         var want = (b & 0x03) + 1;
         if (got != want) {
             logger.error("ctPage0Quality(byte2 = " + b + ") = " + got + ", expected " + want);
-            ok = false;
-            if (!ok) { return false; }
+            return false;
         }
     }
-    // The named divergence: byte 2 = 0x02 is 3 under the intended reading and 0
-    // under the vendor's precedence. A quality code of 0 is outside the 1..4
-    // range the field is documented to carry.
-    var two = CoreTempSensor.ctPage0Quality(relPage0(0x02, 0));
-    if (two != 3) {
-        logger.error("ctPage0Quality(byte2 = 0x02) = " + two + ", expected 3; the vendor's " +
-                     "`payload[2] & 0x03 + 1` binds as `payload[2] & 4` and answers 0 here");
+    // The endpoints of the documented 1..4 range, named so a failure message
+    // says which end moved.
+    if (CoreTempSensor.ctPage0Quality(relPage0(0x00, 0)) != 1) {
+        logger.error("ctPage0Quality(byte2 = 0x00) = " +
+                     CoreTempSensor.ctPage0Quality(relPage0(0x00, 0)) +
+                     ", expected 1; the code is 1-based, not 0-based");
         ok = false;
     }
-    var three = CoreTempSensor.ctPage0Quality(relPage0(0x03, 0));
-    if (three != 4) {
-        logger.error("ctPage0Quality(byte2 = 0x03) = " + three + ", expected 4");
+    if (CoreTempSensor.ctPage0Quality(relPage0(0x03, 0)) != 4) {
+        logger.error("ctPage0Quality(byte2 = 0x03) = " +
+                     CoreTempSensor.ctPage0Quality(relPage0(0x03, 0)) + ", expected 4");
+        ok = false;
+    }
+    // ...and the high bits of byte 2 must not leak into the answer.
+    if (CoreTempSensor.ctPage0Quality(relPage0(0xFC, 0)) != 1) {
+        logger.error("ctPage0Quality(byte2 = 0xFC) = " +
+                     CoreTempSensor.ctPage0Quality(relPage0(0xFC, 0)) +
+                     ", expected 1; only the low two bits carry the code");
         ok = false;
     }
     return ok;
@@ -537,10 +546,11 @@ function relHrByte(code) {
 
 // THE HEART-RATE-SUPPORT FIELD, swept over all 256 values of byte 3.
 //
-// Per #165 the code is bits 6:7. The shift is applied to the MASKED byte, and
-// getting that backwards -- `p[3] & 0xC0 >> 6`, which binds as `p[3] & 3` --
-// reads the UTC-request field instead and would answer plausible small integers
-// the whole way. The sweep is what separates the two.
+// Per #165 the code is bits 6:7. The live confusion risk is not precedence --
+// see the retraction on the quality case above, and the measurement it records
+// -- it is READING THE WRONG FIELD: bits 2:3 of the same byte carry the UTC
+// request, and `(p[3] & 0x0C) >> 2` returns equally plausible small integers.
+// The sweep is what separates the two, and the last assertion names it.
 (:test) function test_cr_c1_theHeartRateSupportFieldIsTheTopTwoBits(logger) {
     var ok = true;
     for (var b = 0x00; b <= 0xFF; b++) {
@@ -564,8 +574,8 @@ function relHrByte(code) {
     // deliberately does not act on. They must not leak into this answer.
     if (CoreTempSensor.ctPage0HrSupport(relPage0(0, relHrByte(0) | 0x3F)) != 0) {
         logger.error("the low six bits of byte 3 leaked into the heart-rate-support code; " +
-                     "that is the `p[3] & 0xC0 >> 6` precedence bug, which reads the " +
-                     "UTC-request field instead");
+                     "an extractor reading bits 2:3 answers the UTC request instead, in the " +
+                     "same plausible 0..3 range");
         ok = false;
     }
     return ok;
