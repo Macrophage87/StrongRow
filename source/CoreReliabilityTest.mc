@@ -92,13 +92,29 @@ class RelProbe extends CoreTempSensor {
     var opens;      // openChannel() entries, counted before delegating
     var runaway;    // the re-entry cap was hit -- see openChannel below
     var asked;      // every delay handed to the REAL scheduleReopen, in order
+    // makeChannel() entries. Counted because #151 turns on whether a channel
+    // that failed to open is RELEASED: the `mChannel == null` guard in
+    // openChannel means a retained one is reused, and "was a fresh channel
+    // allocated for the next attempt" is the observable form of that question
+    // that a double can answer. $.QuietFailChannel carries no release recorder.
+    var makes;
 
     function initialize() {
         CoreTempSensor.initialize();   // re-enters the overrides below
         if (opens   == null) { opens   = 0; }
         if (runaway == null) { runaway = false; }
         if (asked   == null) { asked   = []; }
+        if (makes   == null) { makes   = 0; }
     }
+
+    // Counted by the concrete probes' makeChannel overrides, which run before
+    // this class's own fields exist -- hence the lazy guard, for the reason the
+    // class comment states.
+    function noteMake() {
+        if (makes == null) { makes = 0; }
+        makes++;
+    }
+    function makeCount() { if (makes == null) { makes = 0; } return makes; }
 
     // Overridden by the concrete probes below; never used from here.
     hidden function makeChannel()    { return null; }
@@ -143,6 +159,7 @@ class RelProbe extends CoreTempSensor {
         opens   = 0;
         runaway = false;
         asked   = [];
+        makes   = 0;
         mFails  = 0;
         resetDiag();
     }
@@ -186,6 +203,7 @@ class RelOkProbe extends RelProbe {
         // $.FakeChannel is CoreTempSensorTest.mc's existing double, reused
         // rather than re-declared: a second copy could drift from the original,
         // and inside a module it would still be a second class to maintain.
+        noteMake();
         chan = new $.FakeChannel(false);
         return chan;
     }
@@ -197,6 +215,7 @@ class RelThrowProbe extends RelProbe {
     var chan;
     function initialize() { RelProbe.initialize(); }
     hidden function makeChannel() {
+        noteMake();
         chan = new $.FakeChannel(true);
         return chan;
     }
@@ -209,6 +228,7 @@ class RelQuietProbe extends RelProbe {
     var chan;
     function initialize() { RelProbe.initialize(); }
     hidden function makeChannel() {
+        noteMake();
         chan = new $.QuietFailChannel();
         return chan;
     }
@@ -219,7 +239,7 @@ class RelQuietProbe extends RelProbe {
 // resource exhaustion, which is the interleaving #161's bound has to survive.
 class RelQuietDeadProbe extends RelProbe {
     function initialize() { RelProbe.initialize(); }
-    hidden function makeChannel()    { return new $.QuietFailChannel(); }
+    hidden function makeChannel()    { noteMake(); return new $.QuietFailChannel(); }
     hidden function makeRetryTimer() { return new RelDeadTimer(); }
 }
 
@@ -866,6 +886,179 @@ function relHrByte(code) {
     if (a[a.size() - 1] != $.CT_BACKOFF_BASE_MS) {
         logger.error("the first deferred retry asked for " + a[a.size() - 1] + ", expected " +
                      $.CT_BACKOFF_BASE_MS);
+        ok = false;
+    }
+    return ok;
+}
+
+// ---- #151 c2: red differentials ---------------------------------------------
+// Every case below FAILS on the code as of the previous commit and passes after
+// the fix. Nothing else is in the commit that adds them.
+//
+// All five start from a probe whose channel's open() returns FALSE and throws
+// nothing. Before the fix that channel is opened ONCE, from the constructor, and
+// then nothing at all happens: no release, no mFails, no retry -- the whole
+// point of #151.
+
+// THE OUTAGE. A channel that failed to open must engage the retry ladder,
+// because nothing else can: no MSG_CODE_EVENT_CHANNEL_CLOSED can arrive on a
+// channel that never opened, and onChannelClosed is the only other thing that
+// re-enters openChannel(). Before the fix CORE is dead for the rest of the app
+// run with nothing on the screen to say so.
+(:test) function test_cr_c2_aQuietlyFailedOpenEngagesTheLadder(logger) {
+    var p = new RelQuietProbe();
+    var ok = true;
+    if (p.slot($.CT_DIAG_I_OPEN_ATTEMPTS) < 1) {
+        logger.error("the probe never reached openChannel; nothing to assert on");
+        return false;
+    }
+    if (p.slot($.CT_DIAG_I_MAX_FAILS) < 1) {
+        logger.error("maxFails = " + p.slot($.CT_DIAG_I_MAX_FAILS) + " after an open that returned " +
+                     "FALSE; a failure that does not raise the ladder is a failure the ladder " +
+                     "cannot pace");
+        ok = false;
+    }
+    if (p.asks().size() < 1) {
+        logger.error("delays requested = " + p.asks().size() + " after an open that returned FALSE; " +
+                     "nothing else re-enters openChannel(), so CORE is dead for the rest of the run");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE REUSE. openChannel's `if (mChannel == null)` guard means a retained
+// channel is REUSED by the next attempt, so a channel that failed to open would
+// be handed straight back to the open that is meant to recover from it.
+// Releasing it matters as much as scheduling the retry.
+//
+// Asserted as "a fresh channel was allocated for the next attempt", which is the
+// observable form a double can answer: makeChannel() must have run once per
+// attempt, and no channel may be held at the end.
+(:test) function test_cr_c2_aQuietlyFailedOpenHandsTheChannelBack(logger) {
+    var p = new RelQuietProbe();
+    var ok = true;
+    if (p.channelHeld()) {
+        logger.error("mChannel is still set after an open that returned FALSE; the `mChannel == " +
+                     "null` guard would hand that same channel to the next attempt");
+        ok = false;
+    }
+    if (p.makeCount() != p.openCount()) {
+        logger.error("makeChannel() ran " + p.makeCount() + " times against " + p.openCount() +
+                     " open attempts; a failed open must be followed by a FRESH allocation, not a reuse");
+        ok = false;
+    }
+    if (p.openCount() < 2) {
+        logger.error("only " + p.openCount() + " open attempt(s) happened, so 'one allocation per " +
+                     "attempt' is vacuously true; the ladder must have retried");
+        ok = false;
+    }
+    return ok;
+}
+
+// #161'S BOUND ON THE NEW PATH. The fix adds a second caller of the handler
+// whose zero-delay branch re-enters openChannel() from inside openChannel(). It
+// therefore inherits the arithmetic bound, and the bound has to be pinned on it:
+// exactly CT_BURST_TRIES attempts, the burst's delays all zero, then one
+// CT_BACKOFF_BASE_MS ask, and no further re-entry.
+//
+// The probe's cap turns a restored recursion into a failed assertion rather than
+// a hung test -- although on fr965 / SDK 9.2.0 the simulator's own stack limit
+// fires first, at the eleventh nested frame, so the observation is an ERROR.
+(:test) function test_cr_c2_aQuietlyFailedOpenIsBoundedByTheBurst(logger) {
+    var p = new RelQuietProbe();
+    var ok = true;
+    if (p.ranAway()) {
+        logger.error("openChannel <-> scheduleReopen recursed past the probe's cap on the " +
+                     "quiet-failure path; that is #161 reintroduced through a new caller");
+        return false;
+    }
+    if (p.openCount() != $.CT_BURST_TRIES) {
+        logger.error("open attempts = " + p.openCount() + ", expected exactly " + $.CT_BURST_TRIES +
+                     ": the burst, and then a deferred retry");
+        ok = false;
+    }
+    var a = p.asks();
+    if (a.size() != $.CT_BURST_TRIES) {
+        logger.error("delays requested = " + a.size() + ", expected " + $.CT_BURST_TRIES);
+        return false;
+    }
+    for (var i = 0; i < a.size() - 1; i++) {
+        if (a[i] != 0) {
+            logger.error("delay[" + i + "] = " + a[i] + ", expected 0 inside the burst");
+            ok = false;
+        }
+    }
+    if (a[a.size() - 1] != $.CT_BACKOFF_BASE_MS) {
+        logger.error("the first deferred retry asked for " + a[a.size() - 1] + ", expected " +
+                     $.CT_BACKOFF_BASE_MS + "; a quiet failure must be paced exactly as a throw is");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE DIAGNOSTIC KEY, restated against the new behaviour.
+//
+// openAttempts - openOk - openThrow is the quiet-failure residual, and it stays
+// EXACTLY that: every retry a quiet failure now causes is another attempt with
+// no openOk and no openThrow, so the residual counts all of them rather than the
+// single one that used to end the run. What must not happen is a quiet failure
+// leaking into openOk (it is not a success) or into openThrow (it did not throw).
+(:test) function test_cr_c2_theQuietFailureResidualStillCountsQuietFailures(logger) {
+    var p = new RelQuietProbe();
+    var attempts = p.slot($.CT_DIAG_I_OPEN_ATTEMPTS);
+    var okCount  = p.slot($.CT_DIAG_I_OPEN_OK);
+    var thrown   = p.slot($.CT_DIAG_I_OPEN_THROW);
+    var ok = true;
+    if (okCount != 0) {
+        logger.error("openOk = " + okCount + "; open() returned false every time, so nothing opened");
+        ok = false;
+    }
+    if (thrown != 0) {
+        logger.error("openThrow = " + thrown + "; a quiet false is not a throw, and slot 3's key is " +
+                     "\"the catch was entered\"");
+        ok = false;
+    }
+    if (attempts - okCount - thrown != $.CT_BURST_TRIES) {
+        logger.error("attempts - openOk - openThrow = " + (attempts - okCount - thrown) +
+                     ", expected " + $.CT_BURST_TRIES + ": the residual is the quiet-failure count, " +
+                     "and every retry a quiet failure causes is another quiet failure");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE CORRELATED EXHAUSTION. The resource state that makes an ANT open fail is
+// the one that makes a Timer allocation fail, so the two have to be pinned
+// TOGETHER or the interleaving is unpinned. With both failing, the ladder must
+// still stop at the burst -- and the dropped retry must be READABLE in the file,
+// or a fix that avoids a crash has only traded one invisible failure for another.
+(:test) function test_cr_c2_aQuietOpenAndAnUnarmableTimerStillTerminate(logger) {
+    var p = new RelQuietDeadProbe();
+    var ok = true;
+    if (p.ranAway()) {
+        logger.error("the quiet-failure path recursed past the probe's cap with an unarmable timer");
+        return false;
+    }
+    if (p.openCount() != $.CT_BURST_TRIES) {
+        logger.error("open attempts = " + p.openCount() + ", expected exactly " + $.CT_BURST_TRIES);
+        ok = false;
+    }
+    var f = p.slot($.CT_DIAG_I_FLAGS);
+    if (f < 0) {
+        logger.error("the flags slot is unreadable");
+        return false;
+    }
+    if ((f & $.CT_DIAG_F_RETRY_LOST) == 0) {
+        logger.error("flags = " + f + " after a retry was dropped for want of a timer on the " +
+                     "quiet-failure path; CT_DIAG_F_RETRY_LOST must be set, or the file cannot tell " +
+                     "a stalled ladder from one still waiting");
+        ok = false;
+    }
+    // ...and the armed control must leave it clear, or the bit diagnoses nothing.
+    var armed = new RelQuietProbe();
+    if ((armed.slot($.CT_DIAG_I_FLAGS) & $.CT_DIAG_F_RETRY_LOST) != 0) {
+        logger.error("flags = " + armed.slot($.CT_DIAG_I_FLAGS) + " on a probe whose retry timer " +
+                     "ARMED; a bit that is always set is not a diagnostic");
         ok = false;
     }
     return ok;
