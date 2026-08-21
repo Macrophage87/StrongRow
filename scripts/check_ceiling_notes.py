@@ -41,9 +41,13 @@ not compile anything: it cannot tell you whether 252 was ever the true count,
 only that the note's own arithmetic closes and that the copies agree. The
 figures still have to be re-measured by bisection when the tree changes, and a
 note that is internally consistent but stale passes here. It also only sees
-notes that carry the marker: source/SetGridLayoutTest.mc holds an older,
-unmarked member-count table measured against a pre-2b23b03 tree, which this
-check does not read -- a known, deliberate hole, filed as #147.
+notes that carry the marker, so an unmarked member-count table anywhere in the
+tree is invisible to it. There was one -- source/SetGridLayoutTest.mc held an
+older table whose absolutes disagreed with every marked note by 8 members, and
+nothing could see it because it carried no marker. That was #147's hole; that
+file now carries a marked line and the unmarked absolutes are gone. The hole
+itself is not closed in general: nothing here can find a table that has not
+opted in.
 
 Usage:
   check_ceiling_notes.py [--root DIR]

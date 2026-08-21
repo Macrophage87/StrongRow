@@ -85,8 +85,15 @@ BODIES = """
     }
 """
 
+# BOTH pip call sites, and the CT one is not decoration. Until it was added
+# here the fixture contained no CT label at all, so every case below passed
+# against a source in which the label the `after` column is DEFINED by did not
+# exist -- which is exactly why the checker could not see it move.
 DRAWGPS = ('        dc.drawText(w * 0.52, h * 0.045, Gfx.FONT_XTINY, "RR", '
-           'Gfx.TEXT_JUSTIFY_CENTER);\n')
+           'Gfx.TEXT_JUSTIFY_CENTER);\n'
+           '        dc.drawText(pipCtCx(w, h), h * $.PIP_ROW_Y_FRAC, '
+           'Gfx.FONT_XTINY, "CT",\n'
+           '                    Gfx.TEXT_JUSTIFY_CENTER);\n')
 
 # The correct rows, as #141 derived them.
 GOOD_ROWS = [
@@ -100,11 +107,36 @@ GOOD_ROWS = [
 
 GOOD_RANGE = (15.60, 30.24, 7.15, 17.20, 1.68, 5.68, 10.80, 18.72)
 
+# The pre-#141 claimed pairs, and the four counts the paragraph beside them
+# states about them. Every one of the four is DERIVED by the checker from these
+# rows plus its own derivation -- 4 rows out by more than half a pixel, 5 out by
+# more than 0.05, 5 rows sharing a claimed gap_today with another row, and no
+# two rows sharing a claimed gap_after.
+GOOD_CLAIMS = [
+    ("454px-family", 25.0, 9.0),
+    ("fenix843mm", 22.3, 9.9),
+    ("epix2pro47mm", 22.3, 21.9),
+    ("fenix7-7pro-6-6pro", 15.6, 12.7),
+    ("fenix6spro", 15.6, 7.2),
+    ("fenix6xpro", 15.6, 12.9),
+]
+GOOD_DISAGREE = (4, 5, 5, 0)
+
 
 def row_line(r):
     return ("//   %s %s w=%d ct=%d rr=%d gap_today=%.2f gap_after=%.2f "
             "edge_today=%.2f edge_after=%.2f\n"
             % (MARK, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]))
+
+
+def claim_line(c):
+    return ("//   %s-CLAIMED %s gap_today=%s gap_after=%s\n"
+            % (MARK, c[0], c[1], c[2]))
+
+
+def disagree_line(v=GOOD_DISAGREE):
+    return ("//   %s-DISAGREE half_px=%d tight=%d today_dupes=%d "
+            "after_dupes=%d\n" % ((MARK,) + v))
 
 
 def range_line(v=GOOD_RANGE):
@@ -114,13 +146,20 @@ def range_line(v=GOOD_RANGE):
 
 
 def source(rows=None, rng=None, consts=CONSTS, bodies=BODIES, base=0.66,
-           drawgps=DRAWGPS, with_range=True):
+           drawgps=DRAWGPS, with_range=True, claims=None, disagree=None):
+    """`claims` / `disagree` default to ABSENT, so the cases that predate the
+    claimed-column check keep testing exactly what they tested before: the
+    checker treats a block with neither as carrying no claims paragraph."""
     rows = GOOD_ROWS if rows is None else rows
     txt = consts + "\n"
     if base is not None:
         txt += "//   %s-BASE ct_today=%s\n" % (MARK, base)
     for r in rows:
         txt += row_line(r)
+    for c in (claims or []):
+        txt += claim_line(c)
+    if disagree is not None:
+        txt += disagree_line(disagree)
     txt += "\nclass StrongRowView {\n" + bodies + "\n" + drawgps
     if with_range:
         txt += range_line(GOOD_RANGE if rng is None else rng)
@@ -255,6 +294,82 @@ def _():
 def _():
     rc, out = run(source(base=None))
     return (rc, "-BASE" in out), (1, True)
+
+
+# ------------------------------------------------------ the CT call site (#141) --
+
+@case("a moved CT label reds even with pipCtCx's body untouched")
+def _():
+    # THE HOLE THIS CLOSES, reproduced. pipCtCx is left exactly as shipped and
+    # only the call site changes, so `check_bodies` is satisfied and the whole
+    # derivation is still self-consistent -- while every `after` figure and the
+    # -RANGE line describe a label that is no longer there. On the 454 px
+    # devices the real gap under this mutant is negative: CT and RR OVERLAP.
+    bad = DRAWGPS.replace("dc.drawText(pipCtCx(w, h)", "dc.drawText(w * 0.60")
+    rc, out = run(source(drawgps=bad))
+    return (rc, '"CT" label is not drawn at pipCtCx' in out), (1, True)
+
+
+@case("a deleted CT label is rejected, not treated as still centred there")
+def _():
+    lines = [ln for ln in DRAWGPS.split("\n") if "CT" not in ln]
+    rc, out = run(source(drawgps="\n".join(lines)))
+    return (rc, '"CT" label is not drawn' in out), (1, True)
+
+
+@case("a CT label on a different row is rejected")
+def _():
+    bad = DRAWGPS.replace("h * $.PIP_ROW_Y_FRAC", "h * 0.10")
+    rc, out = run(source(drawgps=bad))
+    return (rc, '"CT" label is not drawn' in out), (1, True)
+
+
+# ------------------------------------------- the claimed column and its counts --
+
+@case("the claimed rows and the counts derived from them agree")
+def _():
+    rc, out = run(source(claims=GOOD_CLAIMS, disagree=GOOD_DISAGREE))
+    return (rc, "OK:" in out, "claimed 25.00" in out), (0, True, True)
+
+
+@case("a wrong half-pixel disagreement count is rejected")
+def _():
+    # #141's own headline figure. Four rows are out by more than half a pixel;
+    # claiming three or five must fail, or the sentence is unchecked prose
+    # again.
+    rc, out = run(source(claims=GOOD_CLAIMS, disagree=(3, 5, 5, 0)))
+    return (rc, "half_px=3" in out, "give 4" in out), (1, True, True)
+
+
+@case("a wrong tight-tolerance count is rejected")
+def _():
+    rc, out = run(source(claims=GOOD_CLAIMS, disagree=(4, 4, 5, 0)))
+    return (rc, "tight=4" in out), (1, True)
+
+
+@case("a wrong repeat count is rejected -- 'the after column repeats nothing'")
+def _():
+    rc, out = run(source(claims=GOOD_CLAIMS, disagree=(4, 5, 5, 2)))
+    return (rc, "after_dupes=2" in out, "give 0" in out), (1, True, True)
+
+
+@case("claimed rows with no counts line are rejected")
+def _():
+    rc, out = run(source(claims=GOOD_CLAIMS))
+    return (rc, "-DISAGREE" in out), (1, True)
+
+
+@case("a counts line with no claimed rows is rejected")
+def _():
+    rc, out = run(source(disagree=GOOD_DISAGREE))
+    return (rc, "-CLAIMED rows" in out), (1, True)
+
+
+@case("a claim about a device the table does not derive is rejected")
+def _():
+    rc, out = run(source(claims=GOOD_CLAIMS + [("venu3", 11.1, 2.2)],
+                         disagree=GOOD_DISAGREE))
+    return (rc, "venu3" in out), (1, True)
 
 
 def main():

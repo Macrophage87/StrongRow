@@ -165,6 +165,40 @@ jobs:
         # new job would be unrequired and could red for months without blocking
         # anything.
         run: python3 scripts/check_pip_geometry.py
+      - name: Step-field checker self-test (runner-free RED/GREEN)
+        # Hermetic scratch trees only, same shape as the two suites above. Its
+        # headline cases reproduce the three defects review found in the
+        # step-mark block rather than describing them: a marked line claiming
+        # TWO field_descriptions where four are created, the creation block
+        # moved inside a `mWorkoutEnabled` branch, and the tick's pair write
+        # with one input read at the call site instead of hoisted.
+        run: python3 scripts/test_check_step_fields.py
+      - name: Check the step-mark field figures against the real tree
+        # No (:test) can obtain a Session, so createField is unreachable from
+        # the suite: the field COUNT, the per-record byte cost, the absence of
+        # a mode gate on creation and the id set are things only a static check
+        # can see. Gating creation on mWorkoutEnabled leaves all 335 (:test)s
+        # green; it fails here.
+        #
+        # In test-tooling rather than a job of its own, for the reason the
+        # ceiling check states: ci-required gates on a fixed needs: list, so a
+        # new job would be unrequired and could red for months without blocking
+        # anything.
+        run: python3 scripts/check_step_fields.py
+      - name: Monkey C literal checker self-test (runner-free RED/GREEN)
+        # The cases that carry the weight are the GREEN ones: a // comment
+        # holding an unbalanced quote and a Char literal '"'. Both are ordinary
+        # in this codebase and both defeat a grep, which is why the check reuses
+        # scripts/list_tests.py's lexer instead of matching on text.
+        run: python3 scripts/test_check_mc_literals.py
+      - name: Check that no Monkey C string literal spans a source line
+        # monkeyc ACCEPTS a raw newline inside a literal (measured, SDK 9.2.0,
+        # fr965 and fenix6, BUILD SUCCESSFUL with no diagnostic), so neither
+        # compile job can catch one. What it costs is a stray carriage return
+        # inside the string constant on a CRLF checkout -- which is this
+        # repository's own `core.autocrlf=true` working tree, while CI checks
+        # out LF and sees nothing.
+        run: python3 scripts/check_mc_literals.py
       - name: Step-mark harness self-test (runner-free RED/GREEN)
         # scripts/fit_step_marks.py is the ONLY thing in this repository that
         # checks the step marks' acceptance criterion -- "from the FIT alone,
