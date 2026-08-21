@@ -894,6 +894,50 @@ const PIP_DOT_R_MIN  = 3;
 const PIP_GAP_FRAC   = 0.009;   // between the CT label and the mark
 const PIP_GAP_MIN    = 2;
 
+// ---- #130: the DONE screen's grid base --------------------------------------
+//
+// How far UP the set-summary grid moves on STEP_DONE, as a fraction of display
+// height. One number, applied to all four of drawSetGrid's row fractions, so
+// DONE renders the SAME table shifted -- not a second table that could drift
+// from the first.
+//
+// WHY DONE NEEDS A BASE OF ITS OWN. The grid's shipping rows (0.44 / 0.533 /
+// 0.655 / 0.749) were laid out for REST and GATE, where the sub row STANDS
+// DOWN and the band below the grid is free. On DONE the sub row must survive:
+// "BACK to save" at h*0.78 is the only text in the app telling the athlete how
+// to write the FIT. At the shipping rows the bottom value row's box runs to
+// 0.749 + 0.1115 = 0.8605h, straight through it.
+//
+// WHAT BUYS THE SPACE: DONE draws no countdown. onUpdate's countdown chain
+// covers WORK/REST (mmss), WARM/COOL (mmssUp), GATE ("PRESS START") and the
+// pre-start screen, and DONE matches none of them -- so the band starts under
+// the TITLE rather than under a FONT_NUMBER_MILD numeral.
+//
+// DERIVED FROM THE MEASURED FONT TABLE, not chosen. Worst-case getFontHeight
+// over all twelve manifest devices, the same sweep drawSetGrid's own note
+// records: FONT_XTINY 0.0817h, FONT_TINY 0.1115h, FONT_SMALL 0.1214h.
+//
+//   band top     the title is FONT_SMALL at 0.13h, so its box ends at 0.2514h
+//   band bottom  the sub row is at 0.78h
+//   band         0.5286h of usable height
+//   grid ink     first label row anchor to bottom value row box end
+//                = (0.749 - 0.44) + 0.1115 = 0.4205h
+//   slack        0.5286 - 0.4205 = 0.1081h, split evenly = 0.054h each side
+//   first row    0.2514 + 0.054 = 0.3054h  ->  dy = 0.3054 - 0.44 = -0.1346
+//
+// Rounded to -0.135, which puts the grid's rows at 0.305 / 0.398 / 0.520 /
+// 0.614 h and its ink inside 0.305h .. 0.7255h: 0.0536h clear of the title's
+// box and 0.0545h clear of the sub row. The admissible range for this constant
+// is [-0.1886, -0.0805] -- outside it one end or the other collides -- and
+// GridGate.test_gg_c2_theDoneGridClearsTheTitleAndTheSubRow reds if a later
+// edit leaves it.
+//
+// CHARACTERS AND BOXES ARE NOT INK (#121). Every figure above is a FONT BOX
+// taken from a local per-device measurement; no (:test) in CI can obtain a font
+// metric, so this is the same convention drawSetGrid and the #110 arc use and
+// it is conservative in the same way. Nothing here claims how the screen looks.
+const GRID_DONE_DY = -0.135;
+
 class StrongRowView extends Ui.View {
 
     // step types
@@ -5696,8 +5740,19 @@ class StrongRowView extends Ui.View {
     // visible, and deriving them together is what stops it.
     //
     // Every cell renders a dash for null. A dash is a distinct answer; a zero
-    // is a claim about the interval.
-    hidden function drawSetGrid(dc, w, h) {
+    // is a claim about the interval. Pinned on the RENDER PATH by
+    // GridGate.test_gg_c1_aNullCellRendersADashNeverAZero; until #142 that arm
+    // had never executed in CI, because every case latched an interval whose
+    // four cells all derived to a value.
+    //
+    // `dyFrac` SHIFTS THE WHOLE TABLE, in fractions of h, and it is the only
+    // thing that differs between the REST/GATE rendering (0.0) and the DONE one
+    // ($.GRID_DONE_DY, negative). ONE table with an offset rather than two
+    // tables: a second copy of four row fractions is a copy that can drift, and
+    // the measured pitch between the rows -- which is the part that took two
+    // regressions to get right -- must be identical on every screen that draws
+    // the grid. The offset's own derivation lives on GRID_DONE_DY.
+    hidden function drawSetGrid(dc, w, h, dyFrac) {
         // MEASURED, both axes. An earlier revision measured only the columns
         // and took the rows from a design mockup: at FONT_MEDIUM the value rows
         // overran the row beneath them by 12-18 px on every device, ink on ink
@@ -5719,12 +5774,18 @@ class StrongRowView extends Ui.View {
         //   label gap 8.12 px (fenix843mm)
         //   left edge 13.4 px to the #110 arc (fenix6spro)
         //   right     15.4 px reserved for #123's arc (fenix6spro)
+        //
+        // #130: `dyFrac` is added to each row fraction and to nothing else. The
+        // COLUMNS do not move -- the left/right clearances measured above are
+        // to the two edge arcs, neither of which is drawn on any screen the
+        // grid appears on, and a horizontal shift would need its own
+        // measurement rather than inheriting this one.
         var lx = w * 0.34;
         var rx = w * 0.66;
-        var lblY1 = h * 0.44;
-        var valY1 = h * 0.533;
-        var lblY2 = h * 0.655;
-        var valY2 = h * 0.749;
+        var lblY1 = h * (0.44  + dyFrac);
+        var valY1 = h * (0.533 + dyFrac);
+        var lblY2 = h * (0.655 + dyFrac);
+        var valY2 = h * (0.749 + dyFrac);
 
         // ERG MODE swaps the two RIGHT-hand-derived cells and nothing else.
         // "avg spm" and "avg bpm" are unit-free and stay exactly where they
@@ -6443,13 +6504,34 @@ class StrongRowView extends Ui.View {
         // default path. WARM is active for the same reason and precedes any
         // latch anyway.
         //
-        // DONE is left showing the live values too: its band is laid out for
-        // the sub row that tells the athlete to press BACK, and losing that is
-        // worse than gaining a summary. Showing the final interval there is
-        // worth doing and needs its own row positions -- filed rather than
-        // smuggled in here.
-        if ((type == STEP_REST || type == STEP_GATE) && mLastSetValid) {
-            drawSetGrid(dc, w, h);
+        // **AND DONE** (#130), which is the third screen and the one this gate
+        // was WRONG to exclude. buildWorkout emits a REST or GATE step only
+        // inside `if (i < mNumWork)`, so the LAST work interval is followed by
+        // COOL or DONE and never by a REST: its summary latched correctly and
+        // nothing ever rendered it. The hardest interval of the session was the
+        // one whose summary the athlete could not see.
+        //
+        // The paragraph this replaces said DONE "is left showing the live
+        // values too: its band is laid out for the sub row that tells the
+        // athlete to press BACK, and losing that is worse than gaining a
+        // summary". The premise was right and the conclusion did not follow --
+        // BOTH fit, because DONE draws no countdown and the grid can start
+        // 0.135h higher. The sub row is NOT suppressed here (see the gate below
+        // it, which stays on REST and GATE alone), so "BACK to save" survives
+        // with the grid up. What DONE does give up is the LIVE rate and pace
+        // row, and that is the trade rather than an oversight: the piece is
+        // over, there is no stroke to correct, and the interval just finished
+        // is the thing worth reading.
+        //
+        // Pinned by GridGate.test_gg_c2_theGridIsUpOnEveryRecoveryStepAndNowhereElse
+        // (the whole table, WORK included) and by
+        // GridGate.test_gg_c2_doneShowsTheFinalIntervalAndKeepsBackToSave.
+        if ((type == STEP_REST || type == STEP_GATE || type == STEP_DONE)
+                && mLastSetValid) {
+            // DONE is the only screen with a base of its own; see GRID_DONE_DY
+            // for the arithmetic that produced -0.135 and the range it may move
+            // in before something collides.
+            drawSetGrid(dc, w, h, (type == STEP_DONE) ? $.GRID_DONE_DY : 0.0);
         } else {
             drawRate(dc, w, h, col);
             // #108: the pace / metres-per-stroke row stands down during WORK.
@@ -6519,6 +6601,15 @@ class StrongRowView extends Ui.View {
         // number anywhere. Adding !mPaused to this gate would restore the row
         // and re-create the overlap it was suppressed for, so the number is
         // accepted as lost on that one screen.
+        //
+        // #130: THIS GATE IS DELIBERATELY NARROWER THAN THE GRID'S, and the
+        // difference is the whole point rather than an inconsistency. The grid
+        // now draws on DONE as well, and DONE KEEPS ITS SUB ROW -- "BACK to
+        // save" is the only text in the app telling the athlete how to write
+        // the FIT, and the grid clears it there because DONE draws no countdown
+        // and takes a base 0.135h higher (GRID_DONE_DY). Suppressing the row
+        // "wherever the grid appears" is exactly #109's second review
+        // regression, so the two gates must not be merged into one.
         if (!((type == STEP_REST || type == STEP_GATE) && mLastSetValid)) {
             dc.drawText(w / 2, h * 0.78, Gfx.FONT_XTINY, sub, Gfx.TEXT_JUSTIFY_CENTER);
         }
