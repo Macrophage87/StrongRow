@@ -1273,6 +1273,19 @@ module Hsi {
 // the existing twenty-one slots are nailed down here before it happens.
 //
 // A deliberate renumbering must red this case AND bump CT_DIAG_VERSION.
+//
+// THE NAME IS HISTORICAL: it nails slots 0-24, not 0-20. It was written when
+// twenty-one slots existed and was left at twenty-one when #80 added 21-23 and
+// #165 added 24, so the CT_DIAG_VERSION 4 key block claimed "slots 0-23 keep
+// their numbers ... test_ct_c0_diagSlotKeyIsZeroToTwenty is the pin that forces
+// that" while this case could not see 21, 22 or 23 at all. Review round 4 found
+// it. What stayed green under the gap was any permutation confined to 21-23 --
+// test_ct_diagSlotIndicesDistinct is invariant under a renumbering by
+// construction, and the only other literal pin is CoreRel's CT_DIAG_I_PAGE0 !=
+// 24 -- so swapping HSI_OK and HSI_INVALID re-keyed the three heat-strain slots
+// of every v2/v3/v4 file already recorded with the whole suite green. The name
+// is kept rather than corrected because renaming it costs an edit to
+// scripts/expected_tests.txt for no assertion; the range is stated here instead.
 (:test) function test_ct_c0_diagSlotKeyIsZeroToTwenty(logger) {
     var got = [$.CT_DIAG_I_VERSION, $.CT_DIAG_I_OPEN_ATTEMPTS, $.CT_DIAG_I_OPEN_OK,
                $.CT_DIAG_I_OPEN_THROW, $.CT_DIAG_I_MSG_TOTAL, $.CT_DIAG_I_BCAST,
@@ -1281,7 +1294,11 @@ module Hsi {
                $.CT_DIAG_I_SKIN_OK, $.CT_DIAG_I_SKIN_SENTINEL, $.CT_DIAG_I_SKIN_CLAMP,
                $.CT_DIAG_I_CHAN_CLOSED, $.CT_DIAG_I_MAX_FAILS, $.CT_DIAG_I_FLAGS,
                $.CT_DIAG_I_PAGE_FIRST, $.CT_DIAG_I_PAGE_OTHER_LAST,
-               $.CT_DIAG_I_ACQ_PERIOD];
+               $.CT_DIAG_I_ACQ_PERIOD,
+               // v2 (#80) and v4 (#165). Appended so the got[i] != i loop below
+               // covers them without a second loop or a second case.
+               $.CT_DIAG_I_HSI_OK, $.CT_DIAG_I_HSI_INVALID, $.CT_DIAG_I_HSI_MAX_RAW,
+               $.CT_DIAG_I_PAGE0];
     var ok = true;
     for (var i = 0; i < got.size(); i++) {
         if (got[i] != i) {

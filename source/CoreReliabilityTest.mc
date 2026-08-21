@@ -29,10 +29,13 @@ using Toybox.Lang;
 // count is only printed once the build is ALREADY over, so it has to be probed:
 // N throwaway file-scope (:test) functions dropped into source/, compiled
 // --unit-test for fenix6, and N subtracted from the reported total. SDK 9.2.0,
-// this tree, with all TWENTY-SIX CoreRel cases present (5 c0 + 9 c1 + 12 c2 --
+// this tree, with all TWENTY-SEVEN CoreRel cases present (5 c0 + 9 c1 + 13 c2 --
 // an earlier version of this line said twenty-three, which was a miscount of
-// this file and is corrected rather than quietly dropped; the MEASUREMENT below
-// was taken on the real tree and is unaffected by it):
+// this file and is corrected rather than quietly dropped; review round 4 then
+// added test_cr_c2_aMalformedFrameStillResetsThePacing, taking twenty-six to
+// twenty-seven. The MEASUREMENT below is unaffected by either: it was re-run on
+// the real tree AFTER that case landed and every figure came back identical,
+// because a case declared inside this module block costs no 'globals' member):
 //
 //     N=30  fenix6   Found 274 members in module 'globals', exceeding 253
 //     N=9   fenix6 / fenix6pro / fenix6spro / fenix6xpro   BUILD SUCCESSFUL
@@ -46,7 +49,7 @@ using Toybox.Lang;
 //
 // One member more than main's 243 (ErgUnitsTest.mc's `erg-r5` note, re-measured
 // here and confirmed unchanged), and that one member is this file's `module`
-// block. Twenty-six file-scope cases would have cost twenty-six -- seventeen
+// block. Twenty-seven file-scope cases would have cost twenty-seven -- eighteen
 // more than the nine free, so this file at file scope would red the required
 // compile-unit-test check on four devices with an error naming neither the test
 // nor the file.
@@ -875,9 +878,28 @@ function relHrByte(code) {
 // Ordering is what makes this different from the c0 pin above, which asserts
 // the same four effects happened. Here the effects are separated: after the
 // burst has run to its first deferred retry, exactly CT_BURST_TRIES opens have
-// happened, every one of them released its channel, and no channel is held.
-// A handler that scheduled first and released afterwards would leave a channel
-// held at the end of the burst and red here while the c0 pin stayed green.
+// happened, one FRESH channel was allocated for each of them, and no channel is
+// held.
+//
+// RETRACTED IN REVIEW ROUND 4. This block used to end "a handler that scheduled
+// first and released afterwards would leave a channel held at the end of the
+// burst and red here while the c0 pin stayed green". That prediction was FALSE
+// and the case did not pin the ordering at all. The reviewer ran the mutation --
+// noteOpenFailure reordered to mFails++ / maxFails / scheduleReopen /
+// discardChannel -- and this case stayed GREEN; the only red in the whole suite
+// was test_cr_c2_aQuietlyFailedOpenHandsTheChannelBack. channelHeld() cannot see
+// the reorder: discardChannel() is null-guarded and idempotent, and the burst's
+// zero-delay reopen is a synchronous recursion that UNWINDS, so every nested
+// frame runs discardChannel() on the way out and mChannel is null at the end
+// under BOTH orderings. openCount, openThrow, maxFails and the [0,0,0,30000] ask
+// sequence are identical too.
+//
+// What separates the orderings is the ALLOCATION COUNT, which is why the
+// makeCount() assertion below is now here rather than only in a case named for
+// the quiet path: a handler that scheduled first would still be holding the
+// channel when the retry re-entered openChannel(), whose `mChannel == null`
+// guard would reuse it, and one allocation would serve the whole burst.
+// Measured under the reorder: makes = 1 against opens = 4.
 (:test) function test_cr_c1_theThrowPathReleasesBeforeItRelands(logger) {
     var p = new RelThrowProbe();
     var ok = true;
@@ -894,6 +916,18 @@ function relHrByte(code) {
     if (p.channelHeld()) {
         logger.error("a channel is still held after the burst; the retry re-enters openChannel(), " +
                      "whose `mChannel == null` guard would then REUSE the channel that just failed");
+        ok = false;
+    }
+    // THE ORDERING ITSELF, and the only assertion in this case that can see it.
+    // See the retraction in the header: channelHeld() above is blind to a
+    // release moved AFTER the retry, because the burst unwinds and
+    // discardChannel() is idempotent. One allocation per attempt is the
+    // observable form of "the release preceded the re-entry".
+    if (p.makeCount() != p.openCount()) {
+        logger.error("makeChannel() ran " + p.makeCount() + " times against " + p.openCount() +
+                     " open attempts; the release must precede the retry, or the `mChannel == " +
+                     "null` guard hands the channel that just failed to the open meant to " +
+                     "recover from it and one allocation serves the whole burst");
         ok = false;
     }
     if (p.slot($.CT_DIAG_I_OPEN_THROW) != $.CT_BURST_TRIES) {
@@ -1208,10 +1242,86 @@ function relHrByte(code) {
     return ok;
 }
 
+// ...AND NOT ABOUT THE FRAME'S CONTENTS EITHER.
+//
+// The reset sits above the LENGTH guard as well as above the page filter, and
+// the source states that as a deliberate decision: "a null or short payload
+// still reached onBroadcast, which means the radio delivered a broadcast on this
+// channel, which means the search succeeded". Until review round 4 nothing stood
+// in front of it -- moving `mFails = 0` to sit immediately BELOW the length
+// guard left all 342 cases green, while moving it below the PAGE filter reds
+// test_cr_c2_aTrackedFrameOfAnyPageResetsThePacing. So one half of the argued
+// decision was pinned and the other half was prose.
+//
+// It is not a hypothetical half. A marginal link delivering malformed frames is
+// the i178249719 condition -- 3 broadcasts in 50 minutes -- and under the
+// unpinned placement a pod whose carrier is tracked every second waits the full
+// CT_BACKOFF_NEAR_MAX_MS between listens.
+//
+// Both arms of `p == null || p.size() < 8` are driven, and each is preceded by a
+// check that the ladder had actually climbed, so neither arm can be satisfied by
+// a ladder that never left zero.
+(:test) function test_cr_c2_aMalformedFrameStillResetsThePacing(logger) {
+    var p = new RelOkProbe();
+    p.reset();
+    for (var i = 0; i < 6; i++) { p.closeEvent(); }
+    if (p.lastAsk() <= 0) {
+        logger.error("the ladder had not climbed before the frame (last ask = " + p.lastAsk() +
+                     "); the case would be vacuous");
+        return false;
+    }
+    var ok = true;
+
+    p.feed([0x01, 0x02, 0x03]);   // too short to decode -- but it ARRIVED
+    p.closeEvent();
+    if (p.lastAsk() != 0) {
+        logger.error("after a truncated frame the next delay was " + p.lastAsk() +
+                     ", expected 0: mFails paces the SEARCH, and a frame arriving at all -- " +
+                     "however unusable its contents -- means the search found the pod");
+        ok = false;
+    }
+    // ...and the frame must actually have taken the truncated path, or this case
+    // proves nothing about the length guard.
+    if (p.slot($.CT_DIAG_I_SHORT_PAY) != 1) {
+        logger.error("shortPay = " + p.slot($.CT_DIAG_I_SHORT_PAY) + ", expected 1; the frame did " +
+                     "not take the truncated-payload path and this case is not about it");
+        ok = false;
+    }
+
+    // The other arm of the same guard: a null payload.
+    for (var i = 0; i < 6; i++) { p.closeEvent(); }
+    if (p.lastAsk() <= 0) {
+        logger.error("the ladder had not climbed again before the null frame (last ask = " +
+                     p.lastAsk() + "); the null arm would be vacuous");
+        return false;
+    }
+    p.feed(null);
+    p.closeEvent();
+    if (p.lastAsk() != 0) {
+        logger.error("after a null payload the next delay was " + p.lastAsk() + ", expected 0");
+        ok = false;
+    }
+    if (p.slot($.CT_DIAG_I_SHORT_PAY) != 2) {
+        logger.error("shortPay = " + p.slot($.CT_DIAG_I_SHORT_PAY) + ", expected 2; the null " +
+                     "payload did not reach the guard this case is about");
+        ok = false;
+    }
+    return ok;
+}
+
 // ---- #165 c2: red differentials ---------------------------------------------
 
 // THE COUNT. Page 0x00 gets its own tally, and slot 8 keeps its old meaning --
-// so pageOther - page0 is the count of pages that are still genuinely unknown.
+// so pageOther - page0 is the number of FRAMES that arrived on pages other than
+// 0x00 and 0x01. Both counters are per-frame, so it is a frame tally and NOT a
+// count of distinct unknown page types.
+//
+// THE FIXTURE FEEDS THE SAME UNKNOWN PAGE TWICE, deliberately. With one 0x50
+// frame the difference is 1 under both readings, so the case could not tell them
+// apart and the wrong one -- "the count of pages that are still genuinely
+// unknown" -- was written beside it in four places. Two frames of one unknown
+// page make the frame reading 2 and the distinct-page reading 1, so the number
+// asserted here now rejects the reading the prose used to state.
 (:test) function test_cr_c2_aPageZeroFrameIsCountedInItsOwnSlot(logger) {
     var p = new RelOkProbe();
     p.reset();
@@ -1220,21 +1330,24 @@ function relHrByte(code) {
     var other = $.ctPayload(660, 0x0C8, 3742);
     other[0] = 0x50;                       // an ANT+ common page: still unknown
     p.feed(other);
+    p.feed(other);                         // ...and again: ONE page, TWO frames
     p.feed($.ctPayload(660, 0x0C8, 3742)); // page 1
     var ok = true;
     if (p.slot($.CT_DIAG_I_PAGE0) != 2) {
         logger.error("page0 = " + p.slot($.CT_DIAG_I_PAGE0) + ", expected 2");
         ok = false;
     }
-    if (p.slot($.CT_DIAG_I_PAGE_OTHER) != 3) {
-        logger.error("pageOther = " + p.slot($.CT_DIAG_I_PAGE_OTHER) + ", expected 3; slot 8's key " +
+    if (p.slot($.CT_DIAG_I_PAGE_OTHER) != 4) {
+        logger.error("pageOther = " + p.slot($.CT_DIAG_I_PAGE_OTHER) + ", expected 4; slot 8's key " +
                      "is \"page byte != 0x01\" and page 0x00 must keep satisfying it");
         ok = false;
     }
-    if (p.slot($.CT_DIAG_I_PAGE_OTHER) - p.slot($.CT_DIAG_I_PAGE0) != 1) {
+    if (p.slot($.CT_DIAG_I_PAGE_OTHER) - p.slot($.CT_DIAG_I_PAGE0) != 2) {
         logger.error("pageOther - page0 = " +
                      (p.slot($.CT_DIAG_I_PAGE_OTHER) - p.slot($.CT_DIAG_I_PAGE0)) +
-                     ", expected 1: the count of pages that are still genuinely unknown");
+                     ", expected 2: the number of FRAMES on pages other than 0x00 and 0x01. " +
+                     "The fixture feeds ONE unknown page (0x50) TWICE, so 1 is the answer this " +
+                     "difference does NOT give -- it is a frame tally, not a page-type count");
         ok = false;
     }
     if (p.slot($.CT_DIAG_I_PAGE1) != 1) {
