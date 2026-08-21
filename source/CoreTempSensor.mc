@@ -1137,9 +1137,15 @@ class CoreTempSensor {
         // point at different defects.
         var page = p[0] & 0xFF;
         if (mDiagPageFirst == $.CT_DIAG_NONE) { mDiagPageFirst = page; }
-        if (page != 0x01) {                      // CBT data page 1 only
+        if (page != $.CT_PAGE_TEMPERATURE) {     // CBT data page 1 only
             mDiagPageOther++;
             mDiagPageOtherLast = page;
+            // #165. Page 0x00 stays counted above -- slot 8's key is "page byte
+            // != 0x01" and must keep meaning that, or every key ever written
+            // against an already-recorded file changes under a reader's feet.
+            // What is added is a SECOND, narrower record, so pageOther - page0
+            // is the count of pages that are still genuinely unknown.
+            if (page == $.CT_PAGE_GENERAL) { notePageZero(p); }
             return;
         }
         mDiagPage1++;
@@ -1225,6 +1231,49 @@ class CoreTempSensor {
         } else {
             mDiagHsiInvalid++;
         }
+    }
+
+    // #165: record what a page-0x00 (general information) frame said about
+    // itself. Called only from onBroadcast's non-page-1 branch, on a payload
+    // already known to be at least 8 bytes long.
+    //
+    // READ-ONLY, AND THAT IS THE SCOPE BOUNDARY RATHER THAN AN OMISSION. The
+    // pod uses these fields to ASK for things -- a heart rate for its own
+    // core-temperature estimate, and a UTC time -- and answering means sending
+    // an acknowledged message, which is a TRANSMIT path on the ANT channel.
+    // Nothing in this class has ever transmitted. That change is materially
+    // bigger than this one, carries its own risks, and needs a real row to
+    // validate; it has its own issue. What this function does is make the ask
+    // VISIBLE in the saved file, which is the thing that was missing: a reader
+    // could not previously tell that the pod had been running its estimate
+    // without a heart rate the watch had all along.
+    //
+    // THE UTC-REQUEST FIELD, byte 3 bits 2:3, is deliberately not extracted.
+    // It is the same shape of ask, it would need the same transmit path to
+    // answer, and recording it would spend two more flag bits on a question the
+    // follow-up issue owns. It is named in that issue instead.
+    //
+    // NOTHING HERE FEEDS A DECODED VALUE, A CLAMP OR A FRESHNESS WINDOW. The
+    // page-0x00 layout rests on one unmeasured source (see the CT_PAGE_GENERAL
+    // block); if it is wrong, the cost is two meaningless flag bits and a
+    // correct frame count.
+    hidden function notePageZero(p) {
+        mDiagPage0++;
+        // The quality code, or null when the pod said to disregard the frame.
+        // The null case gets its OWN bit rather than a code, because it is an
+        // absence of a rating and not a rating -- ctQualityBit answers 0 for it,
+        // so the OR below cannot smuggle it in as a value.
+        var q = ctPage0Quality(p);
+        if (q == null) {
+            mDiagPage0Flags |= $.CT_DIAG_F_Q_NONE;
+        } else {
+            mDiagPage0Flags |= ctQualityBit(q);
+        }
+        // ...and which heart-rate-support state the pod reported. Accumulated,
+        // not latest-wins: the question a reader has is which states occurred
+        // during the row, and "the pod asked for a heart rate at some point" is
+        // exactly the evidence the transmit follow-up needs.
+        mDiagPage0Flags |= ctHrSupportBit(ctPage0HrSupport(p));
     }
 
     // Search timed out or the pod dropped.
