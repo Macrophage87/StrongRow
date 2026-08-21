@@ -1163,4 +1163,146 @@ function relHrByte(code) {
     return ok;
 }
 
+// ---- #165 c2: red differentials ---------------------------------------------
+
+// THE COUNT. Page 0x00 gets its own tally, and slot 8 keeps its old meaning --
+// so pageOther - page0 is the count of pages that are still genuinely unknown.
+(:test) function test_cr_c2_aPageZeroFrameIsCountedInItsOwnSlot(logger) {
+    var p = new RelOkProbe();
+    p.reset();
+    p.feed(relPage0(0x00, 0));
+    p.feed(relPage0(0x00, 0));
+    var other = $.ctPayload(660, 0x0C8, 3742);
+    other[0] = 0x50;                       // an ANT+ common page: still unknown
+    p.feed(other);
+    p.feed($.ctPayload(660, 0x0C8, 3742)); // page 1
+    var ok = true;
+    if (p.slot($.CT_DIAG_I_PAGE0) != 2) {
+        logger.error("page0 = " + p.slot($.CT_DIAG_I_PAGE0) + ", expected 2");
+        ok = false;
+    }
+    if (p.slot($.CT_DIAG_I_PAGE_OTHER) != 3) {
+        logger.error("pageOther = " + p.slot($.CT_DIAG_I_PAGE_OTHER) + ", expected 3; slot 8's key " +
+                     "is \"page byte != 0x01\" and page 0x00 must keep satisfying it");
+        ok = false;
+    }
+    if (p.slot($.CT_DIAG_I_PAGE_OTHER) - p.slot($.CT_DIAG_I_PAGE0) != 1) {
+        logger.error("pageOther - page0 = " +
+                     (p.slot($.CT_DIAG_I_PAGE_OTHER) - p.slot($.CT_DIAG_I_PAGE0)) +
+                     ", expected 1: the count of pages that are still genuinely unknown");
+        ok = false;
+    }
+    if (p.slot($.CT_DIAG_I_PAGE1) != 1) {
+        logger.error("page1 = " + p.slot($.CT_DIAG_I_PAGE1) + ", expected 1; page 0x00 must not " +
+                     "be counted as a temperature frame");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE QUALITY CODES, as a mask of what was ever seen.
+//
+// Two frames carrying different codes must set two different bits, and no bit
+// belonging to a code that never arrived. A latest-wins encoding would pass the
+// first half and fail the second, which is exactly the encoding this branch
+// argued against.
+(:test) function test_cr_c2_theQualityCodesSeenReachTheFlags(logger) {
+    var p = new RelOkProbe();
+    p.reset();
+    p.feed(relPage0(0x00, 0));   // (0 & 3) + 1 = 1
+    p.feed(relPage0(0x02, 0));   // (2 & 3) + 1 = 3
+    var f = p.slot($.CT_DIAG_I_FLAGS);
+    var ok = true;
+    if (f < 0) {
+        logger.error("the flags slot is unreadable");
+        return false;
+    }
+    if ((f & $.CT_DIAG_F_Q1) == 0) {
+        logger.error("flags = " + f + "; quality code 1 arrived and its bit is clear");
+        ok = false;
+    }
+    if ((f & $.CT_DIAG_F_Q3) == 0) {
+        logger.error("flags = " + f + "; quality code 3 arrived and its bit is clear -- a mask " +
+                     "records every code seen, not the last one");
+        ok = false;
+    }
+    if ((f & $.CT_DIAG_F_Q2) != 0 || (f & $.CT_DIAG_F_Q4) != 0) {
+        logger.error("flags = " + f + "; a bit is set for a quality code that never arrived");
+        ok = false;
+    }
+    if ((f & $.CT_DIAG_F_Q_NONE) != 0) {
+        logger.error("flags = " + f + "; the disregard marker never arrived and its bit is set");
+        ok = false;
+    }
+    return ok;
+}
+
+// THE ASK NOBODY ANSWERS. heartRateSupport == 1 means the pod is requesting a
+// heart rate and is running its core-temperature estimate without one. #165's
+// central claim is that this happens on every row and is invisible in the file.
+// The bit is what makes it visible; replying is a transmit path and is
+// deliberately out of scope on this branch.
+(:test) function test_cr_c2_theHeartRateRequestReachesTheFlags(logger) {
+    var p = new RelOkProbe();
+    p.reset();
+    p.feed(relPage0(0x00, relHrByte(1)));   // asking for a heart rate
+    p.feed(relPage0(0x00, relHrByte(2)));   // ...and later, has one
+    var f = p.slot($.CT_DIAG_I_FLAGS);
+    var ok = true;
+    if (f < 0) {
+        logger.error("the flags slot is unreadable");
+        return false;
+    }
+    if ((f & $.CT_DIAG_F_HR1) == 0) {
+        logger.error("flags = " + f + "; the pod ASKED for a heart rate and the bit that records it " +
+                     "is clear -- that ask is the whole evidence for the transmit-path follow-up");
+        ok = false;
+    }
+    if ((f & $.CT_DIAG_F_HR2) == 0) {
+        logger.error("flags = " + f + "; the pod later reported HAVING a heart rate and its bit is clear");
+        ok = false;
+    }
+    if ((f & $.CT_DIAG_F_HR0) != 0 || (f & $.CT_DIAG_F_HR3) != 0) {
+        logger.error("flags = " + f + "; a bit is set for a heart-rate-support code that never arrived");
+        ok = false;
+    }
+    return ok;
+}
+
+// ABSENCE IS NOT A CODE, at the wire this time rather than at the extractor.
+//
+// byte 2 == 0xFF arithmetics to 4, so the failure mode this guards is a pod
+// saying "disregard this" and the file recording "quality 4" -- a perfectly
+// plausible-looking rating, indistinguishable afterwards from a real one. The
+// marker gets its own bit and NO quality bit.
+(:test) function test_cr_c2_theDisregardMarkerIsRecordedWithoutAQualityCode(logger) {
+    var p = new RelOkProbe();
+    p.reset();
+    p.feed(relPage0($.CT_PAGE0_Q_INVALID, 0));
+    var f = p.slot($.CT_DIAG_I_FLAGS);
+    var ok = true;
+    if (f < 0) {
+        logger.error("the flags slot is unreadable");
+        return false;
+    }
+    if ((f & $.CT_DIAG_F_Q_NONE) == 0) {
+        logger.error("flags = " + f + "; the pod's own disregard marker arrived and left no trace");
+        ok = false;
+    }
+    var anyQ = $.CT_DIAG_F_Q1 | $.CT_DIAG_F_Q2 | $.CT_DIAG_F_Q3 | $.CT_DIAG_F_Q4;
+    if ((f & anyQ) != 0) {
+        logger.error("flags = " + f + "; the disregard marker was recorded as a quality CODE. It " +
+                     "arithmetics to 4, an entirely plausible rating, and a reader could never tell " +
+                     "it apart from a real one afterwards");
+        ok = false;
+    }
+    // ...and the frame is still counted as a page-0 frame: the marker is about
+    // the pod's opinion of its data, not about whether the frame arrived.
+    if (p.slot($.CT_DIAG_I_PAGE0) != 1) {
+        logger.error("page0 = " + p.slot($.CT_DIAG_I_PAGE0) + ", expected 1");
+        ok = false;
+    }
+    return ok;
+}
+
 }
