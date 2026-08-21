@@ -25,6 +25,26 @@ using Toybox.Lang;
 // `CoreRel.test_cr_...`, and scripts/expected_tests.txt carries that qualified
 // name because the pin has to match what the RUNNER prints.
 //
+// RE-MEASURED FOR THIS BRANCH, not extrapolated from the previous note. The
+// count is only printed once the build is ALREADY over, so it has to be probed:
+// N throwaway file-scope (:test) functions dropped into source/, compiled
+// --unit-test for fenix6, and N subtracted from the reported total. SDK 9.2.0,
+// this tree, with all twenty-three CoreRel cases present:
+//
+//     N=30  fenix6   Found 274 members in module 'globals', exceeding 253
+//     N=9   fenix6 / fenix6pro / fenix6spro / fenix6xpro   BUILD SUCCESSFUL
+//     N=10  all four   Found 254 members in module 'globals', exceeding 253
+//
+// so 274 - 30 = 244 used, and the LIMIT IS INCLUSIVE -- at 244 the ninth added
+// test lands on 253 and BUILDS, and it is the tenth that reds. The machine-
+// readable line scripts/check_ceiling_notes.py checks:
+//
+//     CEILING core-reliability fenix6-family: 244 used of 253, 9 free -- the 10th file-scope (:test) added reds
+//
+// One member more than main's 243 (ErgUnitsTest.mc's `erg-r5` note, re-measured
+// here and confirmed unchanged), and that one member is this file's `module`
+// block. Twenty-three file-scope cases would have cost twenty-three.
+//
 // ---- Execution -------------------------------------------------------------
 //
 // These are (:test) functions: included in the --unit-test build, stripped from
