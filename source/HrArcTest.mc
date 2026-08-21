@@ -402,6 +402,26 @@ class HrProbe extends StrongRowView {
         mFitErgCad   = cF;
     }
 
+    // Recording stand-ins for the four STEP MARK handles, in id order:
+    // step_type (17, record), interval_num (18, record), lap_step_type (25,
+    // lap), lap_interval_num (26, lap).
+    //
+    // ALL FOUR AT ONCE, because the pair-ness is the property under test: a
+    // record whose step kind and interval number came from two different
+    // instants is exactly what the single curStepType() read exists to prevent.
+    function installStepFields(sF, iF, lsF, liF) {
+        mFitStepType = sF;
+        mFitIvlNum   = iF;
+        mFitLapStep  = lsF;
+        mFitLapIvl   = liF;
+    }
+
+    // The step machine's own transition, called -- not transcribed. `hidden` is
+    // protected in Monkey C, which is what makes this a seam on the SHIPPING
+    // lifecycle (latch, addLap, mStepStartMs, beginWorkAccum, the lap mark and
+    // the alert) rather than a copy of it.
+    function advance() { advanceStep(); }
+
     // Enough of a session for stopAndSave's session-scope write to be reached.
     // The handle is a duck-typed stand-in: stopAndSave calls isRecording(),
     // stop(), save() and a setData on each non-null field handle.

@@ -1333,6 +1333,11 @@ class StrongRowView extends Ui.View {
     // #149 part 2's gate-input diagnostics, record scope, ids 23-24.
     hidden var mFitRateRaw;
     hidden var mFitRateBase;
+    // The STEP MARKS. Record scope, ids 17-18; lap scope, ids 25-26.
+    hidden var mFitStepType;
+    hidden var mFitIvlNum;
+    hidden var mFitLapStep;
+    hidden var mFitLapIvl;
     // ERG MODE's fields, ids 12-16. Four record-scope, one session-scope.
     hidden var mFitErgPower;
     hidden var mFitErgJps;
