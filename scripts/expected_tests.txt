@@ -46,6 +46,16 @@ RetryBound.test_rb_c2_anUnarmableTimerCannotRecurseWithoutBound
 RetryBound.test_rb_c2_anUnarmableTimerIsHandedBack
 RetryBound.test_rb_c2_aLostRetryIsVisibleInCtDiag
 
+# source/CoreReliabilityTest.mc -- inside `module CoreRel`, so the names carry
+# the module, for the same fenix6 globals-ceiling reason CoreDrop and RetryBound
+# state above. The simulator prints `CoreRel.test_cr_...` and this pin has to
+# carry the name the RUNNER prints.
+CoreRel.test_cr_c0_theColdLadderIsUnchanged
+CoreRel.test_cr_c0_aSuccessfulOpenNeitherFailsNorRetries
+CoreRel.test_cr_c0_aThrowingOpenStillReleasesAndRelands
+CoreRel.test_cr_c0_pageZeroIsCountedAsAnUndecodedPage
+CoreRel.test_cr_c0_theFourFlagBitsKeepTheirValues
+
 # source/CoreFieldGateTest.mc
 test_core_gateFalseWhenSensorNull
 test_core_gateTrueWhenPodSeen
