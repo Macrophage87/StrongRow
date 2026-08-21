@@ -845,24 +845,48 @@ class CoreTempSensor {
             // hypothesis, inside the discriminator built to prevent exactly
             // that.
             //
-            // The return value is NOT acted on beyond counting: no retry is
-            // scheduled, no channel released, nothing that was not done
-            // before. This stays diagnostic-only.
+            // #103 counted this return and DELIBERATELY DID NOT ACT ON IT --
+            // "no retry is scheduled, no channel released, nothing that was not
+            // done before" -- which was the right scope for a diagnostics change
+            // and left the recovery gap #151 was filed on.
+            //
+            // #151 CLOSES IT: a false return is answered exactly as a throw is,
+            // through the SAME handler. See the note on noteOpenFailure. Two
+            // things the gap cost, both fixed by that one call:
+            //
+            //   * the retry ladder never engaged. Nothing else can re-enter
+            //     openChannel(): no MSG_CODE_EVENT_CHANNEL_CLOSED can arrive on
+            //     a channel that never opened, and onChannelClosed is the only
+            //     other route in. CORE was dead for the rest of the app run,
+            //     with nothing on the screen to say so.
+            //   * mChannel stayed non-null, so the `if (mChannel == null)` guard
+            //     above would hand the channel that just failed straight back to
+            //     the next attempt. Releasing it matters as much as scheduling
+            //     the retry, and noteOpenFailure does both, in that order.
             //
             // NOT MEASURED: whether open() ever actually returns false on this
             // path. There is no ANT radio in any environment this repository
-            // can run, so the false-return branch has never been observed --
-            // the API documents it and the previous code assumed it away. If
-            // it never fires, openOk is unchanged from before.
+            // can run, so the false-return branch has never been observed -- the
+            // API documents it and the pre-#103 code assumed it away.
+            // i174014735's open_attempts 13 against open_ok 12 is a residual of
+            // one that is CONSISTENT with it and does not prove it.
             var opened = mChannel.open();
 
             // #102: reached only when nothing above threw. openAttempts minus
             // openOk is not the throw count -- openThrow is counted explicitly
             // below -- because that difference has to stay readable even if a
-            // future edit adds a return path between here and the catch. With
-            // the guard below, attempts - openOk - openThrow is exactly the
-            // quiet-failure count; before it, that residual was always zero.
-            if (opened) { mDiagOpenOk++; }
+            // future edit adds a return path between here and the catch.
+            //
+            // attempts - openOk - openThrow is STILL exactly the quiet-failure
+            // count after #151, and only its magnitude moves: every retry a
+            // quiet failure now causes is another attempt with no openOk and no
+            // openThrow, so the residual counts all of them rather than the
+            // single one that used to end the run.
+            if (opened) {
+                mDiagOpenOk++;
+            } else {
+                noteOpenFailure();
+            }
         } catch (e) {
             // #102: the counter this issue was filed on. This catch was
             // completely silent, so a channel that could never be acquired and
