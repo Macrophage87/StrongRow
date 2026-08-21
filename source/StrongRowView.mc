@@ -1040,6 +1040,54 @@ class StrongRowView extends Ui.View {
     hidden var mBaseHold;
     hidden var mStrokeCount;
 
+    // #125: strokes taken ON A PIECE, as against mStrokeCount's every stroke of
+    // the recording. TWO counters rather than one re-gated counter, and the
+    // reason is that both numbers are wanted and only one fits on the footer.
+    //
+    // WHAT EACH ONE MEANS, so a later reader does not have to infer it:
+    //
+    //   mStrokeCount  every stroke the detector accepted while recording and
+    //                 unpaused, whatever step was in force. Session-cumulative.
+    //                 It is what mSetStrokeBase / mLastSetStrokes take their
+    //                 delta from, so its gate must NOT be narrowed: the
+    //                 per-interval figure is a difference between two readings
+    //                 of THIS counter.
+    //   mWorkStrokes  the subset taken while the athlete was on a piece --
+    //                 inside a WORK interval, or anywhere at all in free-row
+    //                 mode, which has no steps and where every stroke is the
+    //                 piece. See strokeCounts, which is the whole rule.
+    //
+    // WHY THE FOOTER SHOWS THE SECOND. #125's own words: "those strokes are
+    // mainly to position the boat into a good heading and location for the
+    // intervals, and tend to be quicker and lower force. The values we want to
+    // track are the drive strokes during the intervals." Positioning and rest
+    // paddling bias a session stroke count UP, and hardest on the short
+    // sessions where they are the largest fraction of it.
+    //
+    // WORK ONLY, NOT WORK+REST, which is the open question #125 asks to be
+    // settled before implementing. The boundary chosen is the one the app
+    // ALREADY uses for every other per-interval aggregate -- `mSetNum > 0`,
+    // which gates the heart-rate fold and the erg work integrator in onTick and
+    // is bounded by beginWorkAccum / latchWorkAccum. One boundary for every
+    // aggregate means the footer can never disagree with the grid about what an
+    // interval was; two boundaries would guarantee that it eventually does.
+    // Rest paddling is as unrepresentative as positioning paddling, which is
+    // the reading #125 calls "literal to 'the drive strokes during the
+    // intervals'".
+    //
+    // WARM, GATE, COOL and DONE are excluded under either reading, and are
+    // named here rather than left to be inferred: none of them is inside a work
+    // interval, so none of them reaches this counter.
+    //
+    // NOT DISPLAYED IS NOT NOT RECORDED, and neither counter is a FIT value.
+    // Every per-record field is written exactly as before -- this changes one
+    // string on one row of the display and nothing that reaches the file. The
+    // session-scope total_corrective_strokes is the OTHER half of #125 and is
+    // deliberately untouched here: it is a recorded aggregate, so narrowing it
+    // changes what a shipped field means, and that needs its own decision
+    // rather than riding along with a display fix.
+    hidden var mWorkStrokes;
+
     // ---- per-work-interval accumulators (#109) --------------------------
     // RAW TOTALS ONLY. Every figure the rest view shows is derived at read
     // time from these by a pure static, so two cells on the same screen can
@@ -1326,6 +1374,11 @@ class StrongRowView extends Ui.View {
         // and the second row's footer included the first row's strokes.
         // Initialised here, and reset per session in beginSessionAccum().
         mStrokeCount = 0;
+        // #125: initialised beside mStrokeCount and reset per session in
+        // beginSessionAccum() beside it, for the identical #126 reason -- a
+        // counter reset only in resetDetector() is app-lifetime, and the second
+        // row of an unrelaunched app inherits the first row's strokes.
+        mWorkStrokes = 0;
         beginSessionAccum();
         loadSettings();
         buildWorkout();
@@ -3240,6 +3293,38 @@ class StrongRowView extends Ui.View {
         return mmssStr + " work left";
     }
 
+    // Pure: does this stroke belong to the figure the footer reports?
+    //
+    // #125's whole boundary, in one place and reachable from a (:test) -- the
+    // call site is inside registerStroke, which needs a built view and a live
+    // accelerometer stream, so the decision is extracted for the same reason
+    // footState, rateColour and the setAvg* family are.
+    //
+    // TWO ARMS, and the free-row one is not an afterthought:
+    //
+    //   WORKOUT MODE   the stroke counts only inside a WORK interval. `setNum`
+    //                  is mSetNum, which beginWorkAccum raises to the 1-based
+    //                  interval number and latchWorkAccum returns to 0 -- so
+    //                  positioning before the first interval, rest paddling,
+    //                  the warm-up, the gates and the cool-down are all
+    //                  excluded, and excluded by the SAME boundary that bounds
+    //                  every other per-interval aggregate in this file.
+    //   FREE ROW       every stroke counts. There are no steps at all, so there
+    //                  is no "before the interval" to exclude: the whole row IS
+    //                  the piece. A rule that returned false here would leave
+    //                  the footer reading 0 for the entire row, which is the
+    //                  failure mode a naive `mSetNum > 0` gate produces --
+    //                  free-row mode never opens an interval, so mSetNum stays
+    //                  0 for its whole lifetime.
+    //
+    // TAKES mSetNum RATHER THAN A BOOLEAN so the call site cannot get the
+    // comparison wrong in one place and right in another; the "> 0" lives here,
+    // once, next to the paragraph that justifies it.
+    static function strokeCounts(workoutEnabled, setNum) {
+        if (!workoutEnabled) { return true; }
+        return setNum > 0;
+    }
+
     // Pure: does this screen draw the footer at all?
     //
     // #108 removes the REC footer from the work view, and the cost is accepted
@@ -3996,7 +4081,16 @@ class StrongRowView extends Ui.View {
                 // A quiet pause is safe for all four: the ring times out after
                 // 4-12 s and takes the baseline with it. Recorded so the next
                 // reader does not take any of this for deliberate correctness.
-                if (!mPaused) { mStrokeCount++; }
+                if (!mPaused) {
+                    mStrokeCount++;
+                    // #125: the footer's figure. The SESSION counter above is
+                    // deliberately left counting everything -- mLastSetStrokes
+                    // is a delta between two readings of it, so narrowing its
+                    // gate would move every per-interval figure the grid shows.
+                    if (strokeCounts(mWorkoutEnabled, mSetNum)) {
+                        mWorkStrokes++;
+                    }
+                }
                 recomputeRate();
             }
         }
@@ -5060,6 +5154,10 @@ class StrongRowView extends Ui.View {
     // discards any latched interval from a previous row.
     hidden function beginSessionAccum() {
         mStrokeCount   = 0;
+        // #125: cleared WITH the session total, never separately. Two stroke
+        // counters that reset on different events would let the footer report a
+        // work count from the previous row against this row's session.
+        mWorkStrokes   = 0;
         mSetNum        = 0;
         mSetDistBase   = 0.0;
         mSetPausedDist = 0.0;

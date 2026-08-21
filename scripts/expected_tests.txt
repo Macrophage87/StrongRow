@@ -213,6 +213,13 @@ GridGate.test_gg_c2_theGridIsUpOnEveryRecoveryStepAndNowhereElse
 GridGate.test_gg_c2_doneShowsTheFinalIntervalAndKeepsBackToSave
 GridGate.test_gg_c2_theDoneGridClearsTheTitleAndTheSubRow
 
+# source/WorkStrokeTest.mc -- inside `module WorkStroke`, so the names carry the
+# module, for the same fenix6 globals reason.
+WorkStroke.test_ws_c1_theCountingRuleIsTheIntervalOrTheWholeFreeRow
+WorkStroke.test_ws_c1_onlyIntervalStrokesReachTheWorkCounter
+WorkStroke.test_ws_c1_freeRowCountsEveryStroke
+WorkStroke.test_ws_c1_pausedStrokesReachNeitherCounter
+
 # source/CueZoneTest.mc
 #
 # Names are MODULE-QUALIFIED: every (:test) lives inside `module CueFix`, which

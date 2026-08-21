@@ -473,6 +473,11 @@ class HrProbe extends StrongRowView {
 
     function setWideSession() {
         mStrokeCount = 9999;
+        // #125: BOTH counters, because the footer reports the WORK one and this
+        // seam exists to drive the widest string the footer can produce. Set to
+        // the same value rather than to a smaller one: the widest form is four
+        // digits, and which counter reaches the row is not this seam's subject.
+        mWorkStrokes = 9999;
         mStartMs = System.getTimer() - 11999000;   // ~199:59 elapsed
         setDist(12345.6);
     }
@@ -481,8 +486,33 @@ class HrProbe extends StrongRowView {
     // the narrow shape instead of needing a fresh one.
     function setNarrowSession() {
         mStrokeCount = 6;
+        mWorkStrokes = 6;                          // #125; see setWideSession
         mStartMs = System.getTimer();
         setDist(0.0);
+    }
+
+    // #125: the two stroke counters, read back through the shipping fields.
+    // BOTH, because the whole of #125 is that they are different numbers: a
+    // seam exposing only one could not tell "the footer reports work strokes"
+    // from "the footer reports every stroke" on any screen where they agree.
+    function sessionStrokes() { return mStrokeCount; }
+    function workStrokes()    { return mWorkStrokes; }
+
+    // A stroke train at a fixed 18.0 spm STARTING AT `t0` seconds, so a case
+    // can drive two trains through one probe without the second one's first
+    // period going negative and being rejected. driveStrokes() is exactly
+    // strokeTrainFrom(0.0, 7).
+    //
+    // RELATIVE THROUGHOUT: registerStroke takes a stroke-clock value in
+    // seconds, and nothing here reads System.getTimer(), so a case built on it
+    // behaves identically on a seconds-old CI simulator and an hours-old
+    // desktop one.
+    function strokeTrainFrom(t0, n) {
+        var t = t0;
+        for (var i = 0; i < n; i++) {
+            registerStroke(t);
+            t += 3.3333333;
+        }
     }
 
     // Like enterStep, but leaves the step clock LIVE so the countdown renders
