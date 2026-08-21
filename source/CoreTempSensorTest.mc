@@ -965,10 +965,17 @@ function ctSlot(p, i) {
     return ok;
 }
 
-// maxFails must survive the reset mFails does not. Any tracked page-1 frame
-// zeroes mFails (that is deliberate -- the counter means what its name says),
-// so at save time mFails carries the CURRENT ladder depth and says nothing
-// about the depth reached. This is the one counter that is not a tally.
+// maxFails must survive the reset mFails does not. Any tracked FRAME zeroes
+// mFails (that is deliberate -- the counter means what its name says), so at
+// save time mFails carries the CURRENT ladder depth and says nothing about the
+// depth reached. This is the one counter that is not a tally.
+//
+// "Any tracked page-1 frame" is what this used to say, and #122 widened it:
+// mFails = 0 now sits above the page filter AND above the length guard, so any
+// broadcast payload reaching onBroadcast resets the pacing. This case still
+// feeds a page-1 frame, so the assertion is unaffected; the sentence is
+// corrected because the slot-16 key in CoreTempSensor.mc now records that the
+// rule changed at v4 and the two must not disagree.
 (:test) function test_ct_diagRecordsMaxFails(logger) {
     var p = ctFreshProbe(false);
     for (var i = 0; i < 5; i++) { p.closeEvent(); }
