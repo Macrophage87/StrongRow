@@ -408,4 +408,68 @@ function relHrByte(code) {
     return ok;
 }
 
+// ---- #151 c1: the shared failure handler ------------------------------------
+// Green from the commit that extracts noteOpenFailure() onward, and green after
+// the fix. It asserts what must NOT move while a second caller is added.
+
+// The throw path, driven through the ladder rather than once, and asserted on
+// the ORDER the handler imposes: the channel is released BEFORE the retry is
+// scheduled, because the retry re-enters openChannel() and the `mChannel ==
+// null` guard there would otherwise reuse the channel that just failed.
+//
+// Ordering is what makes this different from the c0 pin above, which asserts
+// the same four effects happened. Here the effects are separated: after the
+// burst has run to its first deferred retry, exactly CT_BURST_TRIES opens have
+// happened, every one of them released its channel, and no channel is held.
+// A handler that scheduled first and released afterwards would leave a channel
+// held at the end of the burst and red here while the c0 pin stayed green.
+(:test) function test_cr_c1_theThrowPathReleasesBeforeItRelands(logger) {
+    var p = new RelThrowProbe();
+    var ok = true;
+    if (p.ranAway()) {
+        logger.error("the ladder re-entered openChannel past the probe's cap; the burst must " +
+                     "stop at CT_BURST_TRIES -- that is #161's bound");
+        return false;
+    }
+    if (p.openCount() != $.CT_BURST_TRIES) {
+        logger.error("burst attempts = " + p.openCount() + ", expected " + $.CT_BURST_TRIES +
+                     " before the first deferred retry");
+        ok = false;
+    }
+    if (p.channelHeld()) {
+        logger.error("a channel is still held after the burst; the retry re-enters openChannel(), " +
+                     "whose `mChannel == null` guard would then REUSE the channel that just failed");
+        ok = false;
+    }
+    if (p.slot($.CT_DIAG_I_OPEN_THROW) != $.CT_BURST_TRIES) {
+        logger.error("openThrow = " + p.slot($.CT_DIAG_I_OPEN_THROW) + ", expected " + $.CT_BURST_TRIES +
+                     "; the throw counter stays in the catch, not in the shared handler");
+        ok = false;
+    }
+    if (p.slot($.CT_DIAG_I_MAX_FAILS) != $.CT_BURST_TRIES) {
+        logger.error("maxFails = " + p.slot($.CT_DIAG_I_MAX_FAILS) + ", expected " + $.CT_BURST_TRIES);
+        ok = false;
+    }
+    // The burst's zero-delay asks, then the first real one. Asserted as a
+    // sequence because it is the sequence that bounds the recursion.
+    var a = p.asks();
+    if (a.size() != $.CT_BURST_TRIES) {
+        logger.error("delays requested = " + a.size() + ", expected " + $.CT_BURST_TRIES);
+        return ok && false;
+    }
+    for (var i = 0; i < a.size() - 1; i++) {
+        if (a[i] != 0) {
+            logger.error("delay[" + i + "] = " + a[i] + "; inside the burst the ladder must still " +
+                         "reopen immediately, or #26's donned-after-rigging pod is lost again");
+            ok = false;
+        }
+    }
+    if (a[a.size() - 1] != $.CT_BACKOFF_BASE_MS) {
+        logger.error("the first deferred retry asked for " + a[a.size() - 1] + ", expected " +
+                     $.CT_BACKOFF_BASE_MS);
+        ok = false;
+    }
+    return ok;
+}
+
 }

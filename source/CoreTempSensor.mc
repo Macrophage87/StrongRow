@@ -567,32 +567,54 @@ class CoreTempSensor {
             // #102: the counter this issue was filed on. This catch was
             // completely silent, so a channel that could never be acquired and
             // a channel that opened and heard nothing left identical files.
+            //
+            // Counted HERE rather than inside noteOpenFailure(): openThrow means
+            // "the catch was entered", and the handler below is shared with a
+            // failure that does not throw. Folding the increment into the shared
+            // handler would redefine slot 3 silently, which is the exact defect
+            // the openOk key was corrected for.
             mDiagOpenThrow++;
-
-            // Hand the channel back before dropping the reference. ANT channels
-            // are a scarce hardware resource, and the `if (mChannel == null)`
-            // guard above only protects the ALLOCATION -- setDeviceConfig() and
-            // open() run on every call, so a throw on the re-search path
-            // discards an already-assigned channel too. Once the reference is
-            // gone close() can no longer release it. #18.
-            discardChannel();
-
-            // ...and schedule a retry, because releasing alone fixes the leak
-            // but not the outage: after this catch mChannel is null, so no
-            // further CHANNEL_CLOSED can arrive and nothing re-enters
-            // openChannel() -- CORE would stay dead for the rest of the app
-            // run. This is also why #18 and #26 must ship together: the ladder
-            // re-enters openChannel(), which against the un-fixed catch would
-            // have turned a one-shot leak into one orphaned channel per retry.
-            mFails++;
-            // #102 high-water mark. mFails is reset to 0 by any tracked page-1
-            // frame, so at save time it carries the CURRENT ladder depth and
-            // says nothing about the depth reached. Two copies of this line
-            // exist (here and in onChannelClosed) because mFails is incremented
-            // in exactly those two places; keep them together.
-            if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
-            scheduleReopen(ctBackoffMs(mFails));
+            noteOpenFailure();
         }
+    }
+
+    // THE SINGLE ANSWER TO A FAILED OPEN, extracted (#151) so that the two ways
+    // Ant.GenericChannel.open() can fail cannot drift apart. Behaviour-
+    // preserving at the commit that introduces it: the body is exactly the four
+    // statements it replaces, in the same order, and openChannel's catch is its
+    // only caller. What changes later is that a SECOND caller appears.
+    //
+    // Hand the channel back before dropping the reference. ANT channels are a
+    // scarce hardware resource, and the `if (mChannel == null)` guard in
+    // openChannel only protects the ALLOCATION -- setDeviceConfig() and open()
+    // run on every call, so a failure on the re-search path leaves an
+    // already-assigned channel behind too. Once the reference is gone close()
+    // can no longer release it. #18.
+    //
+    // ...and schedule a retry, because releasing alone fixes the leak but not
+    // the outage: afterwards mChannel is null, so no further CHANNEL_CLOSED can
+    // arrive and nothing re-enters openChannel() -- CORE would stay dead for the
+    // rest of the app run. This is also why #18 and #26 had to ship together:
+    // the ladder re-enters openChannel(), which against the un-fixed catch would
+    // have turned a one-shot leak into one orphaned channel per retry.
+    //
+    // THE RECURSION BOUND LIVES HERE and is arithmetic, not structural.
+    // scheduleReopen(0) calls openChannel() straight back, and the chain unwinds
+    // only because mFails rises on every pass and the ladder stops returning 0
+    // once the burst is spent -- so the depth is capped at CT_BURST_TRIES
+    // frames. #161 is the stack overflow that happened when a path could ask for
+    // an immediate reopen forever. Any new caller of this function inherits that
+    // bound and must be pinned against it.
+    hidden function noteOpenFailure() {
+        discardChannel();
+        mFails++;
+        // #102 high-water mark. mFails is reset to 0 by a tracked frame, so at
+        // save time it carries the CURRENT ladder depth and says nothing about
+        // the depth reached. Two copies of this line exist (here and in
+        // onChannelClosed) because mFails is incremented in exactly those two
+        // places; keep them together.
+        if (mFails > mDiagMaxFails) { mDiagMaxFails = mFails; }
+        scheduleReopen(ctBackoffMs(mFails));
     }
 
     // Allocation split out so a test can substitute a timer it controls --
