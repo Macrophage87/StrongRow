@@ -114,11 +114,22 @@ laps.)
   told apart from one where no pod was present, without guessing (#102). It is
   not a training metric; the slot-by-slot key lives with the `CT_DIAG_*`
   constants in [`source/CoreTempSensor.mc`](source/CoreTempSensor.mc), and slot
-  0 carries a layout version so an older file stays readable. **Version 3**
-  (still 24 slots) adds one flag bit, recording that a deferred channel retry
-  was dropped because no timer could be armed; version 2 added three
-  heat-strain slots. No slot has ever been renumbered and no flag bit has ever
-  changed meaning, so an older key still reads everything it could read before.
+  0 carries a layout version so an older file stays readable. **Version 4**
+  (25 slots) adds one slot counting frames received on the CORE
+  general-information page (`0x00`), plus nine flag bits recording which
+  data-quality codes and which heart-rate-support states that page carried —
+  the pod's own opinion of its broadcasts, and whether it was asking the watch
+  for a heart rate it never received. One existing slot also changes what it
+  counts: `maxFails` still records the deepest the retry ladder ever went, but
+  in version 4 the ladder is reset by any broadcast frame rather than only by a
+  temperature frame, and a channel open that fails without raising an error now
+  counts where it previously did not — the two push in opposite directions, so a
+  version 4 `maxFails` should **not** be compared with one read from a version 3
+  row. Version 3 (24 slots) added one flag bit, recording that a deferred
+  channel retry was dropped because no timer could be armed; version 2 added
+  three heat-strain slots. No slot has ever been renumbered and no flag bit has
+  ever changed meaning, so an older key still decodes every slot it could decode
+  before.
 
 ### ⚠️ Stroke-rate timing fix — older sessions are not comparable
 

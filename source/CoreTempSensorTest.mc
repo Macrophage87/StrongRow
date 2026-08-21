@@ -704,21 +704,20 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
 // value already recorded in a FIT file is interpreted through this key.
 (:test) function test_ct_diagLayoutConstants(logger) {
     var ok = true;
-    // 24 slots since #80 added the three heat-strain slots; v3 since the retry
-    // path gained the CT_DIAG_F_RETRY_LOST bit in CT_DIAG_I_FLAGS. The pair
-    // moves TOGETHER, which is the whole content of this case: a length change
-    // with no version bump leaves every already-recorded file
-    // unreadable-by-key, and a :count that lags the length is an uncatchable
-    // System Error at save.
+    // 25 slots since #165 added CT_DIAG_I_PAGE0; v4 with it. The pair moves
+    // TOGETHER, which is the whole content of this case: a length change with no
+    // version bump leaves every already-recorded file unreadable-by-key, and a
+    // :count that lags the length is an uncatchable System Error at save.
     //
-    // v2 -> v3 moved the version WITHOUT moving the length, and that is the
-    // point of the pair being asserted separately rather than as one tuple: the
-    // new bit extends the KEY for slot 17 while the array, and therefore the
-    // createField `:count`, is untouched.
+    // v2 -> v3 moved the version WITHOUT moving the length, which is why the two
+    // are asserted separately rather than as one tuple: that bump extended the
+    // KEY for slot 17 while the array, and therefore the createField `:count`,
+    // was untouched. v3 -> v4 moves BOTH -- one new slot AND nine new bits of
+    // slot 17 -- so it is the case where the length half earns its keep.
     // RetryBound.test_rb_c1_theRetryLostBitIsDistinctAndTheArrayDidNotGrow
-    // states that invariant from the other side.
-    if ($.CT_DIAG_SLOTS != 24)      { logger.error("CT_DIAG_SLOTS changed to " + $.CT_DIAG_SLOTS + " -- bump CT_DIAG_VERSION and the field's :count together"); ok = false; }
-    if ($.CT_DIAG_VERSION != 3)     { logger.error("CT_DIAG_VERSION changed to " + $.CT_DIAG_VERSION); ok = false; }
+    // states the same invariant from the other side.
+    if ($.CT_DIAG_SLOTS != 25)      { logger.error("CT_DIAG_SLOTS changed to " + $.CT_DIAG_SLOTS + " -- bump CT_DIAG_VERSION and the field's :count together"); ok = false; }
+    if ($.CT_DIAG_VERSION != 4)     { logger.error("CT_DIAG_VERSION changed to " + $.CT_DIAG_VERSION); ok = false; }
     if ($.CT_DIAG_MAX != 65535)     { logger.error("CT_DIAG_MAX must be the UINT16 ceiling, got " + $.CT_DIAG_MAX); ok = false; }
     if ($.CT_DIAG_NONE != 0xFFFF)   { logger.error("CT_DIAG_NONE changed to " + $.CT_DIAG_NONE); ok = false; }
     return ok;
@@ -737,7 +736,8 @@ function ctPayload(skinRaw12, reserved12, coreRaw) {
                $.CT_DIAG_I_CHAN_CLOSED, $.CT_DIAG_I_MAX_FAILS, $.CT_DIAG_I_FLAGS,
                $.CT_DIAG_I_PAGE_FIRST, $.CT_DIAG_I_PAGE_OTHER_LAST,
                $.CT_DIAG_I_ACQ_PERIOD,
-               $.CT_DIAG_I_HSI_OK, $.CT_DIAG_I_HSI_INVALID, $.CT_DIAG_I_HSI_MAX_RAW];
+               $.CT_DIAG_I_HSI_OK, $.CT_DIAG_I_HSI_INVALID, $.CT_DIAG_I_HSI_MAX_RAW,
+               $.CT_DIAG_I_PAGE0];
     var ok = true;
     if (idx.size() != $.CT_DIAG_SLOTS) {
         logger.error("this test lists " + idx.size() + " indices but CT_DIAG_SLOTS is " +
@@ -965,10 +965,17 @@ function ctSlot(p, i) {
     return ok;
 }
 
-// maxFails must survive the reset mFails does not. Any tracked page-1 frame
-// zeroes mFails (that is deliberate -- the counter means what its name says),
-// so at save time mFails carries the CURRENT ladder depth and says nothing
-// about the depth reached. This is the one counter that is not a tally.
+// maxFails must survive the reset mFails does not. Any tracked FRAME zeroes
+// mFails (that is deliberate -- the counter means what its name says), so at
+// save time mFails carries the CURRENT ladder depth and says nothing about the
+// depth reached. This is the one counter that is not a tally.
+//
+// "Any tracked page-1 frame" is what this used to say, and #122 widened it:
+// mFails = 0 now sits above the page filter AND above the length guard, so any
+// broadcast payload reaching onBroadcast resets the pacing. This case still
+// feeds a page-1 frame, so the assertion is unaffected; the sentence is
+// corrected because the slot-16 key in CoreTempSensor.mc now records that the
+// rule changed at v4 and the two must not disagree.
 (:test) function test_ct_diagRecordsMaxFails(logger) {
     var p = ctFreshProbe(false);
     for (var i = 0; i < 5; i++) { p.closeEvent(); }
@@ -1273,6 +1280,19 @@ module Hsi {
 // the existing twenty-one slots are nailed down here before it happens.
 //
 // A deliberate renumbering must red this case AND bump CT_DIAG_VERSION.
+//
+// THE NAME IS HISTORICAL: it nails slots 0-24, not 0-20. It was written when
+// twenty-one slots existed and was left at twenty-one when #80 added 21-23 and
+// #165 added 24, so the CT_DIAG_VERSION 4 key block claimed "slots 0-23 keep
+// their numbers ... test_ct_c0_diagSlotKeyIsZeroToTwenty is the pin that forces
+// that" while this case could not see 21, 22 or 23 at all. Review round 4 found
+// it. What stayed green under the gap was any permutation confined to 21-23 --
+// test_ct_diagSlotIndicesDistinct is invariant under a renumbering by
+// construction, and the only other literal pin is CoreRel's CT_DIAG_I_PAGE0 !=
+// 24 -- so swapping HSI_OK and HSI_INVALID re-keyed the three heat-strain slots
+// of every v2/v3/v4 file already recorded with the whole suite green. The name
+// is kept rather than corrected because renaming it costs an edit to
+// scripts/expected_tests.txt for no assertion; the range is stated here instead.
 (:test) function test_ct_c0_diagSlotKeyIsZeroToTwenty(logger) {
     var got = [$.CT_DIAG_I_VERSION, $.CT_DIAG_I_OPEN_ATTEMPTS, $.CT_DIAG_I_OPEN_OK,
                $.CT_DIAG_I_OPEN_THROW, $.CT_DIAG_I_MSG_TOTAL, $.CT_DIAG_I_BCAST,
@@ -1281,7 +1301,11 @@ module Hsi {
                $.CT_DIAG_I_SKIN_OK, $.CT_DIAG_I_SKIN_SENTINEL, $.CT_DIAG_I_SKIN_CLAMP,
                $.CT_DIAG_I_CHAN_CLOSED, $.CT_DIAG_I_MAX_FAILS, $.CT_DIAG_I_FLAGS,
                $.CT_DIAG_I_PAGE_FIRST, $.CT_DIAG_I_PAGE_OTHER_LAST,
-               $.CT_DIAG_I_ACQ_PERIOD];
+               $.CT_DIAG_I_ACQ_PERIOD,
+               // v2 (#80) and v4 (#165). Appended so the got[i] != i loop below
+               // covers them without a second loop or a second case.
+               $.CT_DIAG_I_HSI_OK, $.CT_DIAG_I_HSI_INVALID, $.CT_DIAG_I_HSI_MAX_RAW,
+               $.CT_DIAG_I_PAGE0];
     var ok = true;
     for (var i = 0; i < got.size(); i++) {
         if (got[i] != i) {
