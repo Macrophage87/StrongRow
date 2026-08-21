@@ -2,8 +2,18 @@ using Toybox.Test;
 using Toybox.System;
 using Toybox.Lang;
 
-// Rendering suite for #131: the rest/gate set-summary grid, driven through the
-// shipping onUpdate.
+// Rendering suite for #131: the set-summary grid, driven through the shipping
+// onUpdate.
+//
+// THE GATE MOVED UNDER THIS FILE. #130 added STEP_DONE to it, so the call site
+// is now `(type == STEP_REST || type == STEP_GATE || type == STEP_DONE) &&
+// mLastSetValid` while the SUB-ROW suppression stays on REST and GATE alone.
+// The DONE half of that gate, and the geometry that makes it fit beside "BACK
+// to save", live in source/GridGateTest.mc together with the two pins #142
+// found missing here; this file keeps the REST / GATE / COOL cases and the
+// negative sweep. Line numbers in the paragraphs below are pre-#130 and are
+// left as written rather than silently re-pointed -- re-derive them from the
+// current file rather than trusting them.
 //
 // WHY THIS FILE EXISTS. The grid's call site --
 // `if ((type == STEP_REST || type == STEP_GATE) && mLastSetValid)`
@@ -393,27 +403,36 @@ class SgCase {
 
 // -- 3. The two screens the grid must stay off --------------------------------
 
-// COOL DOWN AND DONE KEEP THEIR LIVE ROWS AND THEIR SUB ROW, with a set latched.
+// COOL DOWN KEEPS ITS LIVE ROWS AND ITS SUB ROW, with a set latched.
 //
 // This is the case that would have caught BOTH of #109's review regressions,
 // and the state it renders is a real one: advanceStep latches at every WORK
-// exit, so mLastSetValid is true for the whole of COOL and DONE.
+// exit, so mLastSetValid is true for the whole of COOL.
 //
-//   * COOL DOWN is ACTIVE ROWING. It gets its own lap and step clock, its
-//     instruction is "START when docked", and warmupCooldown defaults to true.
-//     Replacing its live rate and pace with a frozen summary of an interval
-//     that already ended is a downgrade on the DEFAULT path.
-//   * "BACK to save" on DONE is the only text on the app that tells the athlete
-//     how to write the FIT file. Losing it loses the row.
+// COOL DOWN is ACTIVE ROWING. It gets its own lap and step clock, its
+// instruction is "START when docked", and warmupCooldown defaults to true.
+// Replacing its live rate and pace with a frozen summary of an interval that
+// already ended is a downgrade on the DEFAULT path.
+//
+// DONE WAS SWEPT HERE TOO AND NO LONGER IS, and that is a RETRACTION rather
+// than a quiet edit. This case used to require DONE to keep its live rows and
+// draw no grid; #130 establishes that requirement was wrong in half. The last
+// work interval is followed by COOL or DONE and never by a REST, so DONE was
+// the one screen the final interval's summary could appear on and it never
+// did. What was RIGHT about the old case -- that "BACK to save" survives,
+// because it is the only text in the app telling the athlete how to write the
+// FIT -- is kept, and is now asserted WITH the grid up by
+// GridGate.test_gg_c2_doneShowsTheFinalIntervalAndKeepsBackToSave. DONE's grid
+// geometry is pinned by GridGate.test_gg_c2_theDoneGridClearsTheTitleAndTheSubRow.
 //
 // WARM is deliberately not swept here: it precedes every latch, so a latched
 // WARM is not a state the app can reach, and asserting about one would be
 // pinning fiction. It is covered un-latched by the case below.
-(:test) function test_grid_coolAndDoneKeepTheLiveRowsAndTheSubRow(logger) {
+(:test) function test_grid_coolKeepsTheLiveRowsAndTheSubRow(logger) {
     var k     = new HrProbe();
-    var kinds = [ k.kindCool(), k.kindDone() ];
-    var names = [ "COOL", "DONE" ];
-    var sub   = [ "START when docked", "BACK to save" ];
+    var kinds = [ k.kindCool() ];
+    var names = [ "COOL" ];
+    var sub   = [ "START when docked" ];
     var lab   = SgCase.labels();
 
     for (var i = 0; i < kinds.size(); i++) {

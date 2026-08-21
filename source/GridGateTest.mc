@@ -244,4 +244,225 @@ class GgCase {
     return true;
 }
 
+// -- c2: the differentials for #130. RED until the DONE arm lands -------------
+
+// MEASURED FONT HEIGHTS, as fractions of display height, worst case over all
+// TWELVE manifest devices. NOT re-measured here and NOT a chosen fraction: they
+// come from the getFontHeight sweep recorded at drawSetGrid and in #130's body,
+// taken once on a local simulator, because no (:test) that runs in CI can
+// obtain a font metric (#121). Two prior layout regressions came from guessed
+// fractions, which is why these carry their provenance in the name of the
+// constant's comment rather than in a commit message.
+//
+//   FONT_TINY   29/260 on the fenix6 / 6pro / 7 / 7pro family
+//   FONT_SMALL  the fenix6xpro reading from #130's table
+const GG_TINY_H_FRAC  = 0.1115;
+const GG_SMALL_H_FRAC = 0.1214;
+
+// THE GRID IS UP ON EVERY RECOVERY SCREEN AND ON NO ACTIVE ONE.
+//
+// The whole gate in one table, with a set latched -- which is the ORDINARY
+// state of everything after the first work interval, since advanceStep latches
+// at every WORK exit and mLastSetValid never clears within a row.
+//
+//   WORK  no   there is a stroke to correct; the live numeral is the screen
+//   REST  yes  the recovery screen the grid was built for (#109)
+//   GATE  yes  likewise -- restMinutes = 0 is legal, so a rest-free workout is
+//              WORK/GATE/WORK and a REST-only gate would never draw the grid
+//   COOL  no   ACTIVE ROWING: its own lap and step clock, "START when docked",
+//              and warmupCooldown defaults to true. Freezing its live rate and
+//              pace is a downgrade on the DEFAULT path
+//   DONE  yes  #130. The last work interval is followed by COOL or DONE and
+//              never by a REST, so the summary of the final interval -- the one
+//              the athlete most wants -- was the only one never displayed
+//
+// WARM IS DELIBERATELY NOT SWEPT. It precedes every latch, so a latched WARM is
+// not a state the app can reach and asserting about one would be pinning
+// fiction. It is covered un-latched by
+// test_grid_noLatchedSetMeansNoGridOnAnyScreen.
+//
+// Every no-grid screen is additionally checked for the LIVE stroke rate, so
+// "no grid" can never hold because the render drew nothing.
+(:test) function test_gg_c2_theGridIsUpOnEveryRecoveryStepAndNowhereElse(logger) {
+    var k     = new HrProbe();
+    var kinds = [ k.kindWork(), k.kindRest(), k.kindGate(),
+                  k.kindCool(), k.kindDone() ];
+    var names = [ "WORK", "REST", "GATE", "COOL", "DONE" ];
+    var want  = [ false, true, true, false, true ];
+
+    for (var i = 0; i < kinds.size(); i++) {
+        var p = SgCase.latchedProbeAt(kinds[i]);
+        if (p == null) {
+            logger.error("#130: the shipping latchWorkAccum refused the seeded " +
+                         "interval on " + names[i]);
+            return false;
+        }
+        var geo = SgCase.render(p);
+        var up  = GgCase.gridUp(geo);
+        if (up != want[i]) {
+            logger.error("#130/#109: with a set latched, " + names[i] +
+                         " must " + (want[i] ? "DRAW" : "NOT draw") +
+                         " the set grid; it " + (up ? "did" : "did not") +
+                         ". The gate is REST, GATE and DONE -- the three " +
+                         "screens where no stroke is being taken -- and it is " +
+                         "NOT every non-WORK step, which would freeze COOL " +
+                         "DOWN's live rate on the default path. Drew:\n" +
+                         SgCase.log(geo));
+            return false;
+        }
+        if (!up && !SgCase.drew(geo, "18.0")) {
+            logger.error("#130: " + names[i] + " draws no grid, so it must be " +
+                         "showing the LIVE stroke rate instead -- otherwise " +
+                         "'no grid' holds for the wrong reason. Drew:\n" +
+                         SgCase.log(geo));
+            return false;
+        }
+    }
+    return true;
+}
+
+// DONE SHOWS THE FINAL INTERVAL **AND** KEEPS "BACK to save".
+//
+// Both halves, in one case, because they are the two things #130 has to hold at
+// once and #109's second review regression is precisely what happens when the
+// sub row is suppressed wherever the grid appears: "BACK to save" is the only
+// text in the app that tells the athlete how to write the FIT, and losing it
+// loses the row.
+//
+// The live rows go, and that is the trade being pinned rather than an
+// oversight. On DONE the piece is over: there is no stroke to correct, so the
+// live numeral and the pace row are reporting an activity that has stopped,
+// while the interval just finished is the thing worth reading.
+(:test) function test_gg_c2_doneShowsTheFinalIntervalAndKeepsBackToSave(logger) {
+    var k = new HrProbe();
+    var p = SgCase.latchedProbeAt(k.kindDone());
+    if (p == null) {
+        logger.error("#130: the shipping latchWorkAccum refused the seeded " +
+                     "interval on DONE");
+        return false;
+    }
+    var geo = SgCase.render(p);
+    var lab = SgCase.labels();
+    for (var j = 0; j < lab.size(); j++) {
+        if (SgCase.indexOf(geo, lab[j]) < 0) {
+            logger.error("#130: DONE must draw the completed interval as a " +
+                         "four-cell grid; '" + lab[j] + "' is missing. The " +
+                         "last work interval is followed by COOL or DONE and " +
+                         "never by a REST, so this is the ONLY screen its " +
+                         "summary can appear on. Drew:\n" + SgCase.log(geo));
+            return false;
+        }
+    }
+    if (!SgCase.drew(geo, "BACK to save")) {
+        logger.error("#130/#109: DONE must keep 'BACK to save' WITH the grid " +
+                     "up. It is the only text in the app telling the athlete " +
+                     "how to write the FIT, and suppressing the sub row " +
+                     "wherever the grid appears is exactly the regression " +
+                     "#109's review shipped once already. Drew:\n" +
+                     SgCase.log(geo));
+        return false;
+    }
+    // The four cells carry VALUES, not the no-data dash: a grid of four dashes
+    // would satisfy every presence check above and prove nothing about the
+    // latch reaching the cells.
+    var v = GgCase.values(geo);
+    for (var c = 0; c < 4; c++) {
+        if (v[c].equals("--")) {
+            logger.error("#130: cell " + c + " on DONE rendered the no-data " +
+                         "dash from a latch that carried 63 strokes, 400 m " +
+                         "and 63 heart-rate samples. Drew:\n" + SgCase.log(geo));
+            return false;
+        }
+    }
+    if (SgCase.drew(geo, "18.0") || SgCase.drew(geo, "/500m")) {
+        logger.error("#130: DONE must not draw the live stroke rate or the " +
+                     "live pace row while the grid is up -- the two would " +
+                     "occupy the same band, and the piece is over. Drew:\n" +
+                     SgCase.log(geo));
+        return false;
+    }
+    return true;
+}
+
+// THE DONE GRID SITS IN ITS OWN BAND: BELOW THE TITLE, ABOVE THE SUB ROW.
+//
+// #130's whole difficulty is geometric. DONE's band is already spoken for by
+// "BACK to save" at h*0.78, and the grid's shipping rows put the bottom value
+// row at 0.749h -- so drawn at the REST positions the grid would land ON the
+// one row that must survive. What buys the space is that DONE draws NO
+// countdown: the band starts at the title rather than under a FONT_NUMBER_MILD
+// numeral.
+//
+// WHAT IS ASSERTED, and it is a real clearance rather than an ordering:
+//   * the title's ink, taken at the MEASURED worst-case FONT_SMALL height,
+//     ends at or above the grid's first row anchor;
+//   * the bottom value row's ink, at the MEASURED worst-case FONT_TINY height,
+//     ends at or above the sub row's anchor.
+// Both reference points are READ OUT OF THE RENDER -- the title and the sub row
+// are found by their strings, never transcribed as fractions -- so a change to
+// either row's y moves this case with it.
+//
+// WHAT IS NOT ASSERTED. These are ANCHOR coordinates plus a worst-case font
+// height from a table measured on a local simulator; they are not ink extents,
+// and no (:test) in CI can measure one (#121). This says the boxes do not
+// overlap on the twelve devices the table covers. It says nothing about
+// legibility, and nothing about the columns.
+//
+// It is also what stops the DONE grid being drawn at the REST row positions:
+// 0.749h + 0.1115h = 0.8605h is below the 0.78h sub row, so that arrangement
+// reds here.
+(:test) function test_gg_c2_theDoneGridClearsTheTitleAndTheSubRow(logger) {
+    var k = new HrProbe();
+    var p = SgCase.latchedProbeAt(k.kindDone());
+    if (p == null) {
+        logger.error("#130: the shipping latchWorkAccum refused the seeded " +
+                     "interval on DONE");
+        return false;
+    }
+    var geo = SgCase.render(p);
+    var row = GgCase.rowY(geo);
+    if (row == null) {
+        logger.error("#130: DONE must draw the grid for this case to have a " +
+                     "subject. Drew:\n" + SgCase.log(geo));
+        return false;
+    }
+    var ti = SgCase.indexOf(geo, "DONE");
+    var si = SgCase.indexOf(geo, "BACK to save");
+    if (ti < 0 || si < 0) {
+        logger.error("#130: DONE must draw both its title and 'BACK to save' " +
+                     "-- they are the two reference rows this case measures " +
+                     "against. title index " + ti + ", sub index " + si +
+                     ". Drew:\n" + SgCase.log(geo));
+        return false;
+    }
+    var h       = geo.getHeight();
+    var titleY  = geo.texts[ti][1];
+    var subY    = geo.texts[si][1];
+    var titleEnd = titleY + GG_SMALL_H_FRAC * h;
+    var gridEnd  = row[3] + GG_TINY_H_FRAC * h;
+    if (!(titleEnd <= row[0])) {
+        logger.error("#130: the title's box ends at " + titleEnd +
+                     " and the grid's first row is anchored at " + row[0] +
+                     " -- the grid must start BELOW the title. Drew:\n" +
+                     SgCase.log(geo));
+        return false;
+    }
+    if (!(gridEnd <= subY)) {
+        logger.error("#130: the grid's bottom value row ends at " + gridEnd +
+                     " and 'BACK to save' is anchored at " + subY +
+                     " -- the grid must finish ABOVE the sub row. Drawing it " +
+                     "at the REST row positions (bottom value row 0.749h, box " +
+                     "to 0.8605h) lands it ON that row, which is why DONE " +
+                     "needs a raised base rather than the same fractions. " +
+                     "Drew:\n" + SgCase.log(geo));
+        return false;
+    }
+    logger.debug("DONE grid band: title box ends " + (titleEnd / h).format("%.4f") +
+                 "h, rows " + (row[0] / h).format("%.4f") + "h .. " +
+                 (row[3] / h).format("%.4f") + "h, grid box ends " +
+                 (gridEnd / h).format("%.4f") + "h, sub row " +
+                 (subY / h).format("%.4f") + "h");
+    return true;
+}
+
 }

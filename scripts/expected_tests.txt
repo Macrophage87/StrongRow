@@ -199,7 +199,7 @@ test_lay_pausedWorkViewDrawsNoFooterButKeepsTheTitle
 # source/SetGridLayoutTest.mc
 test_grid_rowsAreDistinctAndOrderedDownTheScreen
 test_grid_restAndGateShowTheGridAndDropTheSubRow
-test_grid_coolAndDoneKeepTheLiveRowsAndTheSubRow
+test_grid_coolKeepsTheLiveRowsAndTheSubRow
 test_grid_noLatchedSetMeansNoGridOnAnyScreen
 
 # source/GridGateTest.mc -- inside `module GridGate`, so the names carry the
@@ -209,6 +209,9 @@ test_grid_noLatchedSetMeansNoGridOnAnyScreen
 # see the CEILING note at the top of that file.
 GridGate.test_gg_c1_workWithALatchedSetDrawsNoGrid
 GridGate.test_gg_c1_aNullCellRendersADashNeverAZero
+GridGate.test_gg_c2_theGridIsUpOnEveryRecoveryStepAndNowhereElse
+GridGate.test_gg_c2_doneShowsTheFinalIntervalAndKeepsBackToSave
+GridGate.test_gg_c2_theDoneGridClearsTheTitleAndTheSubRow
 
 # source/CueZoneTest.mc
 #

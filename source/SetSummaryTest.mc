@@ -16,11 +16,21 @@ using Toybox.Test;
 // absence. drawSetGrid renders a dash for null.
 //
 // SCOPE: these pin the PREDICATES. The CALL SITE is pinned in
-// source/SetGridLayoutTest.mc, which #131 added: it renders the grid through
-// the shipping onUpdate against HrGeoDc, so that drawSetGrid is reached on REST
-// and GATE and NOT on COOL or DONE, that the sub row stands down for the LATCH
-// rather than for the step type, and that latchWorkAccum freezes totals these
-// statics can derive a value from, are all held by a test now.
+// source/SetGridLayoutTest.mc, which #131 added, and in source/GridGateTest.mc,
+// which #142 and #130 added: between them they render the grid through the
+// shipping onUpdate against HrGeoDc, so that drawSetGrid is reached on REST,
+// GATE and DONE and NOT on COOL or WORK, that the sub row stands down for the
+// GRID on REST and GATE while "BACK to save" survives beside the grid on DONE,
+// that a null accumulator renders a DASH in every cell, and that latchWorkAccum
+// freezes totals these statics can derive a value from, are all held by a test
+// now.
+//
+// "NOT ON COOL OR DONE" is what this paragraph said until #130, and the DONE
+// half of it was wrong rather than merely out of date: the last work interval
+// is followed by COOL or DONE and never by a REST, so excluding DONE meant the
+// final interval's summary -- the one the athlete most wants -- was the only
+// one never displayed. Corrected here at its source rather than in new text
+// elsewhere.
 //
 // STILL REVIEW-ONLY, stated exactly so the covered list does not read as larger
 // than it is: that latchWorkAccum fires at the right BOUNDARY, and that
