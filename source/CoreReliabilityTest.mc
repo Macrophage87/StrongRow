@@ -29,7 +29,10 @@ using Toybox.Lang;
 // count is only printed once the build is ALREADY over, so it has to be probed:
 // N throwaway file-scope (:test) functions dropped into source/, compiled
 // --unit-test for fenix6, and N subtracted from the reported total. SDK 9.2.0,
-// this tree, with all twenty-three CoreRel cases present:
+// this tree, with all TWENTY-SIX CoreRel cases present (5 c0 + 9 c1 + 12 c2 --
+// an earlier version of this line said twenty-three, which was a miscount of
+// this file and is corrected rather than quietly dropped; the MEASUREMENT below
+// was taken on the real tree and is unaffected by it):
 //
 //     N=30  fenix6   Found 274 members in module 'globals', exceeding 253
 //     N=9   fenix6 / fenix6pro / fenix6spro / fenix6xpro   BUILD SUCCESSFUL
@@ -43,7 +46,10 @@ using Toybox.Lang;
 //
 // One member more than main's 243 (ErgUnitsTest.mc's `erg-r5` note, re-measured
 // here and confirmed unchanged), and that one member is this file's `module`
-// block. Twenty-three file-scope cases would have cost twenty-three.
+// block. Twenty-six file-scope cases would have cost twenty-six -- seventeen
+// more than the nine free, so this file at file scope would red the required
+// compile-unit-test check on four devices with an error naming neither the test
+// nor the file.
 //
 // ---- Execution -------------------------------------------------------------
 //
