@@ -870,27 +870,43 @@ const CUE_PERSIST_IN_MS  = 1000;  // ms a change back into the band must hold
 // to catch, because nothing renders differently and a table of plausible pixel
 // figures reads as a measurement.
 //
-// HOW MANY ROWS WERE WRONG DEPENDS ON THE TOLERANCE, and both counts are given
-// because #141 states one of them. At half a pixel -- the precision the old
-// one-decimal table was written to -- FOUR of the six disagree, which is #141's
-// figure. At the 0.05 px the corrected rows carry, FIVE do: the 454 px family
-// joins them, out by 0.44 and 0.39. Only fenix6spro was right under either
-// reading. What was claimed, against what the shipped constants and this file's
-// own measured font widths actually produce:
+// HOW MANY ROWS WERE WRONG DEPENDS ON THE TOLERANCE, and both counts are
+// DERIVED rather than asserted. The six pairs the old table claimed are carried
+// below as machine-readable CLAIMED rows, and scripts/check_pip_geometry.py
+// compares each against its own derivation and counts the disagreements itself.
+// At half a pixel -- the precision the old one-decimal table was written to --
+// FOUR of the six disagree, which is #141's figure. At the 0.05 px the
+// corrected rows carry, FIVE do: the 454 px family joins them, out by 0.44 and
+// 0.39. Only fenix6spro was right under either reading.
 //
-//   device               claimed        derived
-//   454 px family        25.0 / 9.0     24.56 / 8.61
-//   fenix843mm           22.3 / 9.9     22.24 / 9.20
-//   epix2pro47mm         22.3 / 21.9    30.24 / 17.20
-//   fenix7/7pro/6/6pro   15.6 / 12.7    18.40 / 10.00
-//   fenix6spro           15.6 / 7.2     15.60 / 7.15
-//   fenix6xpro           15.6 / 12.9    21.20 / 12.85
+// ONE COPY OF EACH NUMBER, which is why there is no claimed/derived table in
+// prose here any more. An earlier revision carried one beside the marked rows;
+// two copies of a figure are exactly the drift this change exists to stop. The
+// claimed pairs are the CLAIMED rows, the derived pairs are the PIPGEOM rows,
+// and the checker prints them side by side.
 //
 // The dangerous one is fenix7/7pro/6/6pro: the claimed headroom after the move
 // was 12.7 px where the real figure is 10.00, so a future author spending that
-// "headroom" lands the gap under the 5.0 px floor this row works to. Three
-// rows had simply been copied from a neighbour (epix2pro47mm's "today" from
-// fenix843mm; fenix6xpro's and the fenix7 family's from fenix6spro).
+// "headroom" lands the gap under the 5.0 px floor this row works to.
+//
+// WHAT THE CLAIMED COLUMN SHOWS, taken only as far as the numbers carry it.
+// gap_today is ct_today*w - ct/2 - (rr_x*w + rr/2), which with rr == ct reduces
+// to 0.14w - ct: STRICTLY INCREASING in w at a fixed ct. Yet FIVE of the six
+// rows share their claimed gap_today with another row -- across three different
+// widths in one group, and across two different MEASURED CT widths in the other
+// -- so at least one cell in each of those rows cannot have been derived for
+// that row's own width. The claimed gap_after column repeats NOTHING: six
+// distinct values. Both counts are derived by the checker from the CLAIMED rows
+// and pinned by the DISAGREE line, so this paragraph cannot drift from them
+// either.
+//
+// HOW THOSE CELLS GOT THERE IS NOT RECORDED ANYWHERE IN THIS REPOSITORY. The
+// table entered the tree complete in one commit whose own message says the
+// figures were measured. An earlier revision of this paragraph asserted that
+// three rows "had simply been copied from a neighbour"; that is RETRACTED -- it
+// is an unverifiable claim about another author's process, and it is the one
+// sentence a reader could not check in a block whose whole subject is claims
+// outrunning their evidence.
 //
 // HOW THE DERIVED COLUMN IS PRODUCED, and why prose cannot drift from it
 // again. scripts/check_pip_geometry.py recomputes every row from the SHIPPED
@@ -915,6 +931,18 @@ const CUE_PERSIST_IN_MS  = 1000;  // ms a change back into the band must hold
 //   PIPGEOM fenix7-7pro-6-6pro w=260 ct=18 rr=18 gap_today=18.40 gap_after=10.00 edge_today=3.30 edge_after=11.70
 //   PIPGEOM fenix6spro         w=240 ct=18 rr=18 gap_today=15.60 gap_after=7.15 edge_today=2.35 edge_after=10.80
 //   PIPGEOM fenix6xpro         w=280 ct=18 rr=18 gap_today=21.20 gap_after=12.85 edge_today=4.25 edge_after=12.60
+//
+//   THE CLAIMED PAIRS, kept as data rather than as prose so the counts in the
+//   paragraph above are derived from them. These are HISTORY: they are not
+//   derivable from anything, and they are NOT expected to match the rows above.
+//
+//   PIPGEOM-CLAIMED 454px-family       gap_today=25.0 gap_after=9.0
+//   PIPGEOM-CLAIMED fenix843mm         gap_today=22.3 gap_after=9.9
+//   PIPGEOM-CLAIMED epix2pro47mm       gap_today=22.3 gap_after=21.9
+//   PIPGEOM-CLAIMED fenix7-7pro-6-6pro gap_today=15.6 gap_after=12.7
+//   PIPGEOM-CLAIMED fenix6spro         gap_today=15.6 gap_after=7.2
+//   PIPGEOM-CLAIMED fenix6xpro         gap_today=15.6 gap_after=12.9
+//   PIPGEOM-DISAGREE half_px=4 tight=5 today_dupes=5 after_dupes=0
 //
 // ONE INPUT IS ASSUMED RATHER THAN MEASURED, and it is called out here because
 // every figure above depends on it: `rr` is the rendered width of the "RR"
@@ -971,27 +999,75 @@ const PIP_GAP_MIN    = 2;
 //
 //   step_type   id 17, RECORD scope, UINT8
 //
-//     0  SFIT_NONE   no workout step is in force. FREE-ROW mode for its whole
-//                    length, and any record committed before START. This is a
-//                    VALUE, not a silence, and that is the whole reason it
-//                    exists: record-scope fields LATCH (#36, byte level on
-//                    fr965 / SDK 9.2.0), so withholding the write on a free row
-//                    would re-emit whatever the last workout row left behind
-//                    rather than leaving a gap. 0 is out of band for every
-//                    real step because the codes below start at 1.
+//     0  SFIT_NONE   no workout step is in force: FREE-ROW mode, for the
+//                    whole length of the row, and nothing else. THERE IS NO
+//                    PRE-START RECORD TO CARRY IT, and an earlier revision of
+//                    this row said there was ("any record committed before
+//                    START") -- retracted. Recording does not exist before
+//                    mSession.start(), and both writers of this field are gated
+//                    on mStarted: the record write sits inside onTick's
+//                    `if (mStarted && !mPaused)`, and markLap runs only from
+//                    paths that have already set it. stepTypeCode's `!started`
+//                    arm is therefore DEFENSIVE ONLY -- pinned by
+//                    StepMark.test_sm_c1_theWireMappingIsTheDocumentedTable,
+//                    unreachable from a file. Records that commit before the
+//                    session's FIRST setData carry the type's NEVER-SET pattern
+//                    instead; #48 measured that pattern for FLOAT (0xFFFFFFFF,
+//                    REC 1 included) and it is expected-same but UNMEASURED for
+//                    UINT8 and UINT16, so a consumer must treat "absent" and 0
+//                    as distinct. Neither is SFIT_WORK, so the acceptance
+//                    criterion is unaffected either way.
+//
+//                    0 IS A VALUE, NOT A SILENCE, and the reason has two halves
+//                    that are NOT the same reason. WITHIN A WORKOUT ROW the
+//                    latch does the work: record-scope fields LATCH (#36/#48,
+//                    byte level on fr965 / SDK 9.2.0), so a withheld write on a
+//                    non-work step re-emits the previous step and fabricates
+//                    work seconds -- see the write site's own note. ON A FREE
+//                    ROW THE LATCH CANNOT APPLY: the fields are created fresh
+//                    per session (startSession opens one only when mSession is
+//                    null, and stopAndSave nulls it), so with no write anywhere
+//                    in the file EVERY record would carry the never-set
+//                    pattern, not a previous row's value. An earlier revision
+//                    justified the free-row write BY the latch, and that is
+//                    retracted too. It is written anyway because the never-set
+//                    pattern's meaning is an open [Local] question this file
+//                    declines to call "absence", while 0 decodes to a stated
+//                    value -- and because it lets a consumer tell a free row
+//                    from a workout row FROM THE FILE (see the createField
+//                    block's note). 0 is out of band for every real step
+//                    because the codes below start at 1.
 //     1  SFIT_WARM   STEP_WARM   warm-up, user-ended
 //     2  SFIT_WORK   STEP_WORK   a work interval -- THE PIECES
 //     3  SFIT_REST   STEP_REST   timed rest between pieces
-//     4  SFIT_GATE   STEP_GATE   press-START gate (restMinutes = 0)
+//     4  SFIT_GATE   STEP_GATE   press-START gate BETWEEN pieces.
+//                    buildWorkout emits it on `if (mGate)` ALONE --
+//                    pressToContinue, DEFAULT TRUE -- independently of
+//                    restMinutes. So on the shipped defaults (restMinutes 2) a
+//                    gate follows EVERY rest, and these are real seconds
+//                    between every pair of pieces rather than a restMinutes = 0
+//                    artefact: the default sequence is WARM, WORK1, REST1,
+//                    GATE1, WORK2 ... An earlier revision of this row read
+//                    "(restMinutes = 0)" and is RETRACTED. Gate seconds are
+//                    RECOVERY, not work: a consumer summing recovery must add
+//                    codes 3 AND 4, while the work-seconds criterion (code 2)
+//                    is unaffected either way. The independence is pinned by
+//                    MUTATION rather than by prose: nesting buildWorkout's
+//                    gate arm under `mRestSec <= 0` reds five cases on fr965,
+//                    among them
+//                    StepMark.test_sm_c2_aScriptedWorkoutWritesTheDocumentedSequence
+//                    ("at GATE1 the record marks must be (4, 0); wrote (2, 2)").
 //     5  SFIT_COOL   STEP_COOL   cool-down, user-ended
 //     6  SFIT_DONE   STEP_DONE   finished, waiting for BACK
 //
 //   interval_num  id 18, RECORD scope, UINT16
 //
 //     0            IVL_NONE. NOT in a work interval -- warm-up, rest, gate,
-//                  cool-down, done, free row, and every record before START.
-//                  Unambiguous because interval numbers are 1-based by
-//                  construction (buildWorkout counts i from 1).
+//                  cool-down, done, and free row. Unambiguous because interval
+//                  numbers are 1-based by construction (buildWorkout counts i
+//                  from 1). There is no "before START" case here either, for
+//                  the reason the SFIT_NONE row above gives: this value has the
+//                  same two writers, gated the same way.
 //     1..65534     the 1-based work interval this record belongs to.
 //     65535        NEVER WRITTEN. It is the UINT16 "no data" pattern -- the
 //                  same fact RR_INVALID records -- so intervalNumOf saturates
@@ -1931,10 +2007,24 @@ class StrongRowView extends Ui.View {
             // in-band value for "no workout step" (SFIT_NONE, IVL_NONE), so
             // absence has an encoding and does not need a silence.
             //
-            // ONE READ of the step type for both fields, so the kind and the
-            // interval number in a record cannot describe two different
-            // instants -- the same rule the erg block states for its power
-            // sample.
+            // ONE READ of every input BOTH fields derive from, hoisted into
+            // the four locals below, so the kind and the interval number in a
+            // record cannot describe two different instants. That is the same
+            // rule the erg block states for its power sample.
+            //
+            // STATED AS A PROPERTY OF THE CODE, because an earlier revision
+            // stated it as one the code did not have: it hoisted the step type
+            // alone and claimed the pair was safe because of it, while
+            // intervalNumOf read mSetNum straight from the field and shared
+            // nothing with the hoist. What protected the pair then was
+            // ADJACENCY -- nothing running between the two writes -- which is a
+            // weaker guarantee and a different one. Retracted; all four inputs
+            // are now taken once, above both writes, so inserting a call
+            // between the hoists and the writes cannot tear the pair.
+            //
+            // The hoisted block is pinned by scripts/check_step_fields.py, so
+            // un-hoisting it fails by name instead of quietly restoring the
+            // torn-pair window.
             //
             // THE BOUNDARY IS ONE TICK COARSE, and that is stated rather than
             // glossed: onTick advances the step machine AFTER this block, so
@@ -1945,13 +2035,14 @@ class StrongRowView extends Ui.View {
             // interval. Nothing in the acceptance criterion depends on
             // sub-record alignment.
             var stepT = curStepType();
+            var setN  = mSetNum;
+            var wEn   = mWorkoutEnabled;
+            var sted  = mStarted;
             if (mFitStepType != null) {
-                mFitStepType.setData(
-                    stepTypeCode(stepT, mWorkoutEnabled, mStarted));
+                mFitStepType.setData(stepTypeCode(stepT, wEn, sted));
             }
             if (mFitIvlNum != null) {
-                mFitIvlNum.setData(
-                    intervalNumOf(mWorkoutEnabled, mStarted, mSetNum));
+                mFitIvlNum.setData(intervalNumOf(wEn, sted, setN));
             }
             // ---- ERG MODE: the power sample, its record, and two integrators.
             //
@@ -5005,8 +5096,35 @@ class StrongRowView extends Ui.View {
                 // every record, and that is a value worth having rather than a
                 // cost: a consumer holding a stack of files can then tell a
                 // free row from a workout row FROM THE FILE, instead of
-                // inferring it from the absence of a field. The cost is two
-                // field_description messages on a free row.
+                // inferring it from the absence of a field.
+                //
+                // THE COST HAS TWO TERMS, AND THE MESSAGES ARE THE SMALL ONE.
+                // An earlier revision of this paragraph said "the cost is two
+                // field_description messages on a free row"; that is RETRACTED
+                // twice over. It is FOUR descriptions, not two -- 17 and 18
+                // here plus the lap copies 25 and 26 below, none of the four
+                // gated -- and the messages are not the term that dominates.
+                // The LARGE term is the per-record pair itself, UINT8 + UINT16
+                // = 3 bytes on EVERY record, which on a 68-minute 1 Hz row is
+                // 4080 * 3 = about 12 KiB. Four field_descriptions are a few
+                // hundred bytes at most (scripts/fit_step_marks.py's own
+                // encoder lays each out in 34 bytes; the device's encoder
+                // chooses its own string sizes and has NOT been measured), so
+                // the ratio is roughly two orders of magnitude. The 12 KiB is
+                // what the sentence above buys: absence gets an encoding on
+                // every record instead of a silence.
+                //
+                // BOTH COUNTS ARE DERIVED, NOT TRANSCRIBED.
+                // scripts/check_step_fields.py counts the createField calls in
+                // this block and adds up their declared FIT types, and fails if
+                // the marked line disagrees with the code:
+                //
+                //   STEPFIELDS descs=4 rec_bytes=3 lap_bytes=3 total_fields=26
+                //
+                // It also fails if this block is ever moved inside a
+                // workout-enabled or erg-mode branch. That matters more than it
+                // looks: no (:test) can obtain a Session, so gating CREATION is
+                // the one edit here that nothing in the suite could see.
                 //
                 // WHY 17 AND 18, and why the lap copies are NOT 19 and 20.
                 // Every developer field id in this file was enumerated before
@@ -5500,14 +5618,34 @@ class StrongRowView extends Ui.View {
     // than discovered later. A lap is labelled by the step it STARTED in, and
     // the app opens a lap only for WORK, REST and COOL -- so:
     //
-    //   * with restMinutes > 0 every step gets its own lap and the label is
-    //     exact;
+    //   * A GATE NEVER OPENS A LAP, and buildWorkout adds one on
+    //     pressToContinue ALONE -- `if (mGate)`, independent of mRestSec. So on
+    //     the SHIPPED DEFAULTS (restMinutes 2, pressToContinue on) the sequence
+    //     is WORK/REST/GATE/WORK, and the gate's seconds fall inside the
+    //     PRECEDING REST lap, which still reads SFIT_REST. Lap-derived REST
+    //     durations are therefore inflated by the gate dwell, and that dwell is
+    //     UNBOUNDED -- a gate ends only on a user press (see stepRemaining).
+    //     Work laps are clean in this configuration, so the work-seconds
+    //     criterion is unaffected; what a lap-level consumer must not do is
+    //     read the recovery duration off the REST lap alone;
+    //   * with pressToContinue OFF and restMinutes > 0 every step gets its own
+    //     lap and the label is exact. THAT, and not restMinutes alone, is the
+    //     condition for exactness. An earlier revision of this note said "with
+    //     restMinutes > 0 every step gets its own lap and the label is exact",
+    //     which is false on the shipped defaults, and it is RETRACTED;
     //   * with restMinutes = 0 the sequence is WORK/GATE/WORK, no lap is opened
     //     for the gate, and the gate's seconds fall inside the PRECEDING WORK
     //     lap. That lap reads SFIT_WORK, which is what it started as and not
     //     what all of it was;
     //   * STEP_DONE likewise falls inside the cool-down lap (or the last work
     //     lap when there is no cool-down).
+    //
+    // The default-configuration row is PINNED rather than merely stated:
+    // StepMark.test_sm_c2_theLapMarkNamesTheStepThatOpenedTheLap drives the
+    // shipped defaults through the real advanceStep, states mRestSec > 0 and
+    // mGate ON as an asserted premise, and requires the lap count NOT to move
+    // across the gate. Nesting the gate arm under `mRestSec <= 0` -- the shape
+    // the retracted bullet described -- reds it and four others.
     //
     // That is exactly why the RECORD-scope pair is the primary one and the one
     // the acceptance criterion is written against: per-record marks do not
@@ -6272,11 +6410,30 @@ class StrongRowView extends Ui.View {
         //   left edge 13.4 px to the #110 arc (fenix6spro)
         //   right     15.4 px reserved for #123's arc (fenix6spro)
         //
-        // #130: `dyFrac` is added to each row fraction and to nothing else. The
-        // COLUMNS do not move -- the left/right clearances measured above are
-        // to the two edge arcs, neither of which is drawn on any screen the
-        // grid appears on, and a horizontal shift would need its own
-        // measurement rather than inheriting this one.
+        // #130: `dyFrac` is added to each row fraction and to nothing else,
+        // and it is non-zero on DONE ALONE -- onUpdate's single call site
+        // passes $.GRID_DONE_DY for STEP_DONE and 0.0 for everything else.
+        //
+        // THE COLUMNS DO NOT MOVE, AND ON REST THAT IS A LIVE CONSTRAINT
+        // RATHER THAN A MOOT ONE. The left/right clearances measured above are
+        // to the two edge arcs, and on REST -- the grid's original and most
+        // frequent screen -- BOTH ARCS ARE DRAWN WITH THE GRID: onUpdate's arc
+        // gate is `type == STEP_WORK || type == STEP_REST` and its grid gate
+        // includes STEP_REST, which is why those two figures were measured at
+        // all. dpsForArc makes the pairing explicit -- on STEP_REST it feeds
+        // the right-hand arc the SAME latched interval this grid is showing.
+        // GATE and DONE draw no arc, so the slack there is theirs alone and
+        // #130's VERTICAL shift inherits nothing it should not. A HORIZONTAL
+        // shift would need its own measurement against the arcs ON REST rather
+        // than inheriting this one.
+        //
+        // An earlier revision of this paragraph said the two edge arcs were
+        // drawn on no screen the grid appears on. RETRACTED: that was true of
+        // GATE and DONE and generalised from them, and REST is the
+        // counterexample. Pinned by
+        // GridGate.test_gg_c3_aLatchedRestDrawsTheGridWithBothEdgeArcs, which
+        // renders a latched REST through the shipping onUpdate and requires the
+        // grid and an arc on EACH edge in the same render.
         var lx = w * 0.34;
         var rx = w * 0.66;
         var lblY1 = h * (0.44  + dyFrac);
@@ -6416,8 +6573,10 @@ class StrongRowView extends Ui.View {
         // "wk" RATHER THAN "str", because the number's meaning changed and a
         // label that no longer describes its number is worse than no label --
         // the rule drawSetGrid states for the metres cells, applied here.
-        // Two characters where three stood, so the widest footer this app can
-        // draw ("REC 199:59 12.35km 9999str") gets NARROWER by one character.
+        // Two characters where three stood, so the widest footer this app
+        // COULD draw before this edit ("REC 199:59 12.35km 9999str") got
+        // NARROWER by one character. The widest form it draws now is
+        // "REC 199:59 12.35km 9999wk".
         // That is a CHARACTER bound and not a clearance: no (:test) that runs
         // in CI can obtain a font metric (#121), so nothing here claims a
         // measured margin -- only that this row cannot have become the binding

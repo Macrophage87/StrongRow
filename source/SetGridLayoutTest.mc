@@ -52,22 +52,36 @@ using Toybox.Lang;
 // than a style preference. The four fenix6-family devices cap module `globals`
 // at 253 members.
 //
-// MEASURED, by adding dummy free functions to a tree until monkeyc refuses and
-// reading the number it reports -- the count is not printed on a successful
-// build, so it has to be bracketed:
+// WHAT THIS FILE COSTS, which is the part of the old note that was right and
+// is still true: FIVE members. Four file-scope (:test) functions plus the class
+// SgCase. A class costs ONE global however many statics it holds, and a
+// module-scope `const` costs none -- which is why this file's REJECTED first
+// shape, with eight free helper functions beside the same four (:test)s, came
+// to +12 rather than the +14 its fourteen declarations suggest, and was
+// refused on fenix6, fenix6pro, fenix6spro and fenix6xpro while compiling
+// cleanly on the other eight devices.
 //
-//   origin/main, --unit-test, fenix6        246   (7 free)
-//   this file's first shape, +12            258   REJECTED on fenix6,
-//                                                 fenix6pro, fenix6spro and
-//                                                 fenix6xpro; clean on the
-//                                                 other eight devices
-//   this file as it stands, +5              251   (2 free)
+// THE ABSOLUTE FIGURES THAT USED TO SIT HERE WERE WRONG AND ARE RETRACTED. The
+// old table read "origin/main, --unit-test, fenix6  246 (7 free)" and "this
+// file as it stands, +5  251 (2 free)", and closed "The next suite added here
+// has 2 to work with". origin/main ALREADY CONTAINS THIS FILE, and that tree
+// measures 243 used / 10 free -- so the table was out by 8 about the very tree
+// it named, and its forward-looking budget was out by 5. Nothing caught it
+// because the numbers were prose: scripts/check_ceiling_notes.py only reads
+// lines carrying the marker, and this table carried none. That was the
+// deliberate hole filed as #147, and the line below closes it.
 //
-// A class costs ONE global however many statics it holds, and a module-scope
-// `const` costs none -- which is why the rejected shape's eight free helpers
-// plus four (:test)s came to +12 rather than the +14 its fourteen declarations
-// suggest. The four (:test) functions have to stay free functions, so this file
-// spends 5 of the 7. The next suite added here has 2 to work with.
+// RE-BISECTED for this branch, SDK 9.2.0, by adding throwaway file-scope
+// (:test) functions to the tree until monkeyc refuses and reading the number
+// off the FAILURE -- the count is not printed on a successful build, so it can
+// only be bracketed:
+//
+//     CEILING v08-display-fixes fenix6: 246 used of 253, 7 free -- the 8th file-scope (:test) added reds
+//
+// That line is byte-identical to the one in source/GridGateTest.mc, and
+// check_ceiling_notes.py requires copies sharing an anchor and family to stay
+// identical -- so correcting one and not the other now fails CI instead of
+// shipping, which is exactly the drift that produced the retracted table.
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator
 // on fr965. Test names are pinned in scripts/expected_tests.txt -- update that
