@@ -152,7 +152,7 @@ def qualified_decls(stripped):
             yield m.start(), (".".join(path + [name]) if path else name)
 
 
-def strip_comments(text):
+def strip_comments(text, raw_newlines=None):
     """Remove // and /* */ comments AND blank out string/Char literal BODIES,
     keeping delimiters and newlines (so line numbers survive for --where).
 
@@ -162,7 +162,18 @@ def strip_comments(text):
         maintainer straight into pinning it;
       * a Char literal like '"' would otherwise desynchronise the string lexer,
         turning comment-stripping off for the rest of the file and resurrecting
-        commented-out declarations."""
+        commented-out declarations.
+
+    `raw_newlines`, when a list is passed, collects the 1-based line number of
+    every UNESCAPED newline found INSIDE a literal -- i.e. a literal written
+    across two source lines instead of with `\\n`. That is not a build error
+    (monkeyc accepts it, measured on SDK 9.2.0 for fr965 and fenix6) but it
+    embeds whatever the checkout's line ending is into the string constant, so
+    a CRLF working tree ships a stray carriage return. Collected HERE rather
+    than by a second scanner because this is the repository's only Monkey C
+    lexer, and a second copy of a lexer is a second thing to get wrong.
+    scripts/check_mc_literals.py is the caller that turns the list into a
+    verdict; passing nothing keeps this function's behaviour identical."""
     out = []
     i, n = 0, len(text)
     while i < n:
@@ -178,6 +189,8 @@ def strip_comments(text):
                     continue                      # every later --where line by one
                 if text[i] == '\n':
                     out.append('\n')              # keep line numbers
+                    if raw_newlines is not None:
+                        raw_newlines.append(text.count('\n', 0, i) + 1)
                 i += 1
             if i < n:
                 out.append(quote); i += 1

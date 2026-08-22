@@ -26,8 +26,10 @@ using Toybox.Lang;
 //
 //   free row   (mWorkoutEnabled == false; onUpdate returns before the workout
 //               branch, so none of #108's split applies to it)
-//   WARM / COOL / DONE / pre-START      already rest-shaped, unchanged
+//   WARM / COOL / pre-START             already rest-shaped, unchanged
 //   REST / GATE                         keep everything WORK drops
+//   DONE                                NO LONGER SWEPT HERE. #130 puts the
+//                                       set grid on it; see source/GridGateTest.mc
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator
 // on fr965. Test names are pinned in scripts/expected_tests.txt -- update that
@@ -113,12 +115,39 @@ function wlRender(p) {
     return true;
 }
 
-// The three step types #108 leaves alone. Each keeps the status pips, the pace
-// row and the recording footer.
-(:test) function test_lay_c0_warmCoolDoneKeepTheFullScreen(logger) {
+// The two step types #108 leaves alone AND #130 leaves alone. Each keeps the
+// status pips, the pace row and the recording footer. Both are ACTIVE ROWING --
+// COOL DOWN is on the default path -- which is why the live rows stay.
+//
+// DONE WAS SWEPT HERE AND NO LONGER IS, and that is a RETRACTION rather than a
+// quiet edit. #130 put the set grid on DONE, and DONE is only ever reached with
+// an interval LATCHED: buildWorkout always emits at least one STEP_WORK,
+// advanceStep latches at every WORK exit, and no path skips a WORK step. So on
+// the only DONE screen the app can produce, the grid replaces drawRate and
+// drawPace and "/500m" is not drawn. This case kept passing solely because
+// wlProbeAt never latches -- it rendered an UN-LATCHED DONE, which is the state
+// that is unreachable. Asserting about it is the same "pinning fiction"
+// objection GridGateTest.mc raises for a latched WARM, in the mirror direction,
+// and it is the same retraction SetGridLayoutTest.mc already made for its own
+// DONE leg.
+//
+// The real screen is pinned by
+// GridGate.test_gg_c2_doneShowsTheFinalIntervalAndKeepsBackToSave and
+// GridGate.test_gg_c2_theGridIsUpOnEveryRecoveryStepAndNowhereElse, and that
+// is measured rather than asserted: dropping STEP_DONE from the grid gate --
+// #130 reverted outright -- reds four GridGate cases (331/335 on fr965) and
+// leaves this file entirely green. The swept DONE leg could not have reddened
+// under it either, because wlProbeAt latches nothing and an un-latched DONE
+// draws no grid under EITHER gate. That is what makes it a fiction rather than
+// a weak pin.
+//
+// DONE's
+// FOOTER is unaffected by any of this -- drawFoot sits outside the grid gate --
+// and test_lay_footerIsUntouchedOffTheWorkView still covers it.
+(:test) function test_lay_c0_warmAndCoolKeepTheFullScreen(logger) {
     var k = new HrProbe();
-    var kinds = [ k.kindWarm(), k.kindCool(), k.kindDone() ];
-    var names = [ "WARM", "COOL", "DONE" ];
+    var kinds = [ k.kindWarm(), k.kindCool() ];
+    var names = [ "WARM", "COOL" ];
     var want  = [ "GPS", "RR", "CT", "/500m", "REC " ];
     for (var i = 0; i < kinds.size(); i++) {
         var d = wlRender(wlProbeAt(kinds[i]));
@@ -502,7 +531,8 @@ function wlRender(p) {
     p.setNarrowSession();
     var d = wlRender(p);
     // COUNTED, not merely detected. drawFoot's paused branch renders
-    // "PAUSED  <n>str" and the title renders "PAUSED", so both contain the
+    // "PAUSED  <n>wk" (#125 replaced the "str" token) and the title renders
+    // the bare word "PAUSED", so both contain the
     // word and a presence test cannot tell one from two. Exactly one is the
     // whole assertion: the title survives, the footer does not.
     var n = wlCount(d, "PAUSED");

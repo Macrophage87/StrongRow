@@ -271,6 +271,17 @@ class HrProbe extends StrongRowView {
     // The step-type constants are class `hidden const`s, i.e. instance members,
     // so a (:test) free function cannot name them. Exposed here rather than
     // transcribed into the layout suite, where a copy could drift.
+    // The two settings that decide whether a GATE exists, read back as
+    // loadSettings left them. Exposed because the lap-scope note's whole
+    // correction turns on the pair being INDEPENDENT: buildWorkout adds a gate
+    // on `if (mGate)` alone, so a workout can have restMinutes > 0 AND a gate,
+    // which is the shipped default and the configuration an earlier revision
+    // of that note said could not happen. A case asserting about the gate
+    // without asserting these two would be pinning a sequence without its
+    // premise.
+    function restSec() { return mRestSec; }
+    function gateOn()  { return mGate; }
+
     function kindWork() { return STEP_WORK; }
     function kindRest() { return STEP_REST; }
     function kindGate() { return STEP_GATE; }
@@ -371,6 +382,23 @@ class HrProbe extends StrongRowView {
     function beginWork(num) { beginWorkAccum(num); }
     function latchWork()    { latchWorkAccum(); }
 
+    // #126/#125: the SESSION-scope reset, which is the boundary neither of the
+    // two above crosses.
+    //
+    // WITHOUT THIS SEAM THE TWO LINES CARRYING #126's GUARANTEE RUN ONLY WHERE
+    // NOTHING CAN SEE THEM. beginSessionAccum is `hidden`, and its three
+    // shipping callers are initialize() -- where `mStrokeCount = 0` and
+    // `mWorkStrokes = 0` are both redundant, because the field declarations
+    // have just run -- and two arms behind startSession(), which needs a real
+    // Session and is not reachable in-process (CoreFieldGateTest.mc:10-12). So
+    // deleting either reset was a semantic no-op on every execution a (:test)
+    // could reach, and the suite was green by construction rather than by
+    // observation.
+    //
+    // Safe to call from a (:test): the body is scalar assignment only -- no
+    // Fit, Session or Activity call anywhere in it.
+    function beginSession() { beginSessionAccum(); }
+
     // Read-only views of the latched interval's work pair. BOTH, because the
     // whole point of the pair is that the number alone cannot say whether the
     // interval carried a measurement -- or how much of it did.
@@ -401,6 +429,26 @@ class HrProbe extends StrongRowView {
         mFitErgWork  = wF;
         mFitErgCad   = cF;
     }
+
+    // Recording stand-ins for the four STEP MARK handles, in id order:
+    // step_type (17, record), interval_num (18, record), lap_step_type (25,
+    // lap), lap_interval_num (26, lap).
+    //
+    // ALL FOUR AT ONCE, because the pair-ness is the property under test: a
+    // record whose step kind and interval number came from two different
+    // instants is exactly what the single curStepType() read exists to prevent.
+    function installStepFields(sF, iF, lsF, liF) {
+        mFitStepType = sF;
+        mFitIvlNum   = iF;
+        mFitLapStep  = lsF;
+        mFitLapIvl   = liF;
+    }
+
+    // The step machine's own transition, called -- not transcribed. `hidden` is
+    // protected in Monkey C, which is what makes this a seam on the SHIPPING
+    // lifecycle (latch, addLap, mStepStartMs, beginWorkAccum, the lap mark and
+    // the alert) rather than a copy of it.
+    function advance() { advanceStep(); }
 
     // Enough of a session for stopAndSave's session-scope write to be reached.
     // The handle is a duck-typed stand-in: stopAndSave calls isRecording(),
@@ -464,7 +512,12 @@ class HrProbe extends StrongRowView {
     //     is "30x60'", the interval label "WORK 30/30", and the rest and gate
     //     sub-rows "next: WORK 30" / "to start WORK 30";
     //   * a long session with a large distance and stroke count gives
-    //     drawFoot's widest form, "REC 199:59 12.35km 9999str".
+    //     drawFoot's widest form, "REC 199:59 12.35km 9999wk". #125 replaced
+    //     the "str" token with "wk", one character narrower; an earlier
+    //     revision of this bullet still named the old form, which is a string
+    //     the app is now contractually incapable of drawing
+    //     (WorkStroke.test_ws_c2_bothFooterFormsNameTheStrokesTheyCount
+    //     forbids "str" on the drawn footer).
     function setWorkoutShape(n, workSec) {
         mNumWork = n;
         mWorkSec = workSec;
@@ -473,6 +526,11 @@ class HrProbe extends StrongRowView {
 
     function setWideSession() {
         mStrokeCount = 9999;
+        // #125: BOTH counters, because the footer reports the WORK one and this
+        // seam exists to drive the widest string the footer can produce. Set to
+        // the same value rather than to a smaller one: the widest form is four
+        // digits, and which counter reaches the row is not this seam's subject.
+        mWorkStrokes = 9999;
         mStartMs = System.getTimer() - 11999000;   // ~199:59 elapsed
         setDist(12345.6);
     }
@@ -481,8 +539,33 @@ class HrProbe extends StrongRowView {
     // the narrow shape instead of needing a fresh one.
     function setNarrowSession() {
         mStrokeCount = 6;
+        mWorkStrokes = 6;                          // #125; see setWideSession
         mStartMs = System.getTimer();
         setDist(0.0);
+    }
+
+    // #125: the two stroke counters, read back through the shipping fields.
+    // BOTH, because the whole of #125 is that they are different numbers: a
+    // seam exposing only one could not tell "the footer reports work strokes"
+    // from "the footer reports every stroke" on any screen where they agree.
+    function sessionStrokes() { return mStrokeCount; }
+    function workStrokes()    { return mWorkStrokes; }
+
+    // A stroke train at a fixed 18.0 spm STARTING AT `t0` seconds, so a case
+    // can drive two trains through one probe without the second one's first
+    // period going negative and being rejected. driveStrokes() is exactly
+    // strokeTrainFrom(0.0, 7).
+    //
+    // RELATIVE THROUGHOUT: registerStroke takes a stroke-clock value in
+    // seconds, and nothing here reads System.getTimer(), so a case built on it
+    // behaves identically on a seconds-old CI simulator and an hours-old
+    // desktop one.
+    function strokeTrainFrom(t0, n) {
+        var t = t0;
+        for (var i = 0; i < n; i++) {
+            registerStroke(t);
+            t += 3.3333333;
+        }
     }
 
     // Like enterStep, but leaves the step clock LIVE so the countdown renders

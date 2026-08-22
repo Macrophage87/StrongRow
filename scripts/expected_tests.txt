@@ -208,7 +208,7 @@ test_hr_arcStaysWithinItsYEnvelope
 
 # source/WorkLayoutTest.mc
 test_lay_c0_freeRowDrawsTheFullScreen
-test_lay_c0_warmCoolDoneKeepTheFullScreen
+test_lay_c0_warmAndCoolKeepTheFullScreen
 test_lay_c0_preStartKeepsTheFullScreen
 test_lay_c0_restAndGateKeepPipsAndFooter
 test_lay_c0_workKeepsTheTargetCaption
@@ -231,8 +231,39 @@ test_lay_pausedWorkViewDrawsNoFooterButKeepsTheTitle
 # source/SetGridLayoutTest.mc
 test_grid_rowsAreDistinctAndOrderedDownTheScreen
 test_grid_restAndGateShowTheGridAndDropTheSubRow
-test_grid_coolAndDoneKeepTheLiveRowsAndTheSubRow
+test_grid_coolKeepsTheLiveRowsAndTheSubRow
 test_grid_noLatchedSetMeansNoGridOnAnyScreen
+
+# source/GridGateTest.mc -- inside `module GridGate`, so the names carry the
+# module: the simulator prints `GridGate.test_gg_...` for a (:test) declared
+# inside a module block, and this pin has to carry the name the RUNNER prints.
+# The module exists to spend ONE fenix6 globals member instead of one per test;
+# see the CEILING note at the top of that file.
+GridGate.test_gg_c1_workWithALatchedSetDrawsNoGrid
+GridGate.test_gg_c1_aNullCellRendersADashNeverAZero
+GridGate.test_gg_c2_theGridIsUpOnEveryRecoveryStepAndNowhereElse
+GridGate.test_gg_c2_doneShowsTheFinalIntervalAndKeepsBackToSave
+GridGate.test_gg_c2_theDoneGridClearsTheTitleAndTheSubRow
+GridGate.test_gg_c3_aLatchedRestDrawsTheGridWithBothEdgeArcs
+
+# source/WorkStrokeTest.mc -- inside `module WorkStroke`, so the names carry the
+# module, for the same fenix6 globals reason.
+WorkStroke.test_ws_c1_theCountingRuleIsTheIntervalOrTheWholeFreeRow
+WorkStroke.test_ws_c1_onlyIntervalStrokesReachTheWorkCounter
+WorkStroke.test_ws_c1_freeRowCountsEveryStroke
+WorkStroke.test_ws_c1_pausedStrokesReachNeitherCounter
+WorkStroke.test_ws_c1_aSecondRecordingStartsBothCountersAtZero
+WorkStroke.test_ws_c2_theFooterReportsWorkStrokesNotEveryStroke
+WorkStroke.test_ws_c2_bothFooterFormsNameTheStrokesTheyCount
+
+# source/StepMarkTest.mc -- inside `module StepMark`, so the names carry the
+# module, for the same fenix6 globals reason.
+StepMark.test_sm_c1_theMirroredOrdinalsAreTheShippingConstants
+StepMark.test_sm_c1_theWireMappingIsTheDocumentedTable
+StepMark.test_sm_c1_intervalNumIsTheIntervalOrAnOutOfBandZero
+StepMark.test_sm_c2_everyTickWritesBothMarksAndAPausedTickWritesNeither
+StepMark.test_sm_c2_aScriptedWorkoutWritesTheDocumentedSequence
+StepMark.test_sm_c2_theLapMarkNamesTheStepThatOpenedTheLap
 
 # source/CueZoneTest.mc
 #
