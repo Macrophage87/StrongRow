@@ -365,11 +365,20 @@ copies of this note carried the right count and the wrong consequence, which
 is why `scripts/check_ceiling_notes.py` now derives the consequence
 arithmetically.
 
-Current headroom, verbatim from the newest anchor in the tree (the
-`v08-display-fixes` branch merged at `211f106`; the identical note lives at
-`source/GridGateTest.mc:34` and `source/SetGridLayoutTest.mc:79`):
+Current headroom, verbatim from the newest anchor in the tree,
+`source/RrHrvTest.mc:21` (epic #59, the `claude/hrv-correctness` branch):
 
-    CEILING v08-display-fixes fenix6: 246 used of 253, 7 free -- the 8th file-scope (:test) added reds
+    CEILING hrv-correctness fenix6: 249 used of 253, 4 free -- the 5th file-scope (:test) added reds
+
+Epic #59 costs **two** members against the previous anchor: the `RR_FRESH_MS`
+split is +3 constants and -1, and `module RrDiag` and `module RrHrv` are one
+each. The `v08-display-fixes` note (`246 used of 253, 7 free`) is still in the
+tree at `source/GridGateTest.mc:34` and `source/SetGridLayoutTest.mc:79`; it is
+an OLDER anchor, not the current headroom, and the paragraph below is why that
+is allowed. Re-bisected at the round-2 head of `claude/hrv-correctness`:
+`monkeyc --unit-test -d fenix6` with 4 throwaway file-scope `(:test)` stubs is
+`BUILD SUCCESSFUL`, with 5 it is
+`ERROR: fenix6: Found 254 members in module 'globals', exceeding the limit of 253.`
 
 Older anchors are also in the tree. Do not carry a count of them in prose:
 `python3 scripts/check_ceiling_notes.py` prints every note line with its
@@ -537,7 +546,7 @@ prose above is the explanation.
     AGENTFACT ci-container sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
     AGENTFACT manifest-devices 12
     AGENTFACT pinned-tests 385
-    AGENTFACT ceiling v08-display-fixes 246 253 7
+    AGENTFACT ceiling hrv-correctness 249 253 4
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke
     AGENTFACT devfield 2 rr_interval

@@ -2017,7 +2017,9 @@ class StrongRowView extends Ui.View {
             // record is still a [Local] question, so do not upgrade it to
             // "absence". Once a real value HAS been written in the
             // session, a dropout leaves the trace carrying the last
-            // pre-dropout value and NO in-app change can do better:
+            // pre-dropout value. The encodings CONSIDERED, which is not the
+            // same thing as the encodings that EXIST -- see the note after
+            // them:
             //   * writing 0.0 is an in-band lie ("perfect regularity"). The
             //     write below used to have NO value guard while the accumulator
             //     beside it did, so 0.0 was logged in the five windows #68
@@ -2025,8 +2027,7 @@ class StrongRowView extends Ui.View {
             //     below and the asymmetry is gone: BOTH now test `mRmssd > 0.0`.
             //     In the not-yet-written windows the field is left unset, so
             //     those records carry the type's invalid pattern instead of
-            //     0.0; that is distinct from the latched-value case above,
-            //     which no in-app change reaches;
+            //     0.0;
             //   * writing NaN is not an absence encoding for a FLOAT field:
             //     #48 measured setData(NaN) landing as 0xFFC00000, a
             //     DIFFERENT pattern from never-set invalid (0xFFFFFFFF) --
@@ -2038,15 +2039,20 @@ class StrongRowView extends Ui.View {
             //   * setData(null) is NEVER an option: #48 observed it as an
             //     uncatchable native error that escapes try/catch and kills
             //     the app -- a crash, not a no-op.
-            // Skipping is still the right call for the LATCHED-VALUE half (it
-            // is no worse, and writing 0.0 would be an in-band lie). That half
-            // of #15's trace defect is confirmed unfixable in-app and accepted
-            // as such (#47, Option B, closed); the 0.0 half is #68's and is
-            // fixed below; the rr_interval analogue is #46's and is fixed at
-            // the write site further down this block. Do not restate a "gap"
-            // claim until a [Local] decode proves it -- and note no open
-            // [Local] issue covers rmssd itself (#53 tracks Connect's
-            // rendering of the NaN pattern, which is a different question).
+            // Skipping is what this PR does for the LATCHED-VALUE half, and
+            // that is a CHOICE rather than a proof of impossibility. A
+            // negative out-of-band FLOAT sentinel IS available -- mRmssd is a
+            // sqrt and is non-negative by construction, the same argument
+            // LOCK_CONF_NONE = -1.0 rests on for lock_confidence at the top of
+            // this file -- and what such a record DECODES as is the open
+            // question, not whether it can be written. Tracked as #188;
+            // #47's Option A/B framing predates #149 and did not consider it.
+            // The 0.0 half is #68's and is fixed below; the rr_interval
+            // analogue is #46's and is fixed at the write site further down
+            // this block. Do not restate a "gap" claim until a [Local] decode
+            // proves it -- and note no open [Local] issue covers rmssd itself
+            // (#53 tracks Connect's rendering of the NaN pattern, and #188 the
+            // negative-sentinel question, which are different questions).
             //
             // THE TWO GUARDS ARE NOW SYMMETRIC, which is the whole of #68: a
             // trace write and an accumulator step that disagreed about whether
@@ -4485,7 +4491,11 @@ class StrongRowView extends Ui.View {
     //                ~90 pairs retained; init empty; CLEARED on an inter-batch
     //                gap (#39) and at a session boundary. The code depends on
     //                mDiffIdx == mDiffCount while filling (entries beyond
-    //                mDiffCount are null), which is what the clear restores.
+    //                mDiffCount are never read; they are null before the
+    //                first fill and stale afterwards, because the clear
+    //                zeroes the index and the count and does NOT null the
+    //                slots). The clear restores mDiffIdx == mDiffCount,
+    //                which is the half the code depends on.
     //   mRmssd       Cached rMSSD over the ring; 0.0 is BOTH the
     //                "insufficient data" sentinel (mDiffCount < 5) and the
     //                honest value of a fully flat ring (sqrt(0) -- #68's

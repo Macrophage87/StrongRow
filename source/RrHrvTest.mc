@@ -27,11 +27,20 @@ using Toybox.Test;
 // blocks of the same name still cost one between them, which is why this file
 // re-opens `module RrHrv` rather than nesting everything in one brace.
 //
-// The 247 figure is also one member tighter than the `v08-display-fixes`
-// anchor recorded in docs/agents/FACTS.md, which was taken at 211f106: that
-// note is STALE rather than wrong, and the tree has gained a member since.
+// The 247 figure is one member tighter than the `v08-display-fixes` anchor,
+// which was taken at 211f106: that note is STALE rather than wrong, and the
+// tree has gained a member since. Round-2 review found that docs/agents/FACTS.md
+// 5.1 still presented it as "the newest anchor in the tree" while this file
+// carried a newer one, so that section now quotes the note above instead. Two
+// committed statements about the same tree disagreed; the one that was wrong
+// was the pointer, and it is corrected where it lives rather than only here.
 // scripts/check_ceiling_notes.py enumerates every anchor and cannot tell you
 // which is newest, so re-bisect rather than reading either.
+//
+// RE-BISECTED at the round-2 head, with the two cases this round adds: still
+// N=4 BUILD SUCCESSFUL, N=5 "Found 254 members in module 'globals'". Both new
+// cases live inside the existing `module RrHrv` block, so they cost nothing --
+// which is the whole reason the block is a hard constraint.
 //
 // WHY THESE SEVEN LANDED TOGETHER. They modify the same ~40 lines -- handleRr's
 // diff-accumulation loop, the onTick freshness gate, and the constants they

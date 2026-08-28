@@ -73,13 +73,33 @@ const VERSION = 1;
 // literal in either -- see the System Error quoted above.
 const SLOTS = 21;
 
-// UINT16 ceiling. Counters are plain 32-bit Number increments on the receive
-// path -- no saturation test, no allocation, no branch -- and are clamped ONCE
-// at readout, exactly as ct_diag does. A slot reading MAXV therefore means "at
-// least MAXV", never a wrapped number. The receive path runs at :period => 1,
-// so a callback counter reaches 65535 after about 18 h of recording; every
-// discrimination this map is for turns on zero versus non-zero, which survives
-// any session length.
+// UINT16 ceiling. Counters are plain 32-bit Number increments -- no saturation
+// test, no allocation, no branch -- and are clamped ONCE at readout, exactly as
+// ct_diag does. A slot reading MAXV therefore means "at least MAXV", never a
+// wrapped number.
+//
+// WHEN EACH KIND OF SLOT CLAMPS, per rate, because ONE figure over all of them
+// was wrong. ct_diag states its two rates separately and this map copied only
+// the sentence after them; round-2 review of #59 found the result.
+//
+//   the receive-path callback counters (1-15, 18, 19)
+//       startSensor registers with :period => 1, so a per-callback counter
+//       reaches 65535 after 65535 s ~ 18.2 h. The per-BEAT counters in that
+//       range advance faster: at 120 bpm that is 2/s, so ~32,768 s ~ 9.1 h.
+//   I_REC_STAGED (16) and I_REC_INVALID (17)
+//       NOT on the receive path. They are incremented in StrongRowView's
+//       onTick, which runs on the TICK_MS = 250 timer, so each advances at
+//       4 Hz while started and unpaused and clamps after 65535/4 = 16,383.75 s
+//       ~ 4.55 h of recording.
+//
+// AND ct_diag's EXCLUSION, which this map dropped and needs more than ct_diag
+// did: "Only quantitative ratios degrade there." Most discriminations here turn
+// on zero versus non-zero and survive any session length, but TWO do not, and
+// they are named rather than left for a reader to notice:
+//   * the 16:17 ratio documented at I_REC_STAGED below -- once either slot
+//     clamps the ratio is unrecoverable and each slot reads "at least";
+//   * the BEATS partition equality documented at I_BEATS -- it stops closing as
+//     soon as any of the five slots in it clamps.
 const MAXV = 65535;
 
 // -- the slot map -----------------------------------------------------------
@@ -106,7 +126,8 @@ const I_BATCH_OK     = 5;   // batches carrying at least one element
 
 // Beat-level. BEATS is every element examined; the four below partition it
 // exactly -- BEAT_ACCEPT + REJ_NULL + REJ_LOW + REJ_HIGH == BEATS, which is a
-// consistency check a reader can run on the file itself.
+// consistency check a reader can run on the file itself, and which stops
+// closing as soon as any of the five clamps (see the rate table at MAXV).
 const I_BEATS        = 6;
 const I_BEAT_ACCEPT  = 7;   // rrAccept returned A_OK (RANGE-accepted)
 const I_REJ_NULL     = 8;   // the element was null
@@ -123,9 +144,22 @@ const I_ADJ_INTRA    = 14;  // intra-batch adjacency break (#37)
 const I_RING_CLEAR   = 15;  // gap clears that discarded at least one entry (#39)
 
 // What the rr_interval field was actually asked to record. STAGED + INVALID is
-// the number of setData calls on that field; the ratio is the direct measure of
-// the defect the row above showed, and it is the number to read FIRST on the
-// next choppy row.
+// the number of setData calls on that field, and the ratio is a PROXY for the
+// defect the row above showed -- the number to read FIRST on the next choppy
+// row, with two caveats that keep it a proxy rather than a measurement.
+//
+//   * THESE COUNT TICK-LEVEL setData CALLS, at 4 Hz, while a FIT record commits
+//     only the LAST write in its ~1 s window. The branch's own
+//     test_rr_c2_theRecordFieldIsWrittenOnEveryTick pins exactly that: three
+//     writes inside one record window, and "a record committing between writes
+//     would carry whatever the last write left behind". So the tick ratio
+//     equals the RECORD ratio only for dropouts that are long relative to a
+//     record -- which the measured runs above (5 s, 30 s, 185 s) are, and a
+//     one-tick flicker is not. The 1,730-of-2,476 figure above is a count of
+//     RECORDS; this pair is a count of CALLS. They are not the same quantity.
+//   * PAST ~4.55 h either slot may read MAXV (see the rate table at MAXV), at
+//     which point the ratio is unrecoverable and each slot must be read as "at
+//     least", never as a fraction.
 const I_REC_STAGED   = 16;
 const I_REC_INVALID  = 17;
 
