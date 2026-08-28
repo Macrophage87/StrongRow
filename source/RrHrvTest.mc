@@ -203,3 +203,336 @@ function arrEq(got, exp, logger, what) {
 }
 
 }
+
+module RrHrv {
+
+// -- Stubs -------------------------------------------------------------------
+
+// Stand-in for a FitContributor field handle. Records EVERY write in order,
+// because the defects here are about which value a record ends up carrying and
+// that is decided by the LAST write before the record commits -- a call count
+// alone cannot see a good array being overwritten by a sentinel.
+class RrField {
+    var writes;     // every value handed to setData, in order
+    function initialize() { writes = []; }
+    function setData(v) { writes.add(v); }
+    function count()   { return writes.size(); }
+    function last()    { return (writes.size() == 0) ? null : writes[writes.size() - 1]; }
+}
+
+// -- Probe -------------------------------------------------------------------
+// `hidden` in Monkey C is protected, so a subclass reads the R-R state and
+// drives the shipping handleRrAt / onTick without adding an accessor to the
+// shipping class -- the same seam DspProbe and LifeProbe use. Referenced only
+// from (:test) functions, so it drops out of the release build.
+//
+// startSensor()/startGps() are neutralised, and ONLY those two: everything the
+// cases drive below is the shipping code. A real sensor registration would
+// install a 25 Hz listener for the rest of the run.
+//
+// nowMs() is overridable so onTick's three freshness gates are deterministic.
+// mFitCore / mFitSkin / mFitHsi are left null on purpose: onTick dereferences
+// mCoreSensor with NO null check inside those three branches, and mCoreSensor
+// is null in a fresh probe.
+class RrProbe extends StrongRowView {
+    var clock;      // what nowMs() returns
+
+    function initialize() {
+        StrongRowView.initialize();
+        clock = 0;
+    }
+
+    hidden function startSensor() { }
+    hidden function startGps()    { }
+    hidden function nowMs()       { return clock; }
+
+    // Drive the SHIPPING receive path with an injected clock.
+    function feed(t, ivals) { handleRrAt(t, ivals); }
+    // Drive the shipping callback-facing wrapper, to pin that it delegates.
+    function feedNow(ivals) { handleRr(ivals); }
+
+    // Drive the SHIPPING onTick at time t. Ui.requestUpdate() is its last
+    // statement, so every observable precedes it; the try/catch contains the
+    // catchable failure modes of a headless update request.
+    function tickAt(t) {
+        clock = t;
+        try { onTick(); } catch (e) { }
+    }
+
+    // Stand the FIT handles up without a Session. mSession stays null, so
+    // stopAndSave's body is skipped entirely and nothing but its tail runs.
+    function armRr()    { mFitRr = new RrField();    mStarted = true; mPaused = false; }
+    function armRmssd() { mFitRmssd = new RrField(); mStarted = true; mPaused = false; }
+    function setStopped() { mStarted = false; }
+    function rrField()    { return mFitRr; }
+    function rmssdField() { return mFitRmssd; }
+
+    // Reads on the state model. Never written from a case except through the
+    // shipping code above.
+    function diffCount()  { return mDiffCount; }
+    function diffIdx()    { return mDiffIdx; }
+    function rrLast()     { return mRrLast; }
+    function rmssd()      { return mRmssd; }
+    function lastRrMs()   { return mLastRrMs; }
+    function lastBeatMs() { return mLastBeatMs; }
+    function lastDiffMs() { return mLastDiffMs; }
+    function rmssdN()     { return mRmssdN; }
+    function rmssdSum()   { return mRmssdSum; }
+    function pendingRr()  { return mPendingRr; }
+    function diag()       { return rrDiagSnapshot(); }
+    function diagAt(i)    { return rrDiagSnapshot()[i]; }
+    function endSession() { stopAndSave(); }
+}
+
+
+// ===========================================================================
+// c1 -- green pins on the NEW symbols.
+// ===========================================================================
+// Green from the commit that introduces each symbol onward. They are the anchor
+// for the c2 differentials: without them a "fix" that stopped writing anything
+// at all, or that never advanced a counter, would satisfy every red case below
+// while being strictly worse than the defect.
+
+// handleRr delegates to handleRrAt and adds nothing. If it did anything of its
+// own, every case in this file would be testing a different function from the
+// one onSensorData calls.
+(:test) function test_rr_c1_handleRrDelegatesToHandleRrAt(logger) {
+    var ok = true;
+    var a = new RrProbe();
+    var b = new RrProbe();
+    a.feed(1000, [800, 810, 800]);
+    b.feedNow([800, 810, 800]);
+    // The clock differs (b read the real timer), so compare everything the
+    // clock does not decide.
+    if (a.diffCount() != b.diffCount()) {
+        logger.error("handleRr and handleRrAt disagree on the ring: " +
+                     a.diffCount() + " vs " + b.diffCount());
+        ok = false;
+    }
+    if (a.rrLast() != b.rrLast()) {
+        logger.error("handleRr and handleRrAt disagree on mRrLast");
+        ok = false;
+    }
+    if (a.diagAt($.RrDiag.I_BEAT_ACCEPT) != b.diagAt($.RrDiag.I_BEAT_ACCEPT)) {
+        logger.error("handleRr and handleRrAt disagree on the accepted-beat count");
+        ok = false;
+    }
+    // And handleRrAt really did use the injected clock rather than the timer.
+    if (a.lastRrMs() != 1000) {
+        logger.error("handleRrAt(1000, ...) stamped mLastRrMs " + a.lastRrMs() +
+                     " -- the clock seam is not being used");
+        ok = false;
+    }
+    return ok;
+}
+
+// rrAccept classifies the four cases, and the three reject classes are
+// DISTINCT -- collapsing them would still break adjacency correctly but would
+// make the rr_diag reject counters unable to say which failure mode a row had.
+(:test) function test_rr_c1_rrAcceptClassifiesTheFourCases(logger) {
+    var ok = true;
+    if (StrongRowView.rrAccept(null) != $.RrDiag.A_NULL) { logger.error("null must be A_NULL"); ok = false; }
+    if (StrongRowView.rrAccept(249)  != $.RrDiag.A_LOW)  { logger.error("249 must be A_LOW");  ok = false; }
+    if (StrongRowView.rrAccept(250)  != $.RrDiag.A_OK)   { logger.error("250 must be A_OK (inclusive)"); ok = false; }
+    if (StrongRowView.rrAccept(2500) != $.RrDiag.A_OK)   { logger.error("2500 must be A_OK (inclusive)"); ok = false; }
+    if (StrongRowView.rrAccept(2501) != $.RrDiag.A_HIGH) { logger.error("2501 must be A_HIGH"); ok = false; }
+    // Conversion before comparison, the same order filterRr pins in c0.
+    if (StrongRowView.rrAccept(2500.7) != $.RrDiag.A_OK)  { logger.error("2500.7 truncates to 2500 and must be A_OK"); ok = false; }
+    if (StrongRowView.rrAccept(249.9)  != $.RrDiag.A_LOW) { logger.error("249.9 truncates to 249 and must be A_LOW"); ok = false; }
+    if ($.RrDiag.A_NULL == $.RrDiag.A_LOW || $.RrDiag.A_LOW == $.RrDiag.A_HIGH
+            || $.RrDiag.A_NULL == $.RrDiag.A_HIGH || $.RrDiag.A_OK == $.RrDiag.A_LOW) {
+        logger.error("the rrAccept codes are not distinct");
+        ok = false;
+    }
+    return ok;
+}
+
+// ONE range gate. filterRr's survivor set and rrAccept's verdict agree on every
+// code point in the swept band -- which is what stops the record path and the
+// adjacency path from drifting the way they did before #37.
+(:test) function test_rr_c1_filterRrAgreesWithRrAccept(logger) {
+    var ok = true;
+    for (var raw = 0; raw <= 3000; raw += 1) {
+        var kept  = (StrongRowView.filterRr([raw]).size() == 1);
+        var wants = (StrongRowView.rrAccept(raw) == $.RrDiag.A_OK);
+        if (kept != wants) {
+            logger.error("filterRr and rrAccept disagree at raw " + raw +
+                         ": kept=" + kept + " rrAccept-ok=" + wants);
+            ok = false;
+            return ok;   // one report is enough; 3001 would flood the log
+        }
+    }
+    if (StrongRowView.filterRr([null]).size() != 0
+            || StrongRowView.rrAccept(null) == $.RrDiag.A_OK) {
+        logger.error("filterRr and rrAccept disagree on null");
+        ok = false;
+    }
+    return ok;
+}
+
+// The rr_diag snapshot has exactly SLOTS entries and carries the layout version
+// in slot 0. THE LENGTH IS SAFETY-CRITICAL: the createField `:count` reads the
+// same constant, and a setData array longer than :count is an uncatchable
+// System Error at save time that takes the whole activity with it.
+(:test) function test_rr_c1_diagSnapshotShape(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    var a = p.diag();
+    if (a.size() != $.RrDiag.SLOTS) {
+        logger.error("rrDiagSnapshot returned " + a.size() + " slots, not " +
+                     $.RrDiag.SLOTS + " -- this is the array-too-long System Error");
+        return false;
+    }
+    if (a[$.RrDiag.I_VERSION] != $.RrDiag.VERSION) {
+        logger.error("slot 0 carries " + a[$.RrDiag.I_VERSION] + ", not the layout version");
+        ok = false;
+    }
+    // A fresh view has seen nothing. Everything but the version is zero, which
+    // is what makes "all zero" a readable answer on a real row.
+    for (var i = 1; i < $.RrDiag.SLOTS; i++) {
+        if (a[i] != 0) {
+            logger.error("fresh view: slot " + i + " is " + a[i] + ", not 0");
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// EVERY slot index nailed to its literal number, 0 to 20 inclusive.
+//
+// This case is written the way it is because of what happened one file over:
+// ct_diag's index pin asserted a PREFIX of its slots, so a permutation confined
+// to the unpinned tail would have re-keyed three slots of every file already
+// recorded with the whole suite green. Slot indices ARE the wire format. A
+// distinctness check is not enough -- it is invariant under a wholesale
+// renumbering, which is exactly the change that breaks a reader's key.
+(:test) function test_rr_c1_diagSlotKeyIsZeroToTwenty(logger) {
+    var ok = true;
+    var exp = [
+        $.RrDiag.I_VERSION,      $.RrDiag.I_SENSOR_CB,    $.RrDiag.I_HR_ABSENT,
+        $.RrDiag.I_BATCH_NULL,   $.RrDiag.I_BATCH_EMPTY,  $.RrDiag.I_BATCH_OK,
+        $.RrDiag.I_BEATS,        $.RrDiag.I_BEAT_ACCEPT,  $.RrDiag.I_REJ_NULL,
+        $.RrDiag.I_REJ_LOW,      $.RrDiag.I_REJ_HIGH,     $.RrDiag.I_DIFF_ACCEPT,
+        $.RrDiag.I_DIFF_REJ_ART, $.RrDiag.I_ADJ_GAP,      $.RrDiag.I_ADJ_INTRA,
+        $.RrDiag.I_RING_CLEAR,   $.RrDiag.I_REC_STAGED,   $.RrDiag.I_REC_INVALID,
+        $.RrDiag.I_MAXGAP_BATCH, $.RrDiag.I_MAXGAP_BEAT,  $.RrDiag.I_FLAGS
+    ];
+    if (exp.size() != $.RrDiag.SLOTS) {
+        logger.error("this pin lists " + exp.size() + " indices but SLOTS is " +
+                     $.RrDiag.SLOTS + " -- a slot was added without pinning it");
+        return false;
+    }
+    for (var i = 0; i < exp.size(); i++) {
+        if (exp[i] != i) {
+            logger.error("slot key: position " + i + " holds index " + exp[i] +
+                         " -- renumbering re-keys every file already recorded");
+            ok = false;
+        }
+    }
+    // The flag bits are powers of two and distinct, so ORing them is lossless.
+    if ($.RrDiag.F_RR_REGISTERED != 1 || $.RrDiag.F_SENSOR_OK != 2) {
+        logger.error("the rr_diag flag bits moved; every recorded file's flags slot is re-keyed");
+        ok = false;
+    }
+    return ok;
+}
+
+// Counters SATURATE at readout rather than wrapping. A slot reading MAXV means
+// "at least MAXV", never a small number that used to be large.
+(:test) function test_rr_c1_diagCountersSaturate(logger) {
+    var ok = true;
+    if ($.RrDiag.clamp(70000) != $.RrDiag.MAXV) { logger.error("70000 must clamp to MAXV"); ok = false; }
+    if ($.RrDiag.clamp($.RrDiag.MAXV) != $.RrDiag.MAXV) { logger.error("MAXV must survive"); ok = false; }
+    if ($.RrDiag.clamp($.RrDiag.MAXV - 1) != $.RrDiag.MAXV - 1) { logger.error("MAXV-1 must survive"); ok = false; }
+    if ($.RrDiag.clamp(0) != 0)     { logger.error("0 must survive"); ok = false; }
+    if ($.RrDiag.clamp(-1) != 0)    { logger.error("a negative must floor at 0, never reach the field"); ok = false; }
+    if ($.RrDiag.clamp(null) != 0)  { logger.error("null must floor at 0, never reach setData"); ok = false; }
+    return ok;
+}
+
+// The receive path counts what it saw. Drives the SHIPPING handleRrAt and reads
+// the SHIPPING snapshot -- no counter is computed in the test.
+//
+// One batch of six elements: two in range, one null, one below RR_MIN_MS, one
+// above RR_MAX_MS, one in range. So BEATS = 6 and the four class counters
+// partition it exactly, which is the consistency a reader can check on a file.
+(:test) function test_rr_c1_theReceivePathCountsWhatItSaw(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.feed(1000, [850, null, 100, 9000, 860, 870]);
+    if (p.diagAt($.RrDiag.I_BATCH_OK) != 1)    { logger.error("one non-empty batch"); ok = false; }
+    if (p.diagAt($.RrDiag.I_BEATS) != 6)       { logger.error("six elements examined, got " + p.diagAt($.RrDiag.I_BEATS)); ok = false; }
+    if (p.diagAt($.RrDiag.I_BEAT_ACCEPT) != 3) { logger.error("three accepted, got " + p.diagAt($.RrDiag.I_BEAT_ACCEPT)); ok = false; }
+    if (p.diagAt($.RrDiag.I_REJ_NULL) != 1)    { logger.error("one null reject, got " + p.diagAt($.RrDiag.I_REJ_NULL)); ok = false; }
+    if (p.diagAt($.RrDiag.I_REJ_LOW) != 1)     { logger.error("one low reject, got " + p.diagAt($.RrDiag.I_REJ_LOW)); ok = false; }
+    if (p.diagAt($.RrDiag.I_REJ_HIGH) != 1)    { logger.error("one high reject, got " + p.diagAt($.RrDiag.I_REJ_HIGH)); ok = false; }
+    var part = p.diagAt($.RrDiag.I_BEAT_ACCEPT) + p.diagAt($.RrDiag.I_REJ_NULL)
+             + p.diagAt($.RrDiag.I_REJ_LOW) + p.diagAt($.RrDiag.I_REJ_HIGH);
+    if (part != p.diagAt($.RrDiag.I_BEATS)) {
+        logger.error("the four class counters do not partition BEATS: " + part +
+                     " vs " + p.diagAt($.RrDiag.I_BEATS));
+        ok = false;
+    }
+    // The two early returns are counted separately, because a null member and
+    // a present-but-empty array are different platform behaviours.
+    p.feed(2000, null);
+    p.feed(3000, []);
+    if (p.diagAt($.RrDiag.I_BATCH_NULL) != 1)  { logger.error("one null batch"); ok = false; }
+    if (p.diagAt($.RrDiag.I_BATCH_EMPTY) != 1) { logger.error("one empty batch"); ok = false; }
+    if (p.diagAt($.RrDiag.I_BATCH_OK) != 1)    { logger.error("a null/empty batch must not count as OK"); ok = false; }
+    return ok;
+}
+
+// The two longest-gap slots are recorded in WHOLE SECONDS and are DIFFERENT
+// measurements. Batches arriving that carry nothing usable is the profile the
+// activity behind rr_diag showed, and it is the case where the two diverge.
+(:test) function test_rr_c1_theTwoGapSlotsMeasureDifferentThings(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    // Batches every second; the first two carry beats, the middle four carry
+    // only out-of-range values, then beats resume. Batch gaps are all 1 s;
+    // the beat gap spans the whole unusable stretch.
+    p.feed(1000, [850]);
+    p.feed(2000, [850]);
+    p.feed(3000, [9000]);
+    p.feed(4000, [9000]);
+    p.feed(5000, [9000]);
+    p.feed(6000, [9000]);
+    p.feed(7000, [850]);
+    if (p.diagAt($.RrDiag.I_MAXGAP_BATCH) != 1) {
+        logger.error("longest batch gap should be 1 s, got " + p.diagAt($.RrDiag.I_MAXGAP_BATCH));
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_MAXGAP_BEAT) != 5) {
+        logger.error("longest accepted-beat gap should be 5 s (2000 -> 7000), got " +
+                     p.diagAt($.RrDiag.I_MAXGAP_BEAT));
+        ok = false;
+    }
+    return ok;
+}
+
+// A good batch followed by an ALL-REJECTED one, inside the staleness window,
+// still records the good batch. This is the trap the standalone "drop the
+// record on an invalid batch" guard falls into: it would record absence for
+// beats that were genuinely received.
+//
+// Green in every epoch -- before the change the all-rejected batch simply
+// skipped its write and the field latched the good array; after it, onTick
+// re-writes the still-fresh stage. The ASSERTION is the same either way, which
+// is what makes it an anchor rather than a differential.
+(:test) function test_rr_c1_anAllRejectedBatchDoesNotOverwriteAGoodOne(logger) {
+    var p = new RrProbe();
+    p.armRr();
+    p.feed(1000, [850, 860]);
+    p.feed(1500, [50, 50, 9000]);
+    p.tickAt(1600);
+    var f = p.rrField();
+    if (f.count() < 1) {
+        logger.error("nothing was ever written to rr_interval");
+        return false;
+    }
+    return arrEq(f.last(), [850, 860, $.RR_INVALID, $.RR_INVALID], logger,
+                 "the last rr_interval write after an all-rejected batch");
+}
+
+}

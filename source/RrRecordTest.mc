@@ -129,14 +129,39 @@ function buildRr(ivals) {
 
 // The display RR pip was refactored from a hardcoded `< 5000` to
 // rrIsFresh(..., RR_FRESH_MS). Pin the const so that refactor stays
-// behavior-preserving: if someone retunes RR_FRESH_MS, this test flags that the
-// UI pip's timing changed too (they are deliberately coupled today).
+// behavior-preserving: if someone retunes it, this test flags that the UI pip's
+// timing changed too.
+//
+// #40 SPLIT THE ONE CONSTANT INTO THREE, so this case now pins all three. They
+// are NOT coupled any more -- that coupling was the defect -- but every one of
+// them is still 5000 today, so the pre-refactor `< 5000` behaviour is preserved
+// for each consumer and this case says so for each consumer separately. A
+// future retune of ONE of them fails here by name, which is the whole point of
+// splitting them: the failure message tells you WHICH knob moved.
+//
+// NOT a tautology and not a re-implementation: it reads the shipping module
+// constants the shipping code indexes its gates with. Deleting any one of the
+// three from StrongRowView.mc fails to compile here.
 (:test) function test_rr_freshConstUnchanged(logger) {
-    if ($.RR_FRESH_MS != 5000) {
-        logger.error("RR_FRESH_MS changed to " + $.RR_FRESH_MS + "; display pip timing no longer matches the pre-refactor < 5000 test");
-        return false;
+    var ok = true;
+    if ($.RR_DISPLAY_FRESH_MS != 5000) {
+        logger.error("RR_DISPLAY_FRESH_MS changed to " + $.RR_DISPLAY_FRESH_MS +
+                     "; the display pip's timing no longer matches the pre-refactor < 5000 test");
+        ok = false;
     }
-    return true;
+    if ($.RR_REC_FRESH_MS != 5000) {
+        logger.error("RR_REC_FRESH_MS changed to " + $.RR_REC_FRESH_MS +
+                     "; the rr_interval staleness window moved, which changes how many " +
+                     "records a dropout can repeat before the sentinel lands");
+        ok = false;
+    }
+    if ($.RR_LOG_FRESH_MS != 5000) {
+        logger.error("RR_LOG_FRESH_MS changed to " + $.RR_LOG_FRESH_MS +
+                     "; the rmssd / avg_rmssd logging window moved, which changes " +
+                     "avg_rmssd's semantics");
+        ok = false;
+    }
+    return ok;
 }
 
 // rrGapExceeded(now, lastBeat, thresh): strict `>`; never-seen (lastBeat==0)

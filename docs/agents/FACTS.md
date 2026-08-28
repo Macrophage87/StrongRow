@@ -380,9 +380,9 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**365** `(:test)` functions under `source/`, matching
+**374** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/hrv-correctness` branch: "OK: 365 (:test) function(s) under
+run on the `claude/hrv-correctness` branch: "OK: 374 (:test) function(s) under
 source/ match scripts/expected_tests.txt exactly."). It was **362** at
 `211f106`; epic #59 adds cases in `source/RrHrvTest.mc`.
 
@@ -392,8 +392,11 @@ deleting a function *and* its pin line together still passes (#52).
 
 ### 5.3 The developer-field id map
 
-26 developer fields, ids unique, **19 unused**. Parsed from the `createField`
-calls in `source/StrongRowView.mc` at `211f106`:
+27 developer fields, ids unique, **none unused**. Parsed from the `createField`
+calls in `source/StrongRowView.mc`. The table below was taken at `211f106`,
+when there were 26 fields and **id 19 was the one free id**; epic #59 took 19
+for `rr_diag`, so the id set is now CONTIGUOUS — 0 to 26 inclusive, no holes —
+and the next field added takes 27.
 
 | id | name | type | id | name | type |
 |---:|---|---|---:|---|---|
@@ -402,6 +405,7 @@ calls in `source/StrongRowView.mc` at `211f106`:
 | 2 | `rr_interval` | UINT16 | 16 | `erg_cadence` | FLOAT |
 | 3 | `rmssd` | FLOAT | 17 | `step_type` | UINT8 |
 | 4 | `avg_rmssd` | FLOAT | 18 | `interval_num` | UINT16 |
+| 19 | `rr_diag` | UINT16 |
 | 5 | `corrective_rate` | FLOAT | 20 | `lock_rate` | FLOAT |
 | 6 | `total_corrective_strokes` | UINT16 | 21 | `lock_confidence` | FLOAT |
 | 7 | `core_temperature` | FLOAT | 22 | `lock_lowconf_run` | UINT16 |
@@ -532,7 +536,7 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
     AGENTFACT manifest-devices 12
-    AGENTFACT pinned-tests 365
+    AGENTFACT pinned-tests 374
     AGENTFACT ceiling v08-display-fixes 246 253 7
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke
@@ -553,6 +557,7 @@ prose above is the explanation.
     AGENTFACT devfield 16 erg_cadence
     AGENTFACT devfield 17 step_type
     AGENTFACT devfield 18 interval_num
+    AGENTFACT devfield 19 rr_diag
     AGENTFACT devfield 20 lock_rate
     AGENTFACT devfield 21 lock_confidence
     AGENTFACT devfield 22 lock_lowconf_run

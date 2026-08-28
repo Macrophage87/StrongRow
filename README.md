@@ -72,6 +72,12 @@ laps.)
   series**: it carries up to 4 intervals per record, so at higher heart rates
   some beats are not written to the FIT (the on-watch rMSSD still uses them
   all). Don't use it as a beat count or reconstruct HRV assuming completeness.
+  **Unused and unavailable slots hold `65535`, which means "no data for this
+  slot" and not a 65.5-second interval** — it is the FIT invalid value for the
+  field's UINT16 base type, and the field is declared with no scale or offset
+  so it is stored exactly as written. A record whose four slots are **all**
+  `65535` is one where no usable beat interval had arrived within the last
+  five seconds; drop those records rather than averaging them.
 - **Core temperature**: if a CORE (greenTEG) body-temperature pod is in range,
   StrongRow picks it up automatically over a generic ANT+ channel (the ANT+
   Core Body Temperature profile — Connect IQ has no built-in support for it,
@@ -106,7 +112,19 @@ laps.)
   not drives), `rr_interval` (up to 4 raw ms values per record), `rmssd` (ms),
   `core_temperature` and `skin_temperature` (°C) and `heat_strain_index`
   (a.u.) per record, plus session-level `avg_rmssd` (ms),
-  `total_corrective_strokes`, `max_core_temperature` and `ct_diag`.
+  `total_corrective_strokes`, `max_core_temperature`, `ct_diag` and `rr_diag`.
+- `rr_diag` is a session-level **diagnostic** array of 21 counters describing
+  what the app's own R-R receive path did — sensor callbacks seen, how many of
+  them carried heart-rate data at all, batches and beat intervals received, how
+  many intervals were rejected and for which of the three reasons, how many
+  successive differences reached the rMSSD window, and the longest gap between
+  batches and between accepted beats. It exists so that a row whose
+  `rr_interval` looks frozen can be told apart from one where R-R never reached
+  the watch, without guessing: a live `heart_rate` field proves the strap was
+  connected and sending *something*, never that beat intervals were among it.
+  It is not a training metric; the slot-by-slot key lives with the constants in
+  [`source/RrDiag.mc`](source/RrDiag.mc), and slot 0 carries a layout version so
+  an older file stays readable.
 - `ct_diag` is a session-level **diagnostic** array of counters describing what
   the app's own ANT channel did — opens attempted and succeeded, messages and
   broadcast frames received, page numbers seen, and the reason any frame was
