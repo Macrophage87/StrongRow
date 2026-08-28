@@ -10,4 +10,7 @@
     <property id="pressToContinue" type="boolean">true</property>
     <property id="dpsBenchmark" type="float">6.0</property>
     <property id="warmupCooldown" type="boolean">true</property>
+    <property id="ergMode" type="boolean">false</property>
+    <property id="ergPowerUnits" type="boolean">true</property>
+    <property id="jouleBenchmark" type="float">400.0</property>
 </properties>

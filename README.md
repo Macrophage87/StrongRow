@@ -77,11 +77,18 @@ laps.)
   Core Body Temperature profile — Connect IQ has no built-in support for it,
   and a watch app can't host the official CORE data field) and logs core and
   skin temperature. A **CT indicator** joins GPS/RR and turns green while pod
-  data is fresh. A row with no pod records no errors, but it does **not**
-  record nothing: since #75 the core/skin fields are declared on every row, so
-  a podless row logs `0.0` for both, and the diagnostic field below is written
-  unconditionally. `max_core_temperature` is still suppressed when no reading
-  was ever accepted.
+  data is fresh. A row with no pod records no errors and, since #13, no
+  fabricated readings either: the core/skin fields are still declared on every
+  row (#75), but nothing is written to them until the first current reading of
+  the session, so a podless row leaves both **unwritten** rather than logging
+  `0.0` for every record. Once a real reading has been written, a later dropout
+  **does** log `0.0` — deliberately, as an out-of-band marker. Skipping would be
+  worse: FIT record fields latch, so a skipped write republishes the last
+  reading as though the pod were still on. `0.0` is impossible as a measurement
+  (the accepted bands are 25–45 °C core, 15–45 °C skin) so it cannot be mistaken
+  for one, but it will still show as a drop to zero in a chart. The diagnostic
+  field below is written unconditionally, and `max_core_temperature` is still
+  suppressed when no reading was ever accepted.
 - **Heat Strain Index**: the same CORE broadcast carries greenTEG's 0–10 heat
   strain figure, and StrongRow decodes it into a record-level
   `heat_strain_index` field. A small **mark next to the CT indicator** shows
@@ -107,9 +114,22 @@ laps.)
   told apart from one where no pod was present, without guessing (#102). It is
   not a training metric; the slot-by-slot key lives with the `CT_DIAG_*`
   constants in [`source/CoreTempSensor.mc`](source/CoreTempSensor.mc), and slot
-  0 carries a layout version so an older file stays readable. **Version 2**
-  (24 slots) adds three heat-strain slots; slots 0–20 are unchanged from
-  version 1, so an older key still reads them.
+  0 carries a layout version so an older file stays readable. **Version 4**
+  (25 slots) adds one slot counting frames received on the CORE
+  general-information page (`0x00`), plus nine flag bits recording which
+  data-quality codes and which heart-rate-support states that page carried —
+  the pod's own opinion of its broadcasts, and whether it was asking the watch
+  for a heart rate it never received. One existing slot also changes what it
+  counts: `maxFails` still records the deepest the retry ladder ever went, but
+  in version 4 the ladder is reset by any broadcast frame rather than only by a
+  temperature frame, and a channel open that fails without raising an error now
+  counts where it previously did not — the two push in opposite directions, so a
+  version 4 `maxFails` should **not** be compared with one read from a version 3
+  row. Version 3 (24 slots) added one flag bit, recording that a deferred
+  channel retry was dropped because no timer could be armed; version 2 added
+  three heat-strain slots. No slot has ever been renumbered and no flag bit has
+  ever changed meaning, so an older key still decodes every slot it could decode
+  before.
 
 ### ⚠️ Stroke-rate timing fix — older sessions are not comparable
 

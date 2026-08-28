@@ -11,4 +11,7 @@
     <string id="setPressToContinue">Press START after rest</string>
     <string id="setDpsBenchmark">Distance per stroke benchmark (m)</string>
     <string id="setWarmupCooldown">Warmup and cooldown steps</string>
+    <string id="setErgMode">Erg mode (rowing machine)</string>
+    <string id="setErgPowerUnits">Erg: show work and power units</string>
+    <string id="setJouleBenchmark">Erg: joules per stroke benchmark</string>
 </strings>

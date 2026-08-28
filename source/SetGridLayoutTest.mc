@@ -2,8 +2,18 @@ using Toybox.Test;
 using Toybox.System;
 using Toybox.Lang;
 
-// Rendering suite for #131: the rest/gate set-summary grid, driven through the
-// shipping onUpdate.
+// Rendering suite for #131: the set-summary grid, driven through the shipping
+// onUpdate.
+//
+// THE GATE MOVED UNDER THIS FILE. #130 added STEP_DONE to it, so the call site
+// is now `(type == STEP_REST || type == STEP_GATE || type == STEP_DONE) &&
+// mLastSetValid` while the SUB-ROW suppression stays on REST and GATE alone.
+// The DONE half of that gate, and the geometry that makes it fit beside "BACK
+// to save", live in source/GridGateTest.mc together with the two pins #142
+// found missing here; this file keeps the REST / GATE / COOL cases and the
+// negative sweep. Line numbers in the paragraphs below are pre-#130 and are
+// left as written rather than silently re-pointed -- re-derive them from the
+// current file rather than trusting them.
 //
 // WHY THIS FILE EXISTS. The grid's call site --
 // `if ((type == STEP_REST || type == STEP_GATE) && mLastSetValid)`
@@ -42,22 +52,36 @@ using Toybox.Lang;
 // than a style preference. The four fenix6-family devices cap module `globals`
 // at 253 members.
 //
-// MEASURED, by adding dummy free functions to a tree until monkeyc refuses and
-// reading the number it reports -- the count is not printed on a successful
-// build, so it has to be bracketed:
+// WHAT THIS FILE COSTS, which is the part of the old note that was right and
+// is still true: FIVE members. Four file-scope (:test) functions plus the class
+// SgCase. A class costs ONE global however many statics it holds, and a
+// module-scope `const` costs none -- which is why this file's REJECTED first
+// shape, with eight free helper functions beside the same four (:test)s, came
+// to +12 rather than the +14 its fourteen declarations suggest, and was
+// refused on fenix6, fenix6pro, fenix6spro and fenix6xpro while compiling
+// cleanly on the other eight devices.
 //
-//   origin/main, --unit-test, fenix6        246   (7 free)
-//   this file's first shape, +12            258   REJECTED on fenix6,
-//                                                 fenix6pro, fenix6spro and
-//                                                 fenix6xpro; clean on the
-//                                                 other eight devices
-//   this file as it stands, +5              251   (2 free)
+// THE ABSOLUTE FIGURES THAT USED TO SIT HERE WERE WRONG AND ARE RETRACTED. The
+// old table read "origin/main, --unit-test, fenix6  246 (7 free)" and "this
+// file as it stands, +5  251 (2 free)", and closed "The next suite added here
+// has 2 to work with". origin/main ALREADY CONTAINS THIS FILE, and that tree
+// measures 243 used / 10 free -- so the table was out by 8 about the very tree
+// it named, and its forward-looking budget was out by 5. Nothing caught it
+// because the numbers were prose: scripts/check_ceiling_notes.py only reads
+// lines carrying the marker, and this table carried none. That was the
+// deliberate hole filed as #147, and the line below closes it.
 //
-// A class costs ONE global however many statics it holds, and a module-scope
-// `const` costs none -- which is why the rejected shape's eight free helpers
-// plus four (:test)s came to +12 rather than the +14 its fourteen declarations
-// suggest. The four (:test) functions have to stay free functions, so this file
-// spends 5 of the 7. The next suite added here has 2 to work with.
+// RE-BISECTED for this branch, SDK 9.2.0, by adding throwaway file-scope
+// (:test) functions to the tree until monkeyc refuses and reading the number
+// off the FAILURE -- the count is not printed on a successful build, so it can
+// only be bracketed:
+//
+//     CEILING v08-display-fixes fenix6: 246 used of 253, 7 free -- the 8th file-scope (:test) added reds
+//
+// That line is byte-identical to the one in source/GridGateTest.mc, and
+// check_ceiling_notes.py requires copies sharing an anchor and family to stay
+// identical -- so correcting one and not the other now fails CI instead of
+// shipping, which is exactly the drift that produced the retracted table.
 //
 // Execution note: the run-tests CI job runs these headlessly in the simulator
 // on fr965. Test names are pinned in scripts/expected_tests.txt -- update that
@@ -393,27 +417,36 @@ class SgCase {
 
 // -- 3. The two screens the grid must stay off --------------------------------
 
-// COOL DOWN AND DONE KEEP THEIR LIVE ROWS AND THEIR SUB ROW, with a set latched.
+// COOL DOWN KEEPS ITS LIVE ROWS AND ITS SUB ROW, with a set latched.
 //
 // This is the case that would have caught BOTH of #109's review regressions,
 // and the state it renders is a real one: advanceStep latches at every WORK
-// exit, so mLastSetValid is true for the whole of COOL and DONE.
+// exit, so mLastSetValid is true for the whole of COOL.
 //
-//   * COOL DOWN is ACTIVE ROWING. It gets its own lap and step clock, its
-//     instruction is "START when docked", and warmupCooldown defaults to true.
-//     Replacing its live rate and pace with a frozen summary of an interval
-//     that already ended is a downgrade on the DEFAULT path.
-//   * "BACK to save" on DONE is the only text on the app that tells the athlete
-//     how to write the FIT file. Losing it loses the row.
+// COOL DOWN is ACTIVE ROWING. It gets its own lap and step clock, its
+// instruction is "START when docked", and warmupCooldown defaults to true.
+// Replacing its live rate and pace with a frozen summary of an interval that
+// already ended is a downgrade on the DEFAULT path.
+//
+// DONE WAS SWEPT HERE TOO AND NO LONGER IS, and that is a RETRACTION rather
+// than a quiet edit. This case used to require DONE to keep its live rows and
+// draw no grid; #130 establishes that requirement was wrong in half. The last
+// work interval is followed by COOL or DONE and never by a REST, so DONE was
+// the one screen the final interval's summary could appear on and it never
+// did. What was RIGHT about the old case -- that "BACK to save" survives,
+// because it is the only text in the app telling the athlete how to write the
+// FIT -- is kept, and is now asserted WITH the grid up by
+// GridGate.test_gg_c2_doneShowsTheFinalIntervalAndKeepsBackToSave. DONE's grid
+// geometry is pinned by GridGate.test_gg_c2_theDoneGridClearsTheTitleAndTheSubRow.
 //
 // WARM is deliberately not swept here: it precedes every latch, so a latched
 // WARM is not a state the app can reach, and asserting about one would be
 // pinning fiction. It is covered un-latched by the case below.
-(:test) function test_grid_coolAndDoneKeepTheLiveRowsAndTheSubRow(logger) {
+(:test) function test_grid_coolKeepsTheLiveRowsAndTheSubRow(logger) {
     var k     = new HrProbe();
-    var kinds = [ k.kindCool(), k.kindDone() ];
-    var names = [ "COOL", "DONE" ];
-    var sub   = [ "START when docked", "BACK to save" ];
+    var kinds = [ k.kindCool() ];
+    var names = [ "COOL" ];
+    var sub   = [ "START when docked" ];
     var lab   = SgCase.labels();
 
     for (var i = 0; i < kinds.size(); i++) {
