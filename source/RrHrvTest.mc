@@ -955,4 +955,74 @@ module RrHrv {
     return ok;
 }
 
+// THE TWO GAP SLOTS MEASURE SILENCE INSIDE THE ROW, not silence that straddled
+// START. Round-2 review finding 2: zeroing mRrDiag at startSession is not the
+// whole reset, because slots 18 and 19 are computed from mLastRrMs and
+// mLastBeatMs, and those two stamps deliberately SURVIVE a session boundary
+// (stopAndSave says so in as many words -- the display pip and the #16 gap
+// check need them). So the first post-START batch after a silence that
+// straddled START loaded the WHOLE straddling duration into the two slots, and
+// the slots take a running max, so it was sticky for the row.
+//
+// That inverts the discrimination the pair exists to make: source/RrDiag.mc
+// tells a reader "both large means delivery stopped", and the row below had a
+// 30 s in-row gap, not a 390 s delivery failure.
+//
+// Driven through the SHIPPING rrDiagSessionReset (via RrProbe.beginRowAt),
+// which is the function startSession calls; no (:test) can reach startSession
+// itself, so what this case CANNOT show is that startSession still calls it.
+//
+// The second half is the near neighbour, and it is here because the same
+// mechanism recurs at EVERY session boundary in one app run, not just the
+// first: stopAndSave does not reset the stamps either, so a second row started
+// after a gap since the first row's last beat would load that inter-row
+// silence into its own slots.
+(:test) function test_rr_c2_theGapSlotsAreMeasuredFromSessionStart(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    // On the dock: the strap streams, so both stamps are set. Then it comes
+    // loose and delivers nothing for six minutes.
+    p.feed(1000, [850]);
+    // START pressed mid-silence, at t+360 s.
+    p.beginRowAt(361000);
+    if (p.gapBaseMs() != 361000) {
+        logger.error("the session reset must stamp the gap baseline, got " + p.gapBaseMs());
+        return false;
+    }
+    if (p.diagAt($.RrDiag.I_BATCH_OK) != 0) {
+        logger.error("setup failed: the session reset must zero the counters, BATCH_OK=" +
+                     p.diagAt($.RrDiag.I_BATCH_OK));
+        return false;
+    }
+    // The strap reconnects 30 s into the row.
+    p.feed(391000, [850]);
+    if (p.diagAt($.RrDiag.I_MAXGAP_BATCH) != 30) {
+        logger.error("the batch-gap slot must measure 30 s from session start, got " +
+                     p.diagAt($.RrDiag.I_MAXGAP_BATCH) +
+                     " -- silence that straddled START is being reported as part of the row");
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_MAXGAP_BEAT) != 30) {
+        logger.error("the beat-gap slot must measure 30 s from session start, got " +
+                     p.diagAt($.RrDiag.I_MAXGAP_BEAT));
+        ok = false;
+    }
+    // Second row of the same app run, started 1000 s after the first row's
+    // last beat, with the first batch 10 s in.
+    p.endSession();
+    p.beginRowAt(1391000);
+    p.feed(1401000, [850]);
+    if (p.diagAt($.RrDiag.I_MAXGAP_BATCH) != 10) {
+        logger.error("the batch-gap slot must restart at the SECOND row too, got " +
+                     p.diagAt($.RrDiag.I_MAXGAP_BATCH));
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_MAXGAP_BEAT) != 10) {
+        logger.error("the beat-gap slot must restart at the SECOND row too, got " +
+                     p.diagAt($.RrDiag.I_MAXGAP_BEAT));
+        ok = false;
+    }
+    return ok;
+}
+
 }

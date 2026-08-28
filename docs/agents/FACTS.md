@@ -380,9 +380,9 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**384** `(:test)` functions under `source/`, matching
+**385** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/hrv-correctness` branch: "OK: 384 (:test) function(s) under
+run on the `claude/hrv-correctness` branch: "OK: 385 (:test) function(s) under
 source/ match scripts/expected_tests.txt exactly."). It was **362** at
 `211f106`; epic #59 adds cases in `source/RrHrvTest.mc`.
 
@@ -536,7 +536,7 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
     AGENTFACT manifest-devices 12
-    AGENTFACT pinned-tests 384
+    AGENTFACT pinned-tests 385
     AGENTFACT ceiling v08-display-fixes 246 253 7
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke
