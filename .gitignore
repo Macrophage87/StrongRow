@@ -25,3 +25,9 @@ developer_key*
 # the moment scripts/test_cue_replay.py runs.
 __pycache__/
 *.pyc
+
+# Agent worktrees live under .claude/worktrees/ (540 MB, ~28 nested worktrees).
+# The settings file IS versioned; the worktrees are not. An accidental `git add -f`
+# here is also what makes monkeyc walk every worktree copy of source/ and fail with
+# "Redefinition of $.StrongRowView" -- see the release ritual.
+.claude/worktrees/

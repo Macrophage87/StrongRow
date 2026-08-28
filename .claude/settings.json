@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git fetch:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git branch:*)",
+      "Bash(git worktree list:*)",
+      "Bash(git archive:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run watch:*)",
+      "Bash(gh release list:*)",
+      "Bash(gh release view:*)",
+      "Bash(sh scripts/check_expected_tests.sh:*)",
+      "Bash(python3 scripts/check_:*)",
+      "Bash(python3 scripts/test_:*)",
+      "Bash(ls:*)",
+      "Bash(stat:*)",
+      "Bash(file:*)",
+      "Bash(wc:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(sed -n:*)",
+      "Bash(sha256sum:*)",
+      "Bash(docker images:*)",
+      "Bash(docker info:*)"
+    ]
+  }
+}
