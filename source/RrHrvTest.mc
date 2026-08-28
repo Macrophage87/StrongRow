@@ -282,6 +282,16 @@ class RrProbe extends StrongRowView {
     function diag()       { return rrDiagSnapshot(); }
     function diagAt(i)    { return rrDiagSnapshot()[i]; }
     function endSession() { stopAndSave(); }
+    // The SESSION-START half of the receive-path diagnostic, driven directly
+    // because no (:test) can obtain a Session and so startSession's body is
+    // unreachable from here (FACTS.md 3.2). This calls the SHIPPING
+    // rrDiagSessionReset -- the same function startSession calls, with no
+    // logic of its own -- so a case built on it pins the production reset and
+    // not a copy of it. What it CANNOT pin is that startSession still calls
+    // it; that link is a one-line static fact, and nothing in the suite can
+    // reach it.
+    function beginRowAt(t) { rrDiagSessionReset(t); }
+    function gapBaseMs()   { return mRrGapBaseMs; }
 }
 
 
@@ -447,6 +457,38 @@ class RrProbe extends StrongRowView {
     if ($.RrDiag.clamp(0) != 0)     { logger.error("0 must survive"); ok = false; }
     if ($.RrDiag.clamp(-1) != 0)    { logger.error("a negative must floor at 0, never reach the field"); ok = false; }
     if ($.RrDiag.clamp(null) != 0)  { logger.error("null must floor at 0, never reach setData"); ok = false; }
+    return ok;
+}
+
+// The snapshot's clamp is USED, not merely present -- and the case above
+// cannot show that. test_rr_c1_diagCountersSaturate calls $.RrDiag.clamp with
+// literals, so it stays green if rrDiagSnapshot stops calling it. MEASURED on
+// this branch at c96ea5a: replacing the snapshot's `a[i] = $.RrDiag.clamp(
+// mRrDiag[i]);` with `a[i] = mRrDiag[i];` left the WHOLE suite green at
+// PASSED (passed=383, failed=0, errors=0) -- a surviving mutant, and the shape
+// source/RrDiag.mc's header warns about one sensor over (ct_diag pinned a
+// prefix; a tail permutation would have gone unnoticed).
+//
+// The gap slots are the cheap way in: handleRrAt writes them as raw whole
+// seconds, unclamped, so a 70,000 s silence puts a value past MAXV in front of
+// a UINT16 setData and ONLY the readout clamp brings it back. Both slots are
+// driven by one batch because both are written from it -- prevBeatMs > 0 and
+// mLastBeatMs == now both hold on the second feed.
+(:test) function test_rr_c1_snapshotClampsAGapPastMaxv(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.feed(1000, [800]);
+    p.feed(70001000, [800]);   // 70,000 s of silence -- past MAXV in both slots
+    if (p.diagAt($.RrDiag.I_MAXGAP_BATCH) != $.RrDiag.MAXV) {
+        logger.error("batch-gap slot read " + p.diagAt($.RrDiag.I_MAXGAP_BATCH) +
+                     ", not MAXV -- an unclamped value reaches the UINT16 field");
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_MAXGAP_BEAT) != $.RrDiag.MAXV) {
+        logger.error("beat-gap slot read " + p.diagAt($.RrDiag.I_MAXGAP_BEAT) +
+                     ", not MAXV");
+        ok = false;
+    }
     return ok;
 }
 

@@ -1505,6 +1505,16 @@ class StrongRowView extends Ui.View {
     // holding a plain Number array rather than twenty-one named fields; the
     // slot map and the whole argument live in source/RrDiag.mc.
     hidden var mRrDiag;
+    // Session-start baseline for the TWO gap slots only, on the same
+    // System.getTimer() base as the stamps above. It exists because
+    // mLastRrMs and mLastBeatMs deliberately SURVIVE a session boundary
+    // (stopAndSave says so in as many words) while mRrDiag is zeroed at
+    // startSession, so without a baseline the first post-START batch loads
+    // silence that straddled START -- or silence between two rows of one app
+    // run -- into slots that exist to measure delivery failure INSIDE the
+    // row. Init 0, which is why a probe with no session behaves exactly as
+    // before. Round-2 review finding 2.
+    hidden var mRrGapBaseMs;
 
     // ================= app / workout state ==================================
     hidden var mSensorOk;
@@ -1664,7 +1674,8 @@ class StrongRowView extends Ui.View {
         // record. A literal here could drift from RR_PER_REC or from RR_INVALID
         // and nothing would notice.
         mRrInvalidRec = packRr([]);
-        mRrDiag     = $.RrDiag.newCounters();
+        mRrDiag       = $.RrDiag.newCounters();
+        mRrGapBaseMs  = 0;
         mStartMs    = 0;
         mStarted    = false;
         mRecFailed  = false;
@@ -4494,6 +4505,16 @@ class StrongRowView extends Ui.View {
     //                decoded value, range bound, freshness window or
     //                difference may depend on a counter. Slot map in
     //                source/RrDiag.mc.
+    //   mRrGapBaseMs "when did THIS ROW start?" A fourth stamp, and the only
+    //                one that is not a receive-path event: it is written by
+    //                rrDiagSessionReset and by nothing else. Sole consumers:
+    //                the two gap slots (18, 19), which measure from
+    //                max(their own stamp, this) so they cannot report silence
+    //                that straddled START or that fell between two rows of one
+    //                app run. Init 0; 0 <=> no session has started, in which
+    //                case the slots measure from the stamps alone exactly as
+    //                before. Load-bearing for NOTHING outside mRrDiag, by the
+    //                row above.
     //
     // SESSION-BOUNDARY RESETS, precisely: stopAndSave had never reset mRrLast,
     // the ring, mRmssd or mLastDiffMs. This change INTRODUCES those resets
@@ -4730,6 +4751,24 @@ class StrongRowView extends Ui.View {
     // in startSensor -- whose sole caller is onLayout -- and never change
     // afterwards. That is the opposite of ct_diag's flags, which have to be
     // latched at close() because the ANT channel is torn down first.
+    // The SESSION-SCOPE reset of the receive-path diagnostic: the counters and
+    // the gap baseline, together, because they are one fact ("this row starts
+    // here") and separating them is exactly the defect round 2 found.
+    //
+    // A FUNCTION RATHER THAN TWO LINES IN startSession, for a reason that is
+    // about testability and is stated so nobody inlines it back. No (:test) in
+    // this repository can obtain a Session (FACTS.md 3.2), so startSession's
+    // body is unreachable from the suite; with the assignment inline there,
+    // nothing could pin that the baseline is taken at all. This seam is the
+    // same shape as handleRrAt: the shipping code a case can call.
+    //
+    // `now` is a parameter rather than System.getTimer() read inside, so the
+    // clock stays injectable (FACTS.md 3.5).
+    hidden function rrDiagSessionReset(now) {
+        mRrDiag      = $.RrDiag.newCounters();
+        mRrGapBaseMs = now;
+    }
+
     hidden function rrDiagSnapshot() {
         var a = new [$.RrDiag.SLOTS];
         for (var i = 0; i < $.RrDiag.SLOTS; i++) {
@@ -5408,7 +5447,17 @@ class StrongRowView extends Ui.View {
                 // onLayout and START. handleRrAt runs from onLayout onward, so
                 // without this reset a long dwell before START would be
                 // reported as part of the row.
-                mRrDiag = $.RrDiag.newCounters();
+                //
+                // ZEROING THE COUNTERS IS NOT ENOUGH ON ITS OWN, and round 2's
+                // review found the hole: mLastRrMs and mLastBeatMs deliberately
+                // SURVIVE a session boundary (stopAndSave says so), and the two
+                // gap slots are computed from them. Without a baseline the
+                // first post-START batch after a silence that STRADDLED START
+                // -- or after a gap between two rows of one app run -- writes
+                // the whole straddling duration into slots 18 and 19, and the
+                // slots take a running max so it is sticky for the row. The
+                // reset therefore takes both, in one call.
+                rrDiagSessionReset(nowMs());
                 // boat-handling workload: blade movements the drive detector
                 // correctly ignores (steering taps, corrections)
                 try {
