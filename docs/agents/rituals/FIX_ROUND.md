@@ -73,7 +73,7 @@ repository has the receipt twice:
   (measured, in the CI container, on fr965)" —
   `source/StrongRowView.mc:3336-3344`;
 * the same hole, read one file over while writing the mirror, **and repeated
-  anyway** — `source/DpsArcTest.mc:266-273`.
+  anyway** — `source/DpsArcTest.mc:266-274`.
 
 So: **mutation-test every pin you add.** Break the thing it guards, run the
 suite, report the numbers — *"reverting X reds exactly case Y, N−1/N."* If it

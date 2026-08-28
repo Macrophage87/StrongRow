@@ -59,7 +59,7 @@ Three incident anchors for why V is the axis that gets under-scored:
   deleting both real clamp lines left all 308 cases green (measured, in the CI
   container, on fr965)" (`source/StrongRowView.mc:3336-3344`). A green suite is
   not V=0 evidence unless the test **calls** the thing. The same hole is
-  recorded a second time at `source/DpsArcTest.mc:266-273`, read one file over
+  recorded a second time at `source/DpsArcTest.mc:266-274`, read one file over
   "and repeated anyway".
 * **A stale checkout answers with the wrong tree.** Measured 2026-08-28: the
   primary local checkout's `main` was **78 commits behind** `origin/main`

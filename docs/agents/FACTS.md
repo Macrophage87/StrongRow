@@ -47,7 +47,7 @@ ls ~/Library/Application\ Support/Garmin/ConnectIQ/Sdks/   # macOS
 `PASSED (passed=N, failed=0, errors=0)` summary line, never the exit code.
 
 Verified at source: `scripts/run_ciq_tests.sh:13-21` states the harness exit
-contract ("the VERDICT IS NOT OURS"), and `scripts/run_ciq_tests.sh:219-221`
+contract ("the VERDICT IS NOT OURS"), and `scripts/run_ciq_tests.sh:219-220`
 says it directly — "monkeydo's exit code is NEVER the verdict … upstream
 documents it returns non-zero even when tests pass". The harness exits `0`
 whenever it reached `monkeydo` at all and `2` only when it failed *before*
@@ -92,8 +92,9 @@ MSYS_NO_PATHCONV=1 docker run --rm --entrypoint bash -v "WINPATH:/work" -w /work
 **The daemon is not always up.** Measured 2026-08-28 in this branch:
 `docker version` exits 1 with
 `failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`.
-When it is down, **say the run did not happen** — see §3.1 for the pipeline
-trap that has already turned this exact failure into a reported success.
+When it is down, **say the run did not happen** (§3.1) — and see **§2.6** for
+the pipeline trap that has already turned this exact failure into a reported
+success.
 
 ### 1.4 Devices
 
@@ -155,7 +156,7 @@ grep -rn --exclude-dir=bin --exclude-dir=gen --exclude-dir=.git \
          --exclude-dir=.claude --exclude-dir=__pycache__ -c PATTERN .
 ```
 
-Count first; open only files with hits. `scripts/check_ceiling_notes.py:79-87`
+Count first; open only files with hits. `scripts/check_ceiling_notes.py:81-87`
 takes the same precaution structurally — it skips **every** dot-directory, and
 says why: "a checkout can carry additional working copies of this same
 repository underneath a dot-directory, and scanning those would find a second,
@@ -199,7 +200,7 @@ $ set -o pipefail; docker version … 2>&1 | head -1 >/dev/null ; echo $?
 A verification that never ran was reported as in flight on exactly this
 mechanism. Use `set -o pipefail`, or check `${PIPESTATUS[0]}`, for any command
 whose result you intend to quote. `scripts/run_ciq_tests.sh:28` sets
-`-euo pipefail` for this reason, and `:220-222` explains the one place it
+`-euo pipefail` for this reason, and `:221-222` explains the one place it
 deliberately avoids a pipe (`tee` would abort every green run under pipefail,
 because `monkeydo` exits non-zero on success).
 
@@ -467,7 +468,7 @@ Named here once so no definition needs its own copy of the narrative.
   `source/StrongRowView.mc:3336-3344` — a case "was in fact exercising a
   private COPY of the comparison inside the test probe, and deleting both real
   clamp lines left all 308 cases green (measured, in the CI container, on
-  fr965)". `source/DpsArcTest.mc:266-273` records the same hole being read one
+  fr965)". `source/DpsArcTest.mc:266-274` records the same hole being read one
   file over "and repeated anyway".
 * **The near neighbour.** The reported defect is fixed and the thing beside it
   survives. When you confirm a fix, look one level out immediately.
