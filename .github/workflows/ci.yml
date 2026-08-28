@@ -239,6 +239,28 @@ jobs:
         # `ci-required` gates on a fixed `needs:` list, so a new JOB would be
         # unrequired and could red unnoticed.
         run: python3 scripts/check_source_refs.py
+      - name: Agent-facts checker self-test (runner-free RED/GREEN)
+        # Hermetic scratch trees only, same shape as the suites above. Eighteen
+        # of its twenty-one cases are RED differentials: each perturbs exactly
+        # one thing away from a shared green fixture, so a case that reds names
+        # its own defect rather than describing one.
+        run: python3 scripts/test_check_agent_facts.py
+      - name: Check docs/agents/FACTS.md against the real tree
+        # docs/agents/FACTS.md is the ONE copy of the volatile facts the agent
+        # loop shares. A single copy that nothing re-derives is only a slower
+        # kind of drift -- it goes stale silently instead of loudly, which is
+        # what docs/AGENT_PROMPT.md did with an environment claim that is false
+        # (#79) and with a rule no job scans for (#160). So the five figures
+        # the tree can regenerate are regenerated: the &ciq_image digest, the
+        # <iq:product> count, the expected_tests.txt count, the quoted CEILING
+        # note, and the whole developer-field id->name map (which nothing
+        # pinned before -- check_step_fields.py pins the COUNT and the
+        # uniqueness, not the binding).
+        #
+        # In test-tooling for the reason the CEILING step gives above:
+        # `ci-required` gates on a fixed `needs:` list, so a new JOB would be
+        # unrequired and could red unnoticed.
+        run: python3 scripts/check_agent_facts.py
 
   # 3) Compile the unit-test build for EVERY manifest device in ONE job, so the
   #    SDK image is pulled once (not once per device via a matrix). A per-device
