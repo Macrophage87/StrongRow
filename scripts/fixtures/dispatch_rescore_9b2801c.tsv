@@ -1,0 +1,49 @@
+# Re-scoring worksheet for the R/P/I re-anchoring of docs/agents/DISPATCH.md 1.
+#
+# Pin: open issues read 2026-08-28 with `gh issue list --state open --limit 200`,
+# against origin/main = 9b2801c4847ba0a23b41cdcc5349e0567104ee14. 91 open, 89 headed.
+#
+# `header` is the issue's Dispatch: line VERBATIM, so the before-scores are not a
+# transcription anyone has to trust -- scripts/dispatch_rescore.py parses them out of
+# it. What is NOT machine-checkable here is whether the header still says this on
+# GitHub today: no CI job has network. Re-read the issues before quoting these.
+#
+# V and S are HELD AT THEIR HEADER VALUES on purpose. This branch re-anchors R, P
+# and I only, and holding the other two isolates the effect. The harness enforces it.
+#
+# Sample: 24 drawn by a deterministic stratified rule (sort each current band by
+# issue number ascending; take every 1st of Routine and Critical, every 4th of
+# Standard, every 5th of Heavy), plus 4 chosen deliberately -- marked `supplementary`
+# -- to reach cells the stratified draw missed (P=3 documentation work, and the two
+# worked examples in 4 that are still open).
+#
+# Columns, tab-separated:
+#   issue  stratum  header  R_after V_after S_after P_after I_after  whyR  whyP  whyI
+95	stratified	Dispatch: band=Routine (R2 V1 S0 P1 I2 = 6) | implementer=small/medium | reviewers=1×small | ultracode=no	1	1	0	1	0	decision record; a revert restores the tree	a source comment pointing outward at #20; no second copy	no code change; nothing in flight touches the accel loop
+9	stratified	Dispatch: band=Standard (R2 V1 S2 P2 I2 = 9) | implementer=large/high | reviewers=1×large | ultracode=no	2	1	2	1	2	changes what a shipped build records into row_stroke_rate	a window-sizing comment stating a figure; one reader	adds (:test) cases, so scripts/expected_tests.txt moves
+27	stratified	Dispatch: band=Standard (R2 V1 S1 P2 I2 = 8) | implementer=large/medium | reviewers=1×large | ultracode=no	1	1	1	1	3	shell script only; a revert is a complete remedy	a comment naming the parser it must agree with; one reader	scripts/list_devices.sh IS the CI device matrix (ci.yml:353,436,550)
+43	stratified	Dispatch: band=Standard (R2 V1 S2 P2 I2 = 9) | implementer=large/medium | reviewers=1×large | ultracode=no	1	1	2	1	2	diagnostics only; explicitly must not drive mDt	a comment stating the API-availability caveat; one reader	adds (:test) cases, so scripts/expected_tests.txt moves
+61	stratified	Dispatch: band=Standard (R2 V1 S2 P2 I2 = 9) | implementer=large/medium | reviewers=1×large | ultracode=no	1	1	2	1	1	pure tooling; a revert is a complete remedy	a comment stating the complexity figures; one reader	scripts/test_check_ciq_tests.py is the named consumer; nothing in flight
+65	stratified	Dispatch: band=Standard (R2 V1 S1 P2 I2 = 8) | implementer=large/medium | reviewers=1×large | ultracode=no	1	1	1	1	0	two keyword arguments in a test harness	a one-line comment saying why; one reader	one file, no pinned budget, nothing in flight
+90	stratified	Dispatch: band=Standard (R2 V1 S2 P2 I2 = 9) | implementer=large/high | reviewers=1×large | ultracode=no	2	1	2	1	2	changes what a shipped build records into row_stroke_rate	a corrector comment stating the divisor order; one reader	adds (:test) cases, so scripts/expected_tests.txt moves
+120	stratified	Dispatch: band=Standard (R2 V1 S0 P2 I2 = 7) | implementer=large/medium | reviewers=1×large | ultracode=no	1	1	0	1	0	two keyword arguments in a test harness	a one-line comment saying why; one reader	one file; the sibling issues #65/#179 are issues, not branches
+156	stratified	Dispatch: band=Standard (R2 V1 S1 P2 I2 = 8) | implementer=large/medium | reviewers=1×large | ultracode=no	1	1	1	1	2	probe plus (:test) cases; a revert restores the tree	the mutation table lives in the PR body; one reader	a file-scope probe spends fenix6 globals headroom and moves the pin
+22	stratified	Dispatch: band=Heavy (R2 V3 S3 P2 I2 = 12) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	3	2	1	display only; nothing recorded changes	the footer width figure is also stated in #174	shared layout constants with named consumers; nothing in flight
+30	stratified	Dispatch: band=Heavy (R2 V3 S2 P3 I2 = 12) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	2	2	2	an epic body; a revert restores the tree	cited by number from #17 #13 #19 #18 #26 #81 #88 #111	origin/claude/core-p1-bundle edits source/CoreTempSensor.mc
+46	stratified	Dispatch: band=Heavy (R2 V2 S2 P2 I2 = 10) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	2	2	2	2	2	changes what a shipped build records into rr_interval	the issue names two comment corrections, one in the #14 note	adds (:test) cases, so scripts/expected_tests.txt moves
+67	stratified	Dispatch: band=Heavy (R2 V1 S3 P2 I2 = 10) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	1	3	2	0	a measurement written back as a comment	byte-exact pass criteria, cited by #60	no source change at all
+81	stratified	Dispatch: band=Heavy (R2 V3 S1 P3 I2 = 11) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	1	2	0	a measurement written back as a comment	byte-exact pass criteria, cited by #80 #88 #111	no source change at all
+88	stratified	Dispatch: band=Heavy (R2 V3 S2 P3 I2 = 12) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	2	2	0	a measurement written back as a comment	byte-exact pass criteria, cited by #86 #87 #80	no source change at all
+104	stratified	Dispatch: band=Heavy (R2 V1 S2 P2 I3 = 10) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	1	2	2	3	removes bytes from the build; a revert restores them	the same false claim is written in three test files, one citing another	monkey.jungle excludeAnnotations, inherited by every build job
+118	stratified	Dispatch: band=Heavy (R2 V3 S2 P3 I2 = 12) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	2	2	2	doubles and comment corrections; no recorded value moves	corrects PR #103's body, already quoted in review, and #116's recipe	origin/claude/core-p1-bundle edits source/CoreTempSensor.mc and the pin
+150	stratified	Dispatch: band=Heavy (R2 V3 S0 P3 I2 = 10) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	0	2	0	a measurement written back as a comment	byte-exact pass criteria, reasoning from #36 and #48	no source change at all
+164	stratified	Dispatch: band=Heavy (R2 V3 S3 P2 I2 = 12) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	2	3	3	1	2	the fix changes what a shipped build records into heat_strain_index	a comment on the freshness gate; no second copy named	origin/claude/core-p1-bundle edits source/CoreTempSensor.mc
+174	stratified	Dispatch: band=Heavy (R2 V3 S2 P2 I2 = 11) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	2	2	0	the issue asks for a decision; the decision is a comment	the footer width figure is also stated in #22	no source change until the decision lands
+83	stratified	Dispatch: band=Critical (R2 V3 S3 P3 I2 = 13) | implementer=large/high | reviewers=4×large + consolidator | ultracode=no	1	3	3	2	0	a measurement written back as a comment	byte-exact pass criteria, cited by #111 and #80	no source change at all
+111	stratified	Dispatch: band=Critical (R2 V3 S3 P2 I3 = 13) | implementer=large/high | reviewers=4×large + consolidator | ultracode=no	1	3	3	2	2	display only; the FIT half belongs to #80	design prose cited by #108 #109 #110, plus a threshold to document	PIP/arc geometry is a hand-synced pair with check_pip_geometry.py
+149	stratified	Dispatch: band=Critical (R2 V3 S3 P2 I3 = 13) | implementer=large/high | reviewers=4×large + consolidator | ultracode=no	1	3	3	2	2	display cue only; deferred, and #139 is not reverted	the CUE_* block is pinned by scripts/test_cue_replay.py C2	scripts/cue_replay.py and its fixture are read by two suites
+175	stratified	Dispatch: band=Critical (R2 V3 S3 P2 I3 = 13) | implementer=large/high | reviewers=4×large + consolidator | ultracode=no	2	3	3	2	2	changes the radio config a shipped build uses to obtain core_temperature	the page-0 bit table is also written into ct_diag v4 documentation	origin/claude/core-p1-bundle edits source/CoreTempSensor.mc
+79	supplementary	Dispatch: band=Heavy (R2 V3 S2 P3 I2 = 12) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	2	3	2	a documentation edit; a revert restores it	docs/AGENT_PROMPT.md, and FACTS.md 1.1 states the same claim	agent-prompt-guard restricts who may edit that file (ci.yml:662-664)
+100	supplementary	Dispatch: band=Heavy (R2 V3 S1 P3 I2 = 11) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	1	3	2	a documentation edit; a revert restores it	docs/CI.md, the documented merge-gate contract	docs/CI.md and ci-required's needs list are a hand-synced pair
+160	supplementary	Dispatch: band=Standard (R2 V1 S1 P1 I3 = 8) | implementer=large/medium | reviewers=1×large | ultracode=no	1	1	1	3	3	adds a CI job; a revert removes it	a new required job must be added to docs/CI.md's table, or it recreates #100	.github/workflows/ci.yml, inherited by every branch
+172	supplementary	Dispatch: band=Heavy (R2 V3 S1 P3 I3 = 12) | implementer=large/high | reviewers=3×large + consolidator | ultracode=no	1	3	1	2	0	a measurement written back as a comment	byte-exact pass criteria, cited by #154 and #171	no source change at all
