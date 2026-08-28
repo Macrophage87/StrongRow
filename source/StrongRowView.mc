@@ -56,10 +56,55 @@ const RR_PER_REC = 4;      // raw intervals logged per FIT record
 // field having no :scale/:offset (see mFitRr creation), so a stored 0xFFFF is
 // emitted verbatim as "no data". Revisit if the base type, scale, or offset change.
 const RR_INVALID = 0xFFFF;
-// R-R freshness window (ms). Used both by the display "RR streaming" indicator
-// (keyed off batch arrival, mLastRrMs) and by the rMSSD logging gate (keyed off
-// the last RANGE-accepted beat, mLastBeatMs) so a dropout stops polluting avg_rmssd.
-const RR_FRESH_MS = 5000;
+// R-R FRESHNESS WINDOWS (ms). THREE constants, one per consumer, and that is
+// #40's fix rather than three copies of one number.
+//
+// The single RR_FRESH_MS these replace served a UI indicator, a FIT record
+// field and an rMSSD accumulator at once. It carried no bug -- all three wanted
+// 5000 ms -- but retuning the display pip to feel snappier would silently have
+// narrowed the window in which rMSSD is considered valid for logging, changing
+// avg_rmssd's semantics with nothing to catch it.
+//
+// Each one is paired with EXACTLY ONE timestamp, and the pairing is the model
+// (the R-R state table at handleRrAt is the long form):
+//
+//   RR_DISPLAY_FRESH_MS  <-> mLastRrMs    "did a BATCH arrive?"   -> the RR pip
+//   RR_REC_FRESH_MS      <-> mLastBeatMs  "was a BEAT accepted?"  -> rr_interval
+//   RR_LOG_FRESH_MS      <-> mLastDiffMs  "was a DIFF accepted?"  -> rmssd
+//
+// All three are 5000 today, so this split is behaviour-preserving on its own.
+// Do not collapse them again: they are three different questions that happen to
+// share an answer.
+//
+// The pip's window is a COSMETIC responsiveness choice -- how quickly the green
+// "RR streaming" mark goes grey.
+const RR_DISPLAY_FRESH_MS = 5000;
+// How long a staged rr_interval batch may keep being re-written to the record
+// field before the RR_INVALID sentinel replaces it (#46). Keyed on the last
+// RANGE-ACCEPTED BEAT, not on batch arrival: batches that arrive carrying
+// nothing in range must not keep a stale batch looking fresh, which is the
+// exact shape of the defect (a strap that keeps talking while its R-R stream is
+// unusable). The bound this buys is stated as what it is -- records repeating
+// the previous array are bounded by THIS WINDOW rather than by the length of
+// the dropout. How many records that is depends on the FIT engine's record
+// cadence, WHICH IS NOT MEASURED here: #36's "~1/s" is its own probe's write
+// rate and #48 establishes no cadence at all.
+const RR_REC_FRESH_MS = 5000;
+// How long after the last ARTIFACT-ACCEPTED difference rmssd keeps being
+// written per record and accumulated into avg_rmssd (#38). Keyed on mLastDiffMs
+// rather than mLastBeatMs so that sustained artifact rejection -- beats in
+// range whose successive differences all fail RR_ART_K -- closes the gate
+// instead of holding a frozen value open.
+//
+// This one carries a BATCH-CADENCE ASSUMPTION the other two do not: it assumes
+// the sensor delivers R-R batches often enough that an accepted difference
+// lands inside every 5 s. On firmware that batches heartBeatIntervals more
+// slowly the gate would be closed at most ticks, leaving mRmssdN at 0 so
+// stopAndSave skips the avg_rmssd write entirely -- a session field that
+// previously always appeared would go missing. Low likelihood (:period => 1 is
+// requested at registration) and NOT observed; it is written down because the
+// constant now gates FIT writes rather than a pixel colour.
+const RR_LOG_FRESH_MS = 5000;
 
 // Footer states (#74). Module scope rather than class `hidden const` for the
 // same reason STEP_WORK is passed to rateColour as a boolean: a static cannot
@@ -373,9 +418,11 @@ const HR_ARC_BOT = 208;
 // are different heart rates and the same degree.
 const HR_ARC_MIN_D = 2;
 // FRESHNESS WINDOW (ms) for the heart-rate read. Its own constant rather than
-// RR_FRESH_MS on purpose: the RR pip keys off R-R BATCH ARRIVAL (mLastRrMs) and
-// this keys off a bpm read. Different signals, independently tunable, and #110
-// requires the two no-data states to stay independent.
+// RR_DISPLAY_FRESH_MS on purpose: the RR pip keys off R-R BATCH ARRIVAL
+// (mLastRrMs) and this keys off a bpm read. Different signals, independently
+// tunable, and #110 requires the two no-data states to stay independent. This
+// line is the argument #40 generalised into the three RR_*_FRESH_MS windows at
+// the top of the file.
 //
 // SCOPE, stated rather than implied: this measures the age of the last non-null
 // read BY THIS APP. It does not measure the age of the underlying beat --
@@ -1424,10 +1471,16 @@ class StrongRowView extends Ui.View {
     hidden var mCueCand;
     hidden var mCueSince;
 
-    // R-R / HRV state
+    // R-R / HRV state. ONE MEANING PER FIELD -- the table at handleRrAt is the
+    // model and these declarations implement it. The three *Ms stamps below
+    // answer three different questions and are paired one-to-one with the three
+    // RR_*_FRESH_MS constants at the top of the file; #59's root cause was that
+    // two of the three questions shared one stamp and all three shared one
+    // constant.
     hidden var mRrOk;
-    hidden var mLastRrMs;     // last R-R BATCH arrival (display indicator)
-    hidden var mLastBeatMs;   // last RANGE-accepted beat (rMSSD freshness + gap reset)
+    hidden var mLastRrMs;     // last R-R BATCH arrival        -> display pip
+    hidden var mLastBeatMs;   // last RANGE-accepted beat      -> rr_interval + gap reset
+    hidden var mLastDiffMs;   // last ARTIFACT-accepted diff   -> rmssd + avg_rmssd (#38)
     hidden var mRrLast;
     hidden var mDiffSq;
     hidden var mDiffIdx;
@@ -1435,6 +1488,33 @@ class StrongRowView extends Ui.View {
     hidden var mRmssd;
     hidden var mRmssdSum;
     hidden var mRmssdN;
+    // #46: the rr_interval record array STAGED by handleRrAt for onTick to
+    // write, or null when no batch has produced one. handleRrAt never calls
+    // setData on that field itself -- see the single-writer note at the onTick
+    // write site.
+    hidden var mPendingRr;
+    // The all-sentinel record array, built ONCE at construction and never
+    // mutated afterwards. Built rather than written as a literal so it can
+    // never disagree with packRr's padding, and reused rather than reallocated
+    // so the 4 Hz dropout write costs no allocation. Reuse is safe whether
+    // setData copies at call time or reads the reference when the record
+    // commits -- WHICH OF THE TWO IT DOES IS NOT ESTABLISHED -- because the
+    // contents never change after construction.
+    hidden var mRrInvalidRec;
+    // The rr_diag receive-path counters, indexed by $.RrDiag.I_*. One member
+    // holding a plain Number array rather than twenty-one named fields; the
+    // slot map and the whole argument live in source/RrDiag.mc.
+    hidden var mRrDiag;
+    // Session-start baseline for the TWO gap slots only, on the same
+    // System.getTimer() base as the stamps above. It exists because
+    // mLastRrMs and mLastBeatMs deliberately SURVIVE a session boundary
+    // (stopAndSave says so in as many words) while mRrDiag is zeroed at
+    // startSession, so without a baseline the first post-START batch loads
+    // silence that straddled START -- or silence between two rows of one app
+    // run -- into slots that exist to measure delivery failure INSIDE the
+    // row. Init 0, which is why a probe with no session behaves exactly as
+    // before. Round-2 review finding 2.
+    hidden var mRrGapBaseMs;
 
     // ================= app / workout state ==================================
     hidden var mSensorOk;
@@ -1454,6 +1534,7 @@ class StrongRowView extends Ui.View {
     hidden var mFitSkin;
     hidden var mFitMaxCore;
     hidden var mFitCtDiag;
+    hidden var mFitRrDiag;   // rr_diag, session scope (epic #59)
     hidden var mFitHsi;
     // #149's lock-state diagnostics, record scope, ids 20-22.
     hidden var mFitLockRate;
@@ -1551,6 +1632,7 @@ class StrongRowView extends Ui.View {
         mFitSkin    = null;
         mFitMaxCore = null;
         mFitCtDiag  = null;
+        mFitRrDiag  = null;
         mFitHsi     = null;
         mFitLockRate = null;
         mFitLockConf = null;
@@ -1578,6 +1660,7 @@ class StrongRowView extends Ui.View {
         mRrOk       = false;
         mLastRrMs   = 0;
         mLastBeatMs = 0;
+        mLastDiffMs = 0;
         mRrLast     = 0;
         mDiffSq     = new [RR_NDIFF];
         mDiffIdx    = 0;
@@ -1585,6 +1668,14 @@ class StrongRowView extends Ui.View {
         mRmssd      = 0.0;
         mRmssdSum   = 0.0;
         mRmssdN     = 0;
+        mPendingRr  = null;
+        // Built through packRr rather than written as a literal: one definition
+        // of "no beat in this slot", shared with the padding of a partly-filled
+        // record. A literal here could drift from RR_PER_REC or from RR_INVALID
+        // and nothing would notice.
+        mRrInvalidRec = packRr([]);
+        mRrDiag       = $.RrDiag.newCounters();
+        mRrGapBaseMs  = 0;
         mStartMs    = 0;
         mStarted    = false;
         mRecFailed  = false;
@@ -1890,8 +1981,24 @@ class StrongRowView extends Ui.View {
         if (mStarted && !mPaused) {
             if (mFitRate != null) { mFitRate.setData(outputRate()); }
             if (mFitDps != null)  { mFitDps.setData(distPerStroke(currentSpeed())); }
-            // #15: only log/accumulate rMSSD while beats are actually fresh
-            // (keyed off the last RANGE-accepted beat, not batch arrival).
+            // #15/#38: only log/accumulate rMSSD while the VALUE is actually
+            // moving -- keyed off mLastDiffMs, the last ARTIFACT-accepted
+            // difference, not off batch arrival and no longer off the last
+            // RANGE-accepted beat either.
+            //
+            // WHY THE KEY MOVED (#38). mLastBeatMs advances for every beat that
+            // clears the range gate, INCLUDING beats whose successive
+            // difference is then rejected by RR_ART_K. So freshness used to
+            // track "beats are arriving" rather than "the rMSSD is being
+            // updated": an alternating 600/900 ms pattern -- both well in
+            // range, 300 > 0.30 * 600 on every pair -- kept the gate open
+            // indefinitely while nothing entered the ring, and a frozen mRmssd
+            // was logged per record and accumulated into avg_rmssd. Wrist
+            // optical HR under rowing motion is exactly the sensor that
+            // produces erratic-but-in-range intervals. The stamp could not
+            // simply be moved inside the artifact gate: #16's rrGapExceeded
+            // needs a BEAT-arrival stamp for missed-beat detection, which is
+            // why there are now two stamps rather than one relocated one.
             //
             // What this definitively fixes: avg_rmssd. The accumulator is pure
             // in-app arithmetic, so a dropout contributes nothing to the mean.
@@ -1910,15 +2017,17 @@ class StrongRowView extends Ui.View {
             // record is still a [Local] question, so do not upgrade it to
             // "absence". Once a real value HAS been written in the
             // session, a dropout leaves the trace carrying the last
-            // pre-dropout value and NO in-app change can do better:
-            //   * writing 0.0 is an in-band lie ("perfect regularity") -- and
-            //     note the write below has no value guard while the
-            //     accumulator does, so 0.0 IS logged today; #68 enumerates
-            //     five such windows (four reachable today) and owns the fix.
-            //     That defect is FIXABLE (the guard leaves the field unset in
-            //     the not-yet-written windows, so they carry the invalid
-            //     pattern instead of 0.0) and is distinct from the
-            //     latched-value case above;
+            // pre-dropout value. The encodings CONSIDERED, which is not the
+            // same thing as the encodings that EXIST -- see the note after
+            // them:
+            //   * writing 0.0 is an in-band lie ("perfect regularity"). The
+            //     write below used to have NO value guard while the accumulator
+            //     beside it did, so 0.0 was logged in the five windows #68
+            //     enumerates -- two of them unbounded. #68's guard is applied
+            //     below and the asymmetry is gone: BOTH now test `mRmssd > 0.0`.
+            //     In the not-yet-written windows the field is left unset, so
+            //     those records carry the type's invalid pattern instead of
+            //     0.0;
             //   * writing NaN is not an absence encoding for a FLOAT field:
             //     #48 measured setData(NaN) landing as 0xFFC00000, a
             //     DIFFERENT pattern from never-set invalid (0xFFFFFFFF) --
@@ -1930,19 +2039,104 @@ class StrongRowView extends Ui.View {
             //   * setData(null) is NEVER an option: #48 observed it as an
             //     uncatchable native error that escapes try/catch and kills
             //     the app -- a crash, not a no-op.
-            // Skipping is still the right call (it is no worse, and writing
-            // 0.0 would be an in-band lie). The LATCHED-VALUE half of #15's
-            // trace defect is confirmed unfixable in-app and accepted as such
-            // (#47, Option B); the 0.0 half is #68's to fix, and the
-            // rr_interval analogue is #46's. Do not restate a "gap" claim
-            // until a [Local] decode proves it -- and note no open [Local]
-            // issue covers rmssd itself (#53 tracks Connect's rendering of
-            // the NaN pattern, which is a different question).
-            if (rrIsFresh(System.getTimer(), mLastBeatMs, $.RR_FRESH_MS)) {
-                if (mFitRmssd != null) { mFitRmssd.setData(mRmssd); }   // see #68
+            // Skipping is what this PR does for the LATCHED-VALUE half, and
+            // that is a CHOICE rather than a proof of impossibility. A
+            // negative out-of-band FLOAT sentinel IS available -- mRmssd is a
+            // sqrt and is non-negative by construction, the same argument
+            // LOCK_CONF_NONE = -1.0 rests on for lock_confidence at the top of
+            // this file -- and what such a record DECODES as is the open
+            // question, not whether it can be written. Tracked as #188;
+            // #47's Option A/B framing predates #149 and did not consider it.
+            // The 0.0 half is #68's and is fixed below; the rr_interval
+            // analogue is #46's and is fixed at the write site further down
+            // this block. Do not restate a "gap" claim until a [Local] decode
+            // proves it -- and note no open [Local] issue covers rmssd itself
+            // (#53 tracks Connect's rendering of the NaN pattern, and #188 the
+            // negative-sentinel question, which are different questions).
+            //
+            // THE TWO GUARDS ARE NOW SYMMETRIC, which is the whole of #68: a
+            // trace write and an accumulator step that disagreed about whether
+            // 0.0 was data was evidence the trace guard had been forgotten, not
+            // decided. The accepted cost is that a genuinely measured 0.0 --
+            // #68's window 3, a fully flat ring, which IS representable because
+            // d == 0 clears the artifact gate and is stored -- is suppressed
+            // from the trace. Ninety consecutive exact-millisecond ties from a
+            // warm ring is physiologically unreachable, and 0.0 doubles as
+            // recomputeRmssd's insufficient-data sentinel, so it is in band by
+            // construction and cannot be distinguished from absence anyway.
+            //
+            // nowMs() rather than System.getTimer() directly: it is the
+            // overridable clock seam, so a probe makes this gate deterministic
+            // instead of depending on how long the simulator has been open.
+            if (rrIsFresh(nowMs(), mLastDiffMs, $.RR_LOG_FRESH_MS)) {
+                if (mFitRmssd != null && mRmssd > 0.0) { mFitRmssd.setData(mRmssd); }
                 if (mRmssd > 0.0) {
                     mRmssdSum += mRmssd;
                     mRmssdN++;
+                }
+            }
+            // #46: THE ONLY setData CALLER FOR rr_interval, and the only place
+            // that decides what a dropout records.
+            //
+            // handleRrAt used to write this field itself and skip an
+            // all-invalid batch, on the belief that skipping left the record
+            // "absent". It does not. Record-scope FitContributor fields LATCH
+            // -- #36 measured it byte-exact on fr965 / SDK 9.2.0 and #48
+            // reconfirmed it -- so a skipped setData re-emits the previous
+            // array on every subsequent record. On activity i180658540
+            // (v0.7.1) that produced 1,730 of 2,476 records repeating the
+            // previous array, 44 runs of 5 s or more, and a longest run of 185
+            // records across which Garmin's own heart_rate field was present on
+            // 185 of 185 and varying between 101 and 133 bpm. Duplicate beats
+            // are worse than a gap because they look like data, and rmssd and
+            // avg_rmssd are derived from the same intervals, so they inherit it.
+            //
+            // THE SENTINEL IS RR_INVALID (0xFFFF) AND THAT CHOICE IS PINNED,
+            // not asserted. #158's rule is that a sentinel is only safe where
+            // it is OUT OF BAND for a real reading, and the argument has to run
+            // through the real filter rather than restate a constant --
+            // test_rr_c0_theSentinelIsRejectedByTheFilter and
+            // test_rr_c0_noFilterSurvivorIsTheSentinel do exactly that, by
+            // sweeping raw values through filterRr/packRr. 0 is the other
+            // candidate and it LOSES: it is out of band for the physiological
+            // QUANTITY (RR_MIN_MS is 250) but it is an ordinary in-band value
+            // of the UINT16 TYPE, so a decoder that honours FIT invalids drops
+            // 0xFFFF automatically and hands 0 through as a 0 ms interval for
+            // arithmetic to consume. 0xFFFF is additionally the pattern a
+            // NEVER-SET UINT16 field already carries (#48), so records before
+            // the first write and records marked absent by this line use ONE
+            // encoding rather than two -- and it is already packRr's pad for
+            // unused slots, so a partly-filled record and a fully-absent one do
+            // not need two different "no beat here" markers in the same array.
+            //
+            // WRITTEN UNCONDITIONALLY under this block's mStarted && !mPaused
+            // gate, never withheld: withholding is what produced the defect.
+            // The staleness test keys on mLastBeatMs -- the last RANGE-ACCEPTED
+            // BEAT -- and NOT on mLastRrMs, because a strap delivering batches
+            // that carry nothing in range would hold a batch-arrival stamp
+            // fresh for the entire dropout and re-emit the stale array anyway.
+            // That distinction is the fix, and the case that separates the two
+            // candidate keys is
+            // test_rr_c2_theRecordGoesInvalidWhenOnlyRejectedBatchesArrive.
+            //
+            // WHAT THIS DOES NOT CLAIM. It says what the code CALLS. Whether a
+            // decoder reads an explicit [0xFFFF x 4] record as absent -- and
+            // whether it is byte-identical to the never-set case at RECORD
+            // rather than session granularity for a UINT16 ARRAY field -- is
+            // not established here: #48 proved the FLOAT scalar case. The
+            // [Local] issue filed with this change owns it.
+            if (mFitRr != null) {
+                if (mPendingRr != null
+                        && rrIsFresh(nowMs(), mLastBeatMs, $.RR_REC_FRESH_MS)) {
+                    mFitRr.setData(mPendingRr);
+                    mRrDiag[$.RrDiag.I_REC_STAGED] += 1;
+                } else {
+                    // Dropped here as well as written: once the stage has gone
+                    // stale it must not come back if a later batch happens to
+                    // arrive within the window of an old stamp.
+                    mPendingRr = null;
+                    mFitRr.setData(mRrInvalidRec);
+                    mRrDiag[$.RrDiag.I_REC_INVALID] += 1;
                 }
             }
             if (mFitCorr != null) {
@@ -2260,8 +2454,20 @@ class StrongRowView extends Ui.View {
     }
 
     function onSensorData(sensorData as Sensor.SensorData) as Void {
-        if (mRrOk && (sensorData has :heartRateData) && sensorData.heartRateData != null) {
-            handleRr(sensorData.heartRateData.heartBeatIntervals);
+        // BEHAVIOUR-PRESERVING RESTRUCTURE: handleRr is still called under
+        // exactly the old condition. The nesting exists so the two rr_diag
+        // callback counters can tell "the listener stopped firing" from "it
+        // fired and carried no heart-rate data" -- the discrimination the
+        // activity that motivated rr_diag could not make, because a live native
+        // heart_rate field proves the strap was connected and sending
+        // something, never that R-R was among it.
+        if (mRrOk) {
+            mRrDiag[$.RrDiag.I_SENSOR_CB] += 1;
+            if ((sensorData has :heartRateData) && sensorData.heartRateData != null) {
+                handleRr(sensorData.heartRateData.heartBeatIntervals);
+            } else {
+                mRrDiag[$.RrDiag.I_HR_ABSENT] += 1;
+            }
         }
         var accel = sensorData.accelerometerData;
         if (accel == null) { return; }
@@ -2508,14 +2714,19 @@ class StrongRowView extends Ui.View {
 
     // Pure: the encodable, in-range intervals from `ivals`, as Numbers, in
     // arrival order. No instance state, so it is (:test)-able without a Session.
+    // BEHAVIOUR-PRESERVING as of #37: the inline predicate was extracted into
+    // rrAccept (declared with handleRrAt) and is CALLED here rather than
+    // duplicated, so the record path and the adjacency path cannot drift.
+    // Every survivor is still converted with toNumber() AFTER the null test and
+    // BEFORE the range test -- rrAccept applies the same order, which
+    // test_rr_c1_filterRrAgreesWithRrAccept pins by sweeping both.
     static function filterRr(ivals) {
         var out = [];
         if (ivals == null) { return out; }
         for (var i = 0; i < ivals.size(); i++) {
             var rr = ivals[i];
-            if (rr == null) { continue; }
-            rr = rr.toNumber();
-            if (rr >= $.RR_MIN_MS && rr <= $.RR_MAX_MS) { out.add(rr); }
+            if (rrAccept(rr) != $.RrDiag.A_OK) { continue; }
+            out.add(rr.toNumber());
         }
         return out;
     }
@@ -4233,67 +4444,195 @@ class StrongRowView extends Ui.View {
     // this model updates its own row(s) here in the same commit -- this table
     // is the model; the code below implements it.
     //
+    // THE ROOT CAUSE THIS EPIC FIXED, named once so the table below reads as a
+    // remedy rather than a list. handleRr used to conflate three questions --
+    // "did a batch arrive?", "was a beat accepted?" and "is this beat adjacent
+    // to the last one?" -- across overlapping state, with ONE five-second
+    // constant serving a UI indicator, an rMSSD accumulator and a FIT record
+    // field at the same time. Six of the seven sub-issues were symptoms of that.
+    // There are now THREE stamps, THREE constants and THREE consumers, paired
+    // one-to-one, and the pairing is the invariant to protect:
+    //
+    //   mLastRrMs   + RR_DISPLAY_FRESH_MS -> the RR pip        (cosmetic)
+    //   mLastBeatMs + RR_REC_FRESH_MS     -> rr_interval       (#46)
+    //   mLastDiffMs + RR_LOG_FRESH_MS     -> rmssd, avg_rmssd  (#38)
+    //
     //   mLastRrMs    "did a batch arrive?"  Stamped on every non-empty batch,
     //                before filtering. Init 0, never reset. Sole consumer: the
-    //                display RR pip (drawGps). Not a data-validity signal.
+    //                display RR pip (drawGps). NOT a data-validity signal, and
+    //                that is why #46's record gate does not key on it: a strap
+    //                that keeps delivering batches carrying nothing in range
+    //                would hold this stamp fresh for the whole dropout.
     //   mLastBeatMs  "was a beat RANGE-accepted?" Stamped for every such
     //                beat (batch-arrival time -- all beats in a batch share
     //                one stamp). Init 0, never reset; 0 <=> no beat ever
     //                RANGE-accepted. Consumers: the rrGapExceeded gap reset,
-    //                and onTick's rMSSD freshness gate (#15).
+    //                and onTick's rr_interval staleness gate (#46).
+    //   mLastDiffMs  "was a difference ARTIFACT-accepted?" Stamped only where
+    //                a squared difference is actually stored in the ring.
+    //                Init 0, reset at a session boundary; 0 <=> the ring has
+    //                taken nothing. Sole consumer: onTick's rMSSD trace and
+    //                avg_rmssd accumulator (#38). This is the stamp that
+    //                closes the gate under sustained artifact rejection,
+    //                which mLastBeatMs cannot do because it advances on every
+    //                range-accepted beat whatever happens to the difference.
     //   mRrLast      "what is the adjacency reference?" The last
     //                RANGE-accepted beat's INTERVAL in ms -- a value, not a
     //                timestamp, unlike the rows above (RR_ART_K * mRrLast
     //                only parses that way). ARTIFACT-rejected beats still
-    //                advance it. Zeroed on an inter-batch gap (#16) so the
-    //                next beat seeds instead of diffing; init 0; no
-    //                session-boundary reset today -- PR-C of epic #59 ADDS
-    //                one (#59; #68 window 1 for why). Known gap: intra-batch
-    //                RANGE rejections do not reset it (#37).
+    //                advance it. Zeroed on an inter-batch gap (#16) AND on an
+    //                intra-batch RANGE rejection (#37) so the next beat seeds
+    //                instead of diffing; init 0; reset at a session boundary.
     //   mDiffSq / mDiffIdx / mDiffCount
     //                The rMSSD window: the last ~RR_NDIFF SQUARED
     //                ARTIFACT-accepted successive differences -- the ring
     //                stores d*d, not d, so recomputeRmssd sums it directly.
     //                Fixed-size OVERWRITING ring -- oldest evicted once full,
-    //                ~90 pairs retained; init empty; never cleared on a gap
-    //                (#39) and no session-boundary reset today -- PR-C of
-    //                epic #59 ADDS one (#59). The code depends on
+    //                ~90 pairs retained; init empty; CLEARED on an inter-batch
+    //                gap (#39) and at a session boundary. The code depends on
     //                mDiffIdx == mDiffCount while filling (entries beyond
-    //                mDiffCount are null).
+    //                mDiffCount are never read; they are null before the
+    //                first fill and stale afterwards, because the clear
+    //                zeroes the index and the count and does NOT null the
+    //                slots). The clear restores mDiffIdx == mDiffCount,
+    //                which is the half the code depends on.
     //   mRmssd       Cached rMSSD over the ring; 0.0 is BOTH the
     //                "insufficient data" sentinel (mDiffCount < 5) and the
     //                honest value of a fully flat ring (sqrt(0) -- #68's
-    //                window 3). Init 0.0; no session-boundary reset today --
-    //                PR-C of epic #59 ADDS one (#59). Consumers: onTick's
-    //                trace write and accumulator -- with asymmetric guards
-    //                today; #68. There is no UI consumer: mRmssd is a LOGGED
-    //                value, not an on-watch one.
+    //                window 3). Init 0.0; reset at a session boundary.
+    //                Consumers: onTick's trace write and accumulator, now
+    //                under the SAME `> 0.0` guard (#68) -- the asymmetry that
+    //                logged 0.0 as "perfect regularity" is gone. There is no
+    //                UI consumer: mRmssd is a LOGGED value, not an on-watch one.
+    //   mPendingRr   "what would this record carry?" The packed rr_interval
+    //                array staged by the most recent batch that produced at
+    //                least one RANGE-accepted beat, or null. Written to the
+    //                field by onTick and by nothing else. Init null, nulled at
+    //                a session boundary. An all-rejected batch DOES NOT stage
+    //                over it -- see the staging note below.
+    //   mRrDiag      The rr_diag receive-path counters. Advanced here, read
+    //                once in stopAndSave, and load-bearing for NOTHING: no
+    //                decoded value, range bound, freshness window or
+    //                difference may depend on a counter. Slot map in
+    //                source/RrDiag.mc.
+    //   mRrGapBaseMs "when did THIS ROW start?" A fourth stamp, and the only
+    //                one that is not a receive-path event: it is written by
+    //                rrDiagSessionReset and by nothing else. Sole consumers:
+    //                the two gap slots (18, 19), which measure from
+    //                max(their own stamp, this) so they cannot report silence
+    //                that straddled START or that fell between two rows of one
+    //                app run. Init 0; 0 <=> no session has started, in which
+    //                case the slots measure from the stamps alone exactly as
+    //                before. Load-bearing for NOTHING outside mRrDiag, by the
+    //                row above.
     //
-    // "PR-C ADDS", precisely: stopAndSave has never reset mRrLast, the ring,
-    // or mRmssd, so PR-C INTRODUCES those resets rather than restoring them.
-    // #39 is the dropout ring-clear -- a different question from session
-    // boundaries, which are #59's plan (see #68 window 1).
+    // SESSION-BOUNDARY RESETS, precisely: stopAndSave had never reset mRrLast,
+    // the ring, mRmssd or mLastDiffMs. This change INTRODUCES those resets
+    // rather than restoring them, and it does so in the same commit as #68's
+    // trace guard -- because a reset makes #68's warm-up window (its window 1)
+    // a CERTAINTY where it used to be a race, and no commit may exist where the
+    // warm-up fires unguarded. #39's dropout ring-clear is a different question
+    // from a session boundary and both are implemented here.
     //
     // Two DIFFERENT accept gates appear above, named consistently:
     // RANGE-accepted means the interval survives [RR_MIN_MS, RR_MAX_MS]
-    // after toNumber (filterRr); ARTIFACT-accepted means the successive
-    // difference also cleared RR_ART_K. Every row advances regardless of
-    // mStarted/mPaused -- handleRr runs whenever batches arrive -- which is
-    // what makes #68's window 1 a race today rather than a certainty.
-    // Freshness is keyed on RANGE-accepted BEATS, not ARTIFACT-accepted
-    // DIFFS, so sustained artifact rejection still reads "fresh" (#38);
-    // and both freshness gates share the single RR_FRESH_MS constant --
-    // splitting it is #40.
+    // after toNumber (rrAccept, which filterRr now calls -- ONE predicate);
+    // ARTIFACT-accepted means the successive difference also cleared RR_ART_K.
+    // Every row advances regardless of mStarted/mPaused -- handleRrAt runs
+    // whenever batches arrive -- and only the onTick write sites are gated on
+    // recording state.
+    //
+    // A KNOWN RESIDUAL of the #37 adjacency model, bounded rather than left
+    // implicit. A false detection that splits one true ~1000 ms interval into
+    // two components BOTH >= RR_MIN_MS yields two RANGE-accepted beats, so no
+    // rejection occurs, the adjacency reset never fires, and the spurious
+    // difference need only clear RR_ART_K. Solving |2a - 1000| <= 0.3a gives
+    // a in [435, 588] of a possible [250, 750] -- roughly a 30% window
+    // producing an accepted, spuriously small difference that biases rMSSD
+    // downward. An adjacency test based on range membership cannot see this
+    // class; only a model of the beat train could, and none is proposed here.
+    //
     // Clock caveat: NEITHER freshness helper has been analysed across a
     // System.getTimer() rollover (~24.9 days IF the counter is signed 32-bit
     // -- itself unmeasured), and by inspection the two would NOT fail alike
     // (the tsMs > 0 guards cut opposite ways); treat rollover behaviour as
-    // unspecified -- #70.
+    // unspecified -- #70. Adding a third consumer of rrIsFresh does not change
+    // that and does not make it worse; it does make #70 apply to one more
+    // field, which is said here rather than left to be discovered.
     // -------------------------------------------------------------------------
+
+    // Pure: how does the R-R range gate classify ONE raw interval element?
+    // Returns one of $.RrDiag.A_OK / A_NULL / A_LOW / A_HIGH.
+    //
+    // THE SINGLE RANGE PREDICATE. filterRr calls it and so does the rMSSD walk
+    // below, so the FIT record path and the adjacency path cannot disagree
+    // about what "in range" means. Before #37 the adjacency logic re-derived
+    // the same test WITHOUT the toNumber() conversion, which is the shape this
+    // repository has shipped twice under a different name.
+    //
+    // CONVERSION BEFORE COMPARISON, and the order is load-bearing: a Float
+    // 2500.7 truncates to 2500 and is ACCEPTED, while comparing first would
+    // reject it. Every filterRr pin used integer literals only, so that order
+    // was invisible to the whole suite until
+    // test_rr_c0_filterConvertsBeforeRangeChecking pinned it.
+    //
+    // The three reject classes deliberately share a consequence (adjacency
+    // breaks) and are counted separately, because they are not justified
+    // identically -- see the A_* block in source/RrDiag.mc.
+    static function rrAccept(v) {
+        if (v == null) { return $.RrDiag.A_NULL; }
+        var rr = v.toNumber();
+        if (rr < $.RR_MIN_MS) { return $.RrDiag.A_LOW; }
+        if (rr > $.RR_MAX_MS) { return $.RrDiag.A_HIGH; }
+        return $.RrDiag.A_OK;
+    }
+
+    // handleRr is the CALLBACK-FACING name; handleRrAt is the same function
+    // with the clock injected.
+    //
+    // The seam exists so the R-R paths are reachable from a (:test) at all.
+    // System.getTimer() counts from device start, so a case that synthesised a
+    // timestamp from it would pass on a desktop simulator that has been open
+    // for hours and RED on CI's, which is seconds old -- reliably, not flakily.
+    // Every case in source/RrHrvTest.mc drives handleRrAt with literal
+    // milliseconds for that reason. Nothing else may be added between these two
+    // lines: handleRr's whole contract is "handleRrAt, now".
     hidden function handleRr(ivals) {
-        if (ivals == null) { return; }
-        if (ivals.size() <= 0) { return; }
-        var now = System.getTimer();
+        handleRrAt(System.getTimer(), ivals);
+    }
+
+    hidden function handleRrAt(now, ivals) {
+        if (ivals == null) {
+            mRrDiag[$.RrDiag.I_BATCH_NULL] += 1;
+            return;
+        }
+        if (ivals.size() <= 0) {
+            mRrDiag[$.RrDiag.I_BATCH_EMPTY] += 1;
+            return;
+        }
+        mRrDiag[$.RrDiag.I_BATCH_OK] += 1;
+        // Longest gap between NON-EMPTY batch arrivals, in whole seconds. Read
+        // before mLastRrMs is restamped, and only once a first batch has been
+        // seen -- the interval before the first batch is not a gap.
+        //
+        // MEASURED FROM THE LATER OF the previous batch and the start of this
+        // row. mLastRrMs deliberately survives a session boundary, mRrDiag does
+        // not, so without the baseline the first post-START batch after a
+        // silence that STRADDLED START writes the whole straddling duration
+        // here -- and the running max makes it stick for the row. mRrGapBaseMs
+        // is 0 until a session has started, so before START, and in any probe
+        // that never starts one, this is exactly the old measurement.
+        var bBase = mLastRrMs;
+        if (mRrGapBaseMs > bBase) { bBase = mRrGapBaseMs; }
+        if (bBase > 0) {
+            var bg = (now - bBase) / 1000;
+            if (bg > mRrDiag[$.RrDiag.I_MAXGAP_BATCH]) {
+                mRrDiag[$.RrDiag.I_MAXGAP_BATCH] = bg;
+            }
+        }
+        // Captured BEFORE the loop restamps it, so the beat-gap slot measures
+        // the silence this batch ended rather than zero.
+        var prevBeatMs = mLastBeatMs;
         mLastRrMs = now;   // batch-arrival stamp (drives the display indicator)
 
         // #16: if the gap since the last RANGE-accepted beat exceeds one max
@@ -4302,14 +4641,67 @@ class StrongRowView extends Ui.View {
         // before this batch restamps it). The `if (mRrLast > 0)` guard below
         // then makes the first post-gap beat seed only, injecting no bogus
         // rMSSD difference.
-        if (rrGapExceeded(now, mLastBeatMs, $.RR_MAX_MS)) { mRrLast = 0; }
+        //
+        // #39 ADDS THE RING CLEAR. Every entry in mDiffSq is a real, in-range,
+        // artifact-gated difference between two genuinely consecutive beats, so
+        // keeping them is defensible -- but after a gap the ring can hold up to
+        // RR_NDIFF-1 PRE-dropout differences, and the first post-resume record
+        // then logs an rMSSD composed entirely of pre-dropout beats, and
+        // accumulates it into avg_rmssd as though it were clean. Worst when the
+        // gap spans a physiological state change, which is the common case for
+        // a dropout during a piece. The price is a ~5-beat blind spot after
+        // each resume, because recomputeRmssd returns 0.0 while mDiffCount < 5
+        // -- and that blind spot is exactly #68's window 4, which is why the
+        // trace guard lands in the same commit and not one after it.
+        //
+        // THE THRESHOLD CARRIES SLOP AND THE COMMENT SAYS SO. startSensor
+        // registers with :period => 1 and every beat in a batch shares the
+        // batch's arrival stamp, so `now - mLastBeatMs` is always a multiple of
+        // roughly 1000 ms and ANY threshold in (2000, 3000] behaves identically
+        // here. RR_MAX_MS is not observably pinned to 2500 at this call site,
+        // and the predicate carries plus or minus one batch period in both
+        // directions -- a false gap at ~2000 ms of true silence, a missed gap
+        // at ~2900 ms. This consumes the gap EVENT, not the magnitude bound, so
+        // it adds no recording-cadence meaning to RR_MAX_MS (#40's pathology,
+        // one constant over).
+        if (rrGapExceeded(now, mLastBeatMs, $.RR_MAX_MS)) {
+            mRrLast = 0;
+            mRrDiag[$.RrDiag.I_ADJ_GAP] += 1;
+            if (mDiffCount > 0) {
+                mDiffIdx   = 0;
+                mDiffCount = 0;
+                mRrDiag[$.RrDiag.I_RING_CLEAR] += 1;
+            }
+        }
 
-        var valid = filterRr(ivals);   // single in-range source for both paths
+        var valid = filterRr(ivals);   // FIT record path: in-range, in order
 
-        // rMSSD: same in-range set, plus the artifact gate (rMSSD-only). Runs
-        // regardless of recording state; only the FIT write below is gated.
-        for (var i = 0; i < valid.size(); i++) {
-            var rr = valid[i];
+        // rMSSD: walks the RAW batch, not `valid`, and that is #37's fix.
+        // filterRr drops out-of-range elements from the MIDDLE of a batch, and
+        // the survivors on either side of a drop are not successive R-R
+        // intervals -- yet the old loop diffed them as if they were, because
+        // the adjacency reset ran once, at batch entry. The concrete trigger is
+        // a double detection: [800, 200, 700] filters to [800, 700], the loop
+        // diffs 800 -> 700 for d = 100, and 100 <= 0.30 * 800 so the artifact
+        // gate PASSES it. The gate cannot catch this class by construction --
+        // it is precisely the pair that looks plausible that slips through.
+        //
+        // Only the FIT record path may use `valid`; anything reasoning about
+        // ADJACENCY has to see the holes.
+        for (var i = 0; i < ivals.size(); i++) {
+            var code = rrAccept(ivals[i]);
+            mRrDiag[$.RrDiag.I_BEATS] += 1;
+            mRrDiag[$.RrDiag.slotFor(code)] += 1;
+            if (code != $.RrDiag.A_OK) {
+                // A rejected element means a true interval is missing or split
+                // here, so the NEXT survivor is not the successor of the last
+                // one. Counted only when a reference actually existed, so the
+                // slot measures BREAKS rather than repeating the reject counts.
+                if (mRrLast > 0) { mRrDiag[$.RrDiag.I_ADJ_INTRA] += 1; }
+                mRrLast = 0;
+                continue;
+            }
+            var rr = ivals[i].toNumber();
             if (mRrLast > 0) {
                 var d = rr - mRrLast;
                 if (d < 0) { d = -d; }
@@ -4317,25 +4709,105 @@ class StrongRowView extends Ui.View {
                     mDiffSq[mDiffIdx] = (d * 1.0) * d;
                     mDiffIdx = (mDiffIdx + 1) % RR_NDIFF;
                     if (mDiffCount < RR_NDIFF) { mDiffCount++; }
+                    // #38: the ONLY place this stamp advances. onTick's rMSSD
+                    // gate reads it, so "fresh" now means "the value moved",
+                    // not "beats are arriving".
+                    mLastDiffMs = now;
+                    mRrDiag[$.RrDiag.I_DIFF_ACCEPT] += 1;
+                } else {
+                    mRrDiag[$.RrDiag.I_DIFF_REJ_ART] += 1;
                 }
             }
             mRrLast = rr;
             mLastBeatMs = now;   // #15/#16: last RANGE-accepted beat (batch beats share `now`)
         }
 
-        // FIT record: first RR_PER_REC valid intervals, padded with RR_INVALID.
-        // An all-invalid batch (valid empty) skips the write -- and the field
-        // LATCHES (the RECORD-SCOPE FIELDS LATCH block in startSession, above
-        // the createField calls, carries that fact; the state model above
-        // carries the R-R state, not the latch): the record re-emits the last
-        // written array, or stays never-set before any write. An earlier
-        // version of this comment claimed the field is left "absent for that
-        // record"; #36 disproved that. The dropout sentinel fix is #46's
-        // scope.
-        if (valid.size() > 0 && mFitRr != null && mStarted && !mPaused) {
-            mFitRr.setData(packRr(valid));
+        // Longest gap between RANGE-accepted BEATS, in whole seconds. Every
+        // beat in a batch shares `now`, so the gap this batch ended is the same
+        // for all of them and is recorded once, here, rather than inside the
+        // loop. `mLastBeatMs == now` is the test for "this batch accepted at
+        // least one beat"; it is exactly the assignment above.
+        //
+        // Baselined at the start of this row, for the same reason and by the
+        // same rule as the batch slot above. `prevBeatMs > 0` stays as the
+        // "has a beat EVER been range-accepted?" test -- that question is
+        // about the stamp, not about the measurement window -- and only the
+        // subtrahend moves.
+        var pBase = prevBeatMs;
+        if (mRrGapBaseMs > pBase) { pBase = mRrGapBaseMs; }
+        if (prevBeatMs > 0 && mLastBeatMs == now) {
+            var pg = (now - pBase) / 1000;
+            if (pg > mRrDiag[$.RrDiag.I_MAXGAP_BEAT]) {
+                mRrDiag[$.RrDiag.I_MAXGAP_BEAT] = pg;
+            }
+        }
+
+        // #46: STAGE the FIT record array; do not write it. onTick is the only
+        // setData caller for rr_interval, which keeps this field's writer count
+        // at one and puts the "what does a dropout record?" decision in ONE
+        // place. The old code wrote here and skipped an all-invalid batch, and
+        // record-scope FitContributor fields LATCH: a skipped setData re-emits
+        // the previous array on every subsequent record. That is what produced
+        // 185 consecutive records carrying the same four intervals on activity
+        // i180658540 while heart_rate varied 101-133 bpm across the same run.
+        //
+        // STAGED ONLY WHEN THE BATCH PRODUCED SOMETHING. An all-rejected batch
+        // must NOT stage the sentinel over a good array: a good batch followed
+        // by an all-out-of-range one inside the same record window would then
+        // record absence for beats that were genuinely received. It leaves
+        // mPendingRr alone AND leaves mLastBeatMs alone, so the staleness gate
+        // in onTick -- which keys on mLastBeatMs, not on batch arrival -- still
+        // expires the stale array on schedule.
+        if (valid.size() > 0) {
+            mPendingRr = packRr(valid);
         }
         recomputeRmssd();
+    }
+
+    // The whole receive-path diagnostic as one $.RrDiag.SLOTS-element array,
+    // ready for the rr_diag field. Called ONCE per session, from stopAndSave,
+    // so this allocation and this loop are off every hot path -- which is the
+    // entire reason the counters are raw and unclamped until here.
+    //
+    // THE LENGTH IS SAFETY-CRITICAL, not tidy: a setData array LONGER than the
+    // field's :count is an uncatchable System Error at save time that takes the
+    // whole activity with it. Both this array and the createField `:count` read
+    // $.RrDiag.SLOTS; neither may substitute a literal.
+    // test_rr_c1_diagSnapshotShape pins this side.
+    //
+    // FLAGS ARE READ HERE, NOT LATCHED, because both bits are set synchronously
+    // in startSensor -- whose sole caller is onLayout -- and never change
+    // afterwards. That is the opposite of ct_diag's flags, which have to be
+    // latched at close() because the ANT channel is torn down first.
+    // The SESSION-SCOPE reset of the receive-path diagnostic: the counters and
+    // the gap baseline, together, because they are one fact ("this row starts
+    // here") and separating them is exactly the defect round 2 found.
+    //
+    // A FUNCTION RATHER THAN TWO LINES IN startSession, for a reason that is
+    // about testability and is stated so nobody inlines it back. No (:test) in
+    // this repository can obtain a Session (FACTS.md 3.2), so startSession's
+    // body is unreachable from the suite; with the assignment inline there,
+    // nothing could pin that the baseline is taken at all. This seam is the
+    // same shape as handleRrAt: the shipping code a case can call.
+    //
+    // `now` is a parameter rather than System.getTimer() read inside, so the
+    // clock stays injectable (FACTS.md 3.5).
+    hidden function rrDiagSessionReset(now) {
+        mRrDiag      = $.RrDiag.newCounters();
+        mRrGapBaseMs = now;
+    }
+
+    hidden function rrDiagSnapshot() {
+        var a = new [$.RrDiag.SLOTS];
+        for (var i = 0; i < $.RrDiag.SLOTS; i++) {
+            a[i] = $.RrDiag.clamp(mRrDiag[i]);
+        }
+        a[$.RrDiag.I_VERSION] = $.RrDiag.VERSION;
+        var f = 0;
+        if (mRrOk)     { f |= $.RrDiag.F_RR_REGISTERED; }
+        if (mSensorOk) { f |= $.RrDiag.F_SENSOR_OK; }
+        a[$.RrDiag.I_FLAGS] = f;
+        return a;
     }
 
     hidden function recomputeRmssd() {
@@ -4961,8 +5433,59 @@ class StrongRowView extends Ui.View {
                     mFitRmssd = null;
                     mFitAvgRmssd = null;
                 }
+                // rr_diag: the R-R RECEIVE-PATH diagnostic (epic #59).
+                //
+                // ITS OWN try/catch, per #74 and for the reason every group
+                // here gives for theirs: a throw must not null handles that
+                // were already created successfully. It is deliberately the
+                // LAST field created and the one most likely to fail, since 27
+                // developer fields is past every field-count observation this
+                // repository has (#77 measured eleven, #80 twelve; #154 owns
+                // the question) -- so if the cap exists, this is the field that
+                // finds it, and the three HRV fields above survive.
+                //
+                // CREATED UNCONDITIONALLY, and that is the point rather than an
+                // oversight. A row where R-R was never registered at all is
+                // exactly the row this field exists to explain: it reports
+                // F_RR_REGISTERED clear and every counter zero, which is the
+                // answer. Gating it on mRrOk would delete the diagnostic
+                // precisely where it is needed.
+                //
+                // `:count` READS $.RrDiag.SLOTS AND MUST KEEP DOING SO. It is
+                // the same constant rrDiagSnapshot sizes its array from, and a
+                // setData array longer than :count is an uncatchable System
+                // Error at save time that takes the whole activity with it
+                // (measured for ct_diag, simulator fr965 / SDK 9.2.0). Do not
+                // substitute a literal at either site.
+                //
+                // No :scale/:offset, like rr_interval and ct_diag: every slot
+                // is an ordinary readable integer.
+                try {
+                    mFitRrDiag = mSession.createField(
+                        "rr_diag", 19, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_SESSION, :units => "n",
+                          :count => $.RrDiag.SLOTS });
+                } catch (e) {
+                    mFitRrDiag = null;
+                }
                 mRmssdSum = 0.0;
                 mRmssdN = 0;
+                // The receive-path counters are SESSION-scoped, so they start
+                // clean here rather than carrying whatever arrived between
+                // onLayout and START. handleRrAt runs from onLayout onward, so
+                // without this reset a long dwell before START would be
+                // reported as part of the row.
+                //
+                // ZEROING THE COUNTERS IS NOT ENOUGH ON ITS OWN, and round 2's
+                // review found the hole: mLastRrMs and mLastBeatMs deliberately
+                // SURVIVE a session boundary (stopAndSave says so), and the two
+                // gap slots are computed from them. Without a baseline the
+                // first post-START batch after a silence that STRADDLED START
+                // -- or after a gap between two rows of one app run -- writes
+                // the whole straddling duration into slots 18 and 19, and the
+                // slots take a running max so it is sticky for the row. The
+                // reset therefore takes both, in one call.
+                rrDiagSessionReset(nowMs());
                 // boat-handling workload: blade movements the drive detector
                 // correctly ignores (steering taps, corrections)
                 try {
@@ -5119,7 +5642,7 @@ class StrongRowView extends Ui.View {
                 // this block and adds up their declared FIT types, and fails if
                 // the marked line disagrees with the code:
                 //
-                //   STEPFIELDS descs=4 rec_bytes=3 lap_bytes=3 total_fields=26
+                //   STEPFIELDS descs=4 rec_bytes=3 lap_bytes=3 total_fields=27
                 //
                 // It also fails if this block is ever moved inside a
                 // workout-enabled or erg-mode branch. That matters more than it
@@ -5141,7 +5664,15 @@ class StrongRowView extends Ui.View {
                 // lap-scope copies cannot reuse 17 and 18 -- they need ids of
                 // their own, and one free id (19) is not two. They take 25-26,
                 // the next contiguous pair above the lock block's 24, which
-                // keeps them adjacent to each other and leaves 19 free.
+                // keeps them adjacent to each other.
+                //
+                // CORRECTION, so the sentence is fixed where it lives rather
+                // than contradicted elsewhere: this paragraph used to end
+                // "and leaves 19 free". 19 is NO LONGER FREE -- epic #59 took
+                // it for the session-scope rr_diag field, which is exactly what
+                // a lone free id is for. The allocation is now CONTIGUOUS --
+                // every id from 0 to 26 inclusive, 27 field_descriptions with
+                // no holes -- and the next field added takes 27.
                 //
                 // MESG_TYPE_LAP IS AVAILABLE AND THAT WAS CHECKED, NOT ASSUMED.
                 // Compiled for fr965 and fenix6 under SDK 9.2.0, and its value
@@ -5954,6 +6485,15 @@ class StrongRowView extends Ui.View {
             if (mFitCtDiag != null && mCoreSensor != null) {
                 mFitCtDiag.setData(mCoreSensor.diagSnapshot());
             }
+            // rr_diag (epic #59). Unguarded by value, like ct_diag above and
+            // for the identical reason: a row that logged no usable R-R is
+            // exactly the case this field exists to explain, so there is no
+            // reading here that would be better left unwritten. No mRrOk term
+            // either -- a session where R-R was never registered has the most
+            // to say, and it says it by reporting F_RR_REGISTERED clear.
+            if (mFitRrDiag != null) {
+                mFitRrDiag.setData(rrDiagSnapshot());
+            }
             // ERG: the session's total work, in kilojoules.
             //
             // GUARDED BY THE PRESENCE FLAG AND NEVER BY `> 0.0`. A `> 0.0`
@@ -5993,6 +6533,7 @@ class StrongRowView extends Ui.View {
             mFitAvgRmssd = null;
             mFitCorr = null;
             mFitCorrTotal = null;
+            mFitRrDiag = null;
             mFitCore = null;
             mFitSkin = null;
             mFitMaxCore = null;
@@ -6021,6 +6562,35 @@ class StrongRowView extends Ui.View {
             mFitErgCad = null;
         }
         mStarted = false;
+        // R-R SESSION-BOUNDARY RESETS (epic #59). stopAndSave had never reset
+        // any of these, so a second row in the same app run inherited the
+        // first's adjacency reference, its rMSSD ring, its cached rMSSD and its
+        // staged record array. This INTRODUCES the resets rather than restoring
+        // them.
+        //
+        // OUTSIDE the `mSession != null` block on purpose: a start that failed
+        // still ends an attempt, and the state above is not a property of the
+        // session object.
+        //
+        // WHAT IS DELIBERATELY NOT RESET: mLastRrMs and mLastBeatMs. They are
+        // arrival stamps for a signal that keeps arriving across a session
+        // boundary -- the sensor listener is registered in onLayout and is not
+        // torn down here -- so zeroing them would make the display pip go grey
+        // and the next batch's gap check misfire for reasons that have nothing
+        // to do with the strap.
+        //
+        // THIS PAIRS WITH #68'S TRACE GUARD AND MUST NOT BE SEPARATED FROM IT.
+        // Clearing the ring makes the ~6-beat warm-up (#68's window 1) a
+        // CERTAINTY for every post-reset session, where today it is a race that
+        // a user who dwells before START avoids. Without the guard in the same
+        // commit, this reset would ship a guaranteed burst of 0.0 records at
+        // the top of every row.
+        mRrLast     = 0;
+        mDiffIdx    = 0;
+        mDiffCount  = 0;
+        mRmssd      = 0.0;
+        mLastDiffMs = 0;
+        mPendingRr  = null;
         // #74: the attempt is over either way, so the footer goes back to
         // "START to record" rather than latching NOT RECORDING past the row it
         // described. A successful retry would clear this anyway (mRecFailed is
@@ -6228,7 +6798,7 @@ class StrongRowView extends Ui.View {
         dc.drawText(w * 0.36, h * 0.045, Gfx.FONT_XTINY, "GPS", Gfx.TEXT_JUSTIFY_CENTER);
         // RR: green while beat intervals are streaming in
         var rcol = Gfx.COLOR_DK_GRAY;
-        if (mRrOk && rrIsFresh(System.getTimer(), mLastRrMs, $.RR_FRESH_MS)) {
+        if (mRrOk && rrIsFresh(nowMs(), mLastRrMs, $.RR_DISPLAY_FRESH_MS)) {
             rcol = Gfx.COLOR_GREEN;
         }
         dc.setColor(rcol, Gfx.COLOR_TRANSPARENT);

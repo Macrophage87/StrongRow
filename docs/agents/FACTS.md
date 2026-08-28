@@ -365,11 +365,20 @@ copies of this note carried the right count and the wrong consequence, which
 is why `scripts/check_ceiling_notes.py` now derives the consequence
 arithmetically.
 
-Current headroom, verbatim from the newest anchor in the tree (the
-`v08-display-fixes` branch merged at `211f106`; the identical note lives at
-`source/GridGateTest.mc:34` and `source/SetGridLayoutTest.mc:79`):
+Current headroom, verbatim from the newest anchor in the tree,
+`source/RrHrvTest.mc:21` (epic #59, the `claude/hrv-correctness` branch):
 
-    CEILING v08-display-fixes fenix6: 246 used of 253, 7 free -- the 8th file-scope (:test) added reds
+    CEILING hrv-correctness fenix6: 249 used of 253, 4 free -- the 5th file-scope (:test) added reds
+
+Epic #59 costs **two** members against the previous anchor: the `RR_FRESH_MS`
+split is +3 constants and -1, and `module RrDiag` and `module RrHrv` are one
+each. The `v08-display-fixes` note (`246 used of 253, 7 free`) is still in the
+tree at `source/GridGateTest.mc:34` and `source/SetGridLayoutTest.mc:79`; it is
+an OLDER anchor, not the current headroom, and the paragraph below is why that
+is allowed. Re-bisected at the round-2 head of `claude/hrv-correctness`:
+`monkeyc --unit-test -d fenix6` with 4 throwaway file-scope `(:test)` stubs is
+`BUILD SUCCESSFUL`, with 5 it is
+`ERROR: fenix6: Found 254 members in module 'globals', exceeding the limit of 253.`
 
 Older anchors are also in the tree. Do not carry a count of them in prose:
 `python3 scripts/check_ceiling_notes.py` prints every note line with its
@@ -380,10 +389,11 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**362** `(:test)` functions under `source/`, matching
+**385** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run at `211f106`: "OK: 362 (:test) function(s) under source/ match
-scripts/expected_tests.txt exactly.").
+run on the `claude/hrv-correctness` branch: "OK: 385 (:test) function(s) under
+source/ match scripts/expected_tests.txt exactly."). It was **362** at
+`211f106`; epic #59 adds cases in `source/RrHrvTest.mc`.
 
 Any `(:test)` addition, removal or rename edits `scripts/expected_tests.txt`
 **in the same commit**. The check closes drift, not coordinated shrink:
@@ -391,8 +401,11 @@ deleting a function *and* its pin line together still passes (#52).
 
 ### 5.3 The developer-field id map
 
-26 developer fields, ids unique, **19 unused**. Parsed from the `createField`
-calls in `source/StrongRowView.mc` at `211f106`:
+27 developer fields, ids unique, **none unused**. Parsed from the `createField`
+calls in `source/StrongRowView.mc`. The table below was taken at `211f106`,
+when there were 26 fields and **id 19 was the one free id**; epic #59 took 19
+for `rr_diag`, so the id set is now CONTIGUOUS — 0 to 26 inclusive, no holes —
+and the next field added takes 27.
 
 | id | name | type | id | name | type |
 |---:|---|---|---:|---|---|
@@ -401,6 +414,7 @@ calls in `source/StrongRowView.mc` at `211f106`:
 | 2 | `rr_interval` | UINT16 | 16 | `erg_cadence` | FLOAT |
 | 3 | `rmssd` | FLOAT | 17 | `step_type` | UINT8 |
 | 4 | `avg_rmssd` | FLOAT | 18 | `interval_num` | UINT16 |
+| 19 | `rr_diag` | UINT16 |
 | 5 | `corrective_rate` | FLOAT | 20 | `lock_rate` | FLOAT |
 | 6 | `total_corrective_strokes` | UINT16 | 21 | `lock_confidence` | FLOAT |
 | 7 | `core_temperature` | FLOAT | 22 | `lock_lowconf_run` | UINT16 |
@@ -531,8 +545,8 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
     AGENTFACT manifest-devices 12
-    AGENTFACT pinned-tests 362
-    AGENTFACT ceiling v08-display-fixes 246 253 7
+    AGENTFACT pinned-tests 385
+    AGENTFACT ceiling hrv-correctness 249 253 4
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke
     AGENTFACT devfield 2 rr_interval
@@ -552,6 +566,7 @@ prose above is the explanation.
     AGENTFACT devfield 16 erg_cadence
     AGENTFACT devfield 17 step_type
     AGENTFACT devfield 18 interval_num
+    AGENTFACT devfield 19 rr_diag
     AGENTFACT devfield 20 lock_rate
     AGENTFACT devfield 21 lock_confidence
     AGENTFACT devfield 22 lock_lowconf_run
