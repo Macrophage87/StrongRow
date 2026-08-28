@@ -261,6 +261,33 @@ jobs:
         # `ci-required` gates on a fixed `needs:` list, so a new JOB would be
         # unrequired and could red unnoticed.
         run: python3 scripts/check_agent_facts.py
+      - name: Dispatch-rescore harness self-test (runner-free RED/GREEN)
+        # Hermetic scratch trees, plus one case that runs the SHIPPING
+        # worksheet against the shipping DISPATCH.md -- a harness that only
+        # ever sees synthetic input proves nothing about the artifact it
+        # guards. Sixteen of the twenty cases are RED differentials.
+        run: python3 scripts/test_dispatch_rescore.py
+      - name: Re-derive the dispatch calibration figures in DISPATCH.md
+        # docs/agents/DISPATCH.md section 6 publishes a before/after band
+        # histogram and a median-agents figure for the R/P/I re-anchoring.
+        # Those are exactly the shape this repository has shipped wrong twice
+        # already -- a number nothing committed can regenerate (the CUE_*
+        # table, and the 0.851/0.916 speed pair; scripts/cue_replay.py and
+        # scripts/speed_witness.py exist because of it). So they are derived
+        # here from scripts/fixtures/dispatch_rescore_9b2801c.tsv, a committed
+        # worksheet of real issues, and this step reds if the published
+        # DISPATCHCAL lines and the worksheet disagree.
+        #
+        # It also carries two guards on the RUBRIC itself, not just on the
+        # arithmetic: a worksheet whose per-issue delta is CONSTANT is refused
+        # (a uniform shift is a rescale and cannot move an issue across a band
+        # -- it is the no-op that was proposed and rejected), and an axis that
+        # takes only one value across the worksheet is refused (which is what
+        # R was: 2 on 89 of 89).
+        #
+        # In test-tooling for the reason the two steps above give: a new JOB
+        # would not be in `ci-required`'s `needs:` list.
+        run: python3 scripts/dispatch_rescore.py
 
   # 3) Compile the unit-test build for EVERY manifest device in ONE job, so the
   #    SDK image is pulled once (not once per device via a matrix). A per-device
