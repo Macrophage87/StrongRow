@@ -536,3 +536,381 @@ class RrProbe extends StrongRowView {
 }
 
 }
+
+module RrHrv {
+
+// ===========================================================================
+// c2 -- the RED differentials. Each was shown failing by name before the fix.
+// ===========================================================================
+
+// #37. An intra-batch RANGE rejection breaks adjacency.
+//
+// [800, 200, 700] is a double detection -- the most common wrist-optical
+// failure mode under rowing. filterRr drops the 200, and the survivors 800 and
+// 700 are NOT successive intervals. RED before the fix: the loop diffed them,
+// d = 100, and 100 <= 0.30 * 800 so the artifact gate PASSED it and a
+// non-consecutive pair entered the ring, deflating rMSSD. The gate cannot catch
+// this class -- it is precisely the plausible-looking pair that slips through.
+(:test) function test_rr_c2_anIntraBatchRejectBreaksAdjacency(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.feed(1000, [800, 200, 700]);
+    if (p.diffCount() != 0) {
+        logger.error("a beat either side of an intra-batch reject was diffed as " +
+                     "consecutive: ring holds " + p.diffCount() + " entries, expected 0");
+        ok = false;
+    }
+    if (p.rrLast() != 700) {
+        logger.error("the surviving beat after the reject must still SEED the " +
+                     "reference, mRrLast=" + p.rrLast());
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_ADJ_INTRA) != 1) {
+        logger.error("the intra-batch break must be counted once, got " +
+                     p.diagAt($.RrDiag.I_ADJ_INTRA));
+        ok = false;
+    }
+    // and a clean batch still diffs, so the fix has not simply disabled the ring
+    var q = new RrProbe();
+    q.feed(1000, [800, 810, 800]);
+    if (q.diffCount() != 2) {
+        logger.error("a clean batch must still produce diffs, got " + q.diffCount());
+        ok = false;
+    }
+    return ok;
+}
+
+// #39. An inter-batch gap CLEARS the ring.
+//
+// RED before the fix: the ring kept up to RR_NDIFF-1 pre-dropout differences,
+// so the first post-resume record logged an rMSSD composed entirely of
+// pre-dropout beats and accumulated it into avg_rmssd as though it were clean.
+(:test) function test_rr_c2_aGapClearsTheRing(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.feed(1000, [800, 810, 800, 810, 800, 810, 800]);
+    if (p.diffCount() != 6) {
+        logger.error("setup failed: expected 6 diffs, got " + p.diffCount());
+        return false;
+    }
+    // A batch more than RR_MAX_MS later: the gap reset fires.
+    p.feed(9000, [800]);
+    if (p.diffCount() != 0) {
+        logger.error("the ring still holds " + p.diffCount() + " pre-dropout " +
+                     "differences after a gap; the first post-resume record " +
+                     "would log an rMSSD made entirely of pre-gap beats");
+        ok = false;
+    }
+    if (p.diffIdx() != 0) {
+        logger.error("mDiffIdx must be cleared with the count -- the code depends " +
+                     "on idx == count while filling; idx=" + p.diffIdx());
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_RING_CLEAR) != 1) {
+        logger.error("the ring clear must be counted once, got " + p.diagAt($.RrDiag.I_RING_CLEAR));
+        ok = false;
+    }
+    // A gap with an EMPTY ring is not a clear -- the counter measures discarded
+    // data, not events, so a strapless row does not report phantom clears.
+    var q = new RrProbe();
+    q.feed(1000, [800]);
+    q.feed(9000, [800]);
+    if (q.diagAt($.RrDiag.I_RING_CLEAR) != 0) {
+        logger.error("a gap over an empty ring must not count as a clear");
+        ok = false;
+    }
+    if (q.diagAt($.RrDiag.I_ADJ_GAP) != 1) {
+        logger.error("the gap EVENT must still be counted, got " + q.diagAt($.RrDiag.I_ADJ_GAP));
+        ok = false;
+    }
+    return ok;
+}
+
+// #38. Sustained artifact rejection closes the rMSSD logging gate.
+//
+// Six clean beats fill the ring, then in-range beats whose every successive
+// difference is rejected by RR_ART_K keep arriving for eight seconds. RED
+// before the fix: mLastBeatMs kept advancing, the gate stayed open, and a
+// FROZEN mRmssd was written to the trace on every record and accumulated into
+// avg_rmssd -- the same staleness #15 set out to remove.
+//
+// Drives the SHIPPING onTick, so it pins which stamp the gate reads rather
+// than restating the predicate.
+(:test) function test_rr_c2_sustainedArtifactRejectionClosesTheLogGate(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.armRmssd();
+    p.feed(1000, [800, 810, 800, 810, 800, 810, 800]);
+    if (!(p.rmssd() > 0.0) || p.diffCount() != 6) {
+        logger.error("setup failed: rmssd=" + p.rmssd() + " count=" + p.diffCount());
+        return false;
+    }
+    // 500/900 alternating: both well in range, and EVERY successive difference
+    // is rejected -- 400 > 0.30 * 900 and 400 > 0.30 * 500 within the pattern,
+    // and the first of them is 300 > 0.30 * 800 against the last clean beat.
+    // (600/900 does NOT work here and the arithmetic is why: the first
+    // difference against an 800 ms reference is 200, and 200 <= 0.30 * 800, so
+    // one difference would land and the case would test nothing.)
+    // One second apart, so no gap reset fires and the ring is not cleared.
+    for (var t = 2000; t <= 9000; t += 1000) {
+        p.feed(t, [500, 900]);
+    }
+    if (p.lastBeatMs() != 9000) {
+        logger.error("setup failed: beats should still be arriving, mLastBeatMs=" + p.lastBeatMs());
+        return false;
+    }
+    if (p.lastDiffMs() != 1000) {
+        logger.error("no difference should have been accepted since 1000, mLastDiffMs=" + p.lastDiffMs());
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_DIFF_REJ_ART) < 8) {
+        logger.error("the artifact rejections must be counted, got " + p.diagAt($.RrDiag.I_DIFF_REJ_ART));
+        ok = false;
+    }
+    var before = p.rmssdField().count();
+    p.tickAt(9100);
+    if (p.rmssdField().count() != before) {
+        logger.error("a frozen rMSSD was written to the trace 8.1 s after the " +
+                     "last accepted difference, while beats were still arriving");
+        ok = false;
+    }
+    if (p.rmssdN() != 0) {
+        logger.error("a frozen rMSSD was accumulated into avg_rmssd, n=" + p.rmssdN());
+        ok = false;
+    }
+    // The gate is not simply stuck shut: a fresh difference re-opens it.
+    p.feed(9500, [900, 890]);
+    p.tickAt(9600);
+    if (p.rmssdField().count() <= before) {
+        logger.error("the gate never re-opened after a fresh accepted difference");
+        ok = false;
+    }
+    return ok;
+}
+
+// #68. The rmssd trace is never written as 0.0.
+//
+// Two clean beats give one difference: the ring is fresh (mLastDiffMs is
+// stamped, so the gate is OPEN) and mDiffCount < 5, so recomputeRmssd sets
+// mRmssd = 0.0 -- "perfect regularity", an in-band lie the onTick comment block
+// itself forbids. RED before the fix: the trace write had no value guard while
+// the accumulator beside it did, and that asymmetry is the evidence it was an
+// oversight rather than a decision.
+(:test) function test_rr_c2_theRmssdTraceIsNeverWrittenAsZero(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.armRmssd();
+    p.feed(1000, [800, 810, 800]);
+    if (p.rmssd() != 0.0) {
+        logger.error("setup failed: mRmssd should be the 0.0 insufficient-data " +
+                     "sentinel, got " + p.rmssd());
+        return false;
+    }
+    if (p.lastDiffMs() != 1000) {
+        logger.error("setup failed: the log gate must be OPEN for this case to " +
+                     "test the value guard, mLastDiffMs=" + p.lastDiffMs());
+        return false;
+    }
+    p.tickAt(1100);
+    if (p.rmssdField().count() != 0) {
+        logger.error("0.0 was written to the rmssd trace -- 'perfect regularity' " +
+                     "for a ring holding one difference. Wrote: " + p.rmssdField().last());
+        ok = false;
+    }
+    // and a REAL value is still written, so the guard has not silenced the field
+    p.feed(2000, [800, 810, 800, 810, 800]);
+    if (!(p.rmssd() > 0.0)) {
+        logger.error("setup failed: expected a real rMSSD, got " + p.rmssd());
+        return false;
+    }
+    p.tickAt(2100);
+    if (p.rmssdField().count() != 1) {
+        logger.error("a real rMSSD was not written; the guard is too wide");
+        ok = false;
+    }
+    return ok;
+}
+
+// #68 window 5, the profile #46's review called the dominant real-world dropout
+// mode: clean in-range beats arriving MORE than RR_MAX_MS apart. The gap reset
+// zeroes the adjacency reference on every batch, so no difference ever lands,
+// mDiffCount never leaves 0, and recomputeRmssd returns the 0.0 sentinel -- for
+// the whole session, unbounded. Nothing here is artifact-related, and the code
+// path is the gap reset rather than the artifact gate.
+//
+// After the fix mLastDiffMs is never stamped, so the gate is CLOSED as well as
+// the value being guarded. Both must hold: either alone would leave a row of
+// 0.0 records if the other were removed.
+(:test) function test_rr_c2_sparseCleanBeatsLogNoRmssdAtAll(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.armRmssd();
+    for (var t = 1000; t <= 21000; t += 4000) {
+        p.feed(t, [850]);
+    }
+    if (p.diffCount() != 0) {
+        logger.error("setup failed: sparse beats must produce no difference, count=" + p.diffCount());
+        return false;
+    }
+    if (p.lastBeatMs() != 21000) {
+        logger.error("setup failed: the beats themselves were accepted, mLastBeatMs=" + p.lastBeatMs());
+        return false;
+    }
+    p.tickAt(21100);
+    if (p.rmssdField().count() != 0) {
+        logger.error("a 0.0 rMSSD was logged for a session that never produced a " +
+                     "single beat pair; wrote " + p.rmssdField().last());
+        ok = false;
+    }
+    if (p.rmssdN() != 0) {
+        logger.error("avg_rmssd accumulated from a session with no beat pairs");
+        ok = false;
+    }
+    return ok;
+}
+
+// #46, THE CORE CASE. A dropout records the RR_INVALID array, not the last
+// batch's beats.
+//
+// RED before the fix: handleRr wrote the field itself and skipped when there
+// was nothing to write, so the record-scope field LATCHED and every subsequent
+// record re-emitted the previous batch's intervals. On the activity that
+// motivated this, 1,730 of 2,476 records repeated the previous array and the
+// longest unbroken run was 185 records.
+(:test) function test_rr_c2_aDropoutRecordsTheInvalidArray(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.armRr();
+    p.feed(1000, [850, 860]);
+    p.tickAt(1100);
+    if (!arrEq(p.rrField().last(), [850, 860, $.RR_INVALID, $.RR_INVALID], logger,
+               "the record written while the batch is fresh")) {
+        ok = false;
+    }
+    // Nothing arrives for six seconds. RR_REC_FRESH_MS is 5000.
+    p.tickAt(7100);
+    if (!arrEq(p.rrField().last(),
+               [$.RR_INVALID, $.RR_INVALID, $.RR_INVALID, $.RR_INVALID], logger,
+               "the record written 6.1 s into a dropout")) {
+        logger.error("the field re-emitted real beats during a dropout -- " +
+                     "duplicate beats in the logged series, which look like data");
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_REC_INVALID) < 1) {
+        logger.error("the sentinel write must be counted, got " + p.diagAt($.RrDiag.I_REC_INVALID));
+        ok = false;
+    }
+    // and a fresh batch brings it straight back, so the sentinel is not sticky
+    p.feed(8000, [900]);
+    p.tickAt(8100);
+    if (!arrEq(p.rrField().last(),
+               [900, $.RR_INVALID, $.RR_INVALID, $.RR_INVALID], logger,
+               "the record after R-R resumes")) {
+        ok = false;
+    }
+    return ok;
+}
+
+// #46, THE CASE THAT SEPARATES THE TWO CANDIDATE KEYS, and the reason the
+// staleness gate reads mLastBeatMs rather than mLastRrMs.
+//
+// Batches keep arriving every second for eight seconds, all carrying only
+// out-of-range values -- the profile of a strap that is still talking while its
+// R-R stream is unusable, which is what "HRM seemed to cut in and out" looks
+// like from inside the app. Batch arrival stays fresh throughout; the last
+// ACCEPTED BEAT does not. Keying on batch arrival would re-emit the stale array
+// for the entire dropout, which is the defect wearing a new hat.
+(:test) function test_rr_c2_theRecordGoesInvalidWhenOnlyRejectedBatchesArrive(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.armRr();
+    p.feed(1000, [850, 860]);
+    p.tickAt(1100);
+    for (var t = 2000; t <= 9000; t += 1000) {
+        p.feed(t, [9000, 9000]);
+    }
+    if (p.lastRrMs() != 9000) {
+        logger.error("setup failed: batches must still be arriving, mLastRrMs=" + p.lastRrMs());
+        return false;
+    }
+    if (p.lastBeatMs() != 1000) {
+        logger.error("setup failed: no beat should have been accepted since 1000, " +
+                     "mLastBeatMs=" + p.lastBeatMs());
+        return false;
+    }
+    p.tickAt(9100);
+    if (!arrEq(p.rrField().last(),
+               [$.RR_INVALID, $.RR_INVALID, $.RR_INVALID, $.RR_INVALID], logger,
+               "the record 8.1 s after the last ACCEPTED beat, with batches still arriving")) {
+        logger.error("the staleness gate is keyed on BATCH ARRIVAL, so a strap " +
+                     "delivering unusable R-R holds a stale array fresh forever");
+        ok = false;
+    }
+    return ok;
+}
+
+// #46's counterpart to the case above: the field is written on EVERY tick while
+// recording, so the record that commits always carries a decision. Before the
+// fix it was written only when a batch happened to arrive, which is what let
+// the latch reach the file at all -- the naive "stop writing during a dropout"
+// remedy IS the defect.
+(:test) function test_rr_c2_theRecordFieldIsWrittenOnEveryTick(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.armRr();
+    p.feed(1000, [850]);
+    var n0 = p.rrField().count();
+    p.tickAt(1100);
+    p.tickAt(1350);
+    p.tickAt(1600);
+    if (p.rrField().count() != n0 + 3) {
+        logger.error("three ticks produced " + (p.rrField().count() - n0) +
+                     " writes, not 3 -- a record committing between writes " +
+                     "would carry whatever the last write left behind");
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_REC_STAGED) != 3) {
+        logger.error("the staged writes must be counted, got " + p.diagAt($.RrDiag.I_REC_STAGED));
+        ok = false;
+    }
+    // and nothing is written while stopped: the write sites are inside the
+    // mStarted && !mPaused gate, exactly as every other record field is.
+    var q = new RrProbe();
+    q.armRr();
+    q.setStopped();
+    q.feed(1000, [850]);
+    q.tickAt(1100);
+    if (q.rrField().count() != 0) {
+        logger.error("rr_interval was written while not recording");
+        ok = false;
+    }
+    return ok;
+}
+
+// A session boundary clears the R-R accumulators, so a second row in the same
+// app run does not inherit the first row's rMSSD ring or adjacency reference.
+// stopAndSave had never done this. mSession is null in the probe, so only the
+// tail of stopAndSave runs -- which is where these resets live, deliberately.
+(:test) function test_rr_c2_aSessionBoundaryClearsTheRrAccumulators(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.feed(1000, [800, 810, 800, 810, 800, 810, 800]);
+    if (p.diffCount() < 5) {
+        logger.error("setup failed: the ring should have filled, count=" + p.diffCount());
+        return false;
+    }
+    if (!(p.rmssd() > 0.0)) {
+        logger.error("setup failed: mRmssd should be positive, got " + p.rmssd());
+        return false;
+    }
+    p.endSession();
+    if (p.diffCount() != 0) { logger.error("the ring must be cleared at a session boundary, count=" + p.diffCount()); ok = false; }
+    if (p.diffIdx()   != 0) { logger.error("the ring index must be cleared, idx=" + p.diffIdx()); ok = false; }
+    if (p.rrLast()    != 0) { logger.error("the adjacency reference must be cleared, mRrLast=" + p.rrLast()); ok = false; }
+    if (p.rmssd()     != 0.0) { logger.error("the cached rMSSD must be cleared, got " + p.rmssd()); ok = false; }
+    if (p.lastDiffMs() != 0) { logger.error("mLastDiffMs must be cleared, got " + p.lastDiffMs()); ok = false; }
+    if (p.pendingRr() != null) { logger.error("the staged rr_interval array must be dropped"); ok = false; }
+    return ok;
+}
+
+}
