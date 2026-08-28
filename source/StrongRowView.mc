@@ -4604,8 +4604,18 @@ class StrongRowView extends Ui.View {
         // Longest gap between NON-EMPTY batch arrivals, in whole seconds. Read
         // before mLastRrMs is restamped, and only once a first batch has been
         // seen -- the interval before the first batch is not a gap.
-        if (mLastRrMs > 0) {
-            var bg = (now - mLastRrMs) / 1000;
+        //
+        // MEASURED FROM THE LATER OF the previous batch and the start of this
+        // row. mLastRrMs deliberately survives a session boundary, mRrDiag does
+        // not, so without the baseline the first post-START batch after a
+        // silence that STRADDLED START writes the whole straddling duration
+        // here -- and the running max makes it stick for the row. mRrGapBaseMs
+        // is 0 until a session has started, so before START, and in any probe
+        // that never starts one, this is exactly the old measurement.
+        var bBase = mLastRrMs;
+        if (mRrGapBaseMs > bBase) { bBase = mRrGapBaseMs; }
+        if (bBase > 0) {
+            var bg = (now - bBase) / 1000;
             if (bg > mRrDiag[$.RrDiag.I_MAXGAP_BATCH]) {
                 mRrDiag[$.RrDiag.I_MAXGAP_BATCH] = bg;
             }
@@ -4707,8 +4717,16 @@ class StrongRowView extends Ui.View {
         // for all of them and is recorded once, here, rather than inside the
         // loop. `mLastBeatMs == now` is the test for "this batch accepted at
         // least one beat"; it is exactly the assignment above.
+        //
+        // Baselined at the start of this row, for the same reason and by the
+        // same rule as the batch slot above. `prevBeatMs > 0` stays as the
+        // "has a beat EVER been range-accepted?" test -- that question is
+        // about the stamp, not about the measurement window -- and only the
+        // subtrahend moves.
+        var pBase = prevBeatMs;
+        if (mRrGapBaseMs > pBase) { pBase = mRrGapBaseMs; }
         if (prevBeatMs > 0 && mLastBeatMs == now) {
-            var pg = (now - prevBeatMs) / 1000;
+            var pg = (now - pBase) / 1000;
             if (pg > mRrDiag[$.RrDiag.I_MAXGAP_BEAT]) {
                 mRrDiag[$.RrDiag.I_MAXGAP_BEAT] = pg;
             }

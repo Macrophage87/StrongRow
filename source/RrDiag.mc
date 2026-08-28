@@ -138,6 +138,22 @@ const I_REC_INVALID  = 17;
 // between arrivals of any non-empty batch, BEAT the gap between RANGE-accepted
 // beats. BATCH small with BEAT large means batches kept arriving and carried
 // nothing usable; both large means delivery stopped.
+//
+// BOTH ARE MEASURED FROM THE LATER OF their own previous stamp and THE START OF
+// THE ROW. That baseline is not decoration: the receive path runs from onLayout
+// onward and its two arrival stamps deliberately SURVIVE a session boundary,
+// while these counters are zeroed at startSession -- so without it, a silence
+// that straddled START, or one that fell between two rows of a single app run,
+// was loaded whole into these two slots and the running max made it stick. A
+// reader would then have read a delivery failure the row never had, which is
+// the opposite of the discrimination above. Found in round-2 review of #59;
+// the baseline is StrongRowView's mRrGapBaseMs, written by rrDiagSessionReset
+// and by nothing else.
+//
+// One consequence, stated because it is a change rather than a side effect: a
+// row whose FIRST batch arrives well after START now records that opening
+// silence, where before both slots would have read 0 for want of a reference.
+// 0 there would have said "no gaps" about a row that had nothing else.
 const I_MAXGAP_BATCH = 18;
 const I_MAXGAP_BEAT  = 19;
 
