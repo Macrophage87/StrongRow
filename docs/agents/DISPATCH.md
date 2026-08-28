@@ -467,7 +467,14 @@ row — and R, P and I are not why.
 **The next calibration pass is V, and it must be run the same way**: rewrite the
 cells, re-score a sample of real issues, publish the histogram from a committed
 worksheet, and refuse to ship on assertion. A rubric change validated by
-argument is the failure this section exists to stop repeating.
+argument is the failure this section exists to stop repeating. Filed as **#184**
+— not folded in here, because a second axis re-anchored in the same branch could
+not be attributed to either.
+
+Note that `scripts/dispatch_rescore.py` currently **enforces** that V and S are
+held between the before- and after-scores, which is what made this section
+attributable. The V pass has to relax that guard deliberately and update the
+self-test with it, rather than discovering it as an obstacle.
 
 ### What this section is not
 
