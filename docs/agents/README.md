@@ -20,8 +20,10 @@ Two rules govern how these files relate to the definitions that point at them.
 **Cut and point, never summarize and keep.** A definition holds its identity,
 its role-specific behaviour, and a one-line pointer per topic. A paraphrase
 kept "for convenience" is a second copy that drifts independently — the exact
-failure this split exists to prevent, and one this repository has already
-shipped twice (#79, #160, both open).
+failure this split exists to prevent. This repository's prose has already
+failed twice in the adjacent way that motivates versioning these files: a
+documentation file asserting an environment fact that is false (#79) and a rule
+enforced by no job at all (#160), both open.
 
 **Pointers bind to the verb, not to self-assessment.** "When landing, read the
 landing ritual" — not "read it if the landing looks tricky". The rounds that

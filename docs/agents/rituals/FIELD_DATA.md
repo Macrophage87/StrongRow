@@ -42,9 +42,10 @@ on a series the cue never sees. The second file states its own reason for
 existing in exactly those terms.
 
 **When two fixtures must stay aligned, the harness enforces it.**
-`speed_witness.py` "requires that alignment and refuses to publish a figure if
-the two files have drifted apart". A refusal is the correct behaviour; a
-best-effort number over misaligned rows is worse than none.
+`speed_witness.py`'s `rows()` returns "the two fixtures zipped, with alignment
+CHECKED rather than assumed", raising rather than pairing "a rate with a speed
+from a different moment". A refusal is the correct behaviour; a best-effort
+number over misaligned rows is worse than none.
 
 ## 3. The provenance block is not optional
 
@@ -132,9 +133,10 @@ different lap set" are indistinguishable.
 
 * **Nothing in this repository decodes a file this app actually wrote.**
   `scripts/fit_step_marks.py` builds synthetic bytes and "proves the QUERY side
-  only". A recording tells you what a *decoder* read out of a file some
-  firmware wrote; it does not tell you what *this app's* `setData` calls
-  produced.
+  only" (`.github/workflows/ci.yml`, the acceptance-criterion step's comment —
+  the sentence is the workflow's, not the script's). A recording tells you what
+  a *decoder* read out of a file some firmware wrote; it does not tell you what
+  *this app's* `setData` calls produced.
 * **Record-scope developer fields latch** (`FACTS.md` §3.3). A flat run of
   identical values in a recording may be a real steady state **or** a skipped
   write re-emitting. The recording alone cannot distinguish them.

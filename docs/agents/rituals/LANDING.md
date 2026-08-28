@@ -82,8 +82,18 @@ Every changed comment, doc line, commit body and PR paragraph, read as prose,
 against the code it describes.
 
 ```sh
-git diff origin/main...<head-sha> -- '*.md' 'source/*.mc' | grep -n '^[+-].*//'
+# doc prose: read every changed line
+git diff origin/main...<head-sha> -- '*.md'
+
+# code comments: the comment lines only
+git diff origin/main...<head-sha> -- 'source/*.mc' | grep -n '^[+-].*//'
 ```
+
+The two commands are separate on purpose. A `//` filter over `'*.md'` discards
+markdown, which contains no `//`: measured on this branch, `git diff
+origin/main...af880ea -- '*.md' 'source/*.mc'` has **1685** changed lines and
+the same pipeline filtered on `'^[+-].*//'` leaves **3**, all of them the
+`npipe:////` string or the quoted command itself. Prose is read whole.
 
 This is the step that catches this repository's dominant defect class. Ask of
 each changed sentence:

@@ -54,9 +54,11 @@ WHAT THIS CANNOT CHECK, stated so nobody reads more into a green run.
     that the container digest still pulls, that 253 was ever the true globals
     count, that a Session accepts twenty-six fields, or what any decoder
     renders.
-  * The ceiling check cannot tell you an anchor is the NEWEST one. Twelve
-    anchors are in the tree; a stale-but-coherent note passes here exactly as
-    it passes check_ceiling_notes.py.
+  * The ceiling check cannot tell you an anchor is the NEWEST one. Several
+    older anchors are in the tree (check_ceiling_notes.py enumerates them; no
+    count is repeated here, because a repeated count is a thing to get wrong);
+    a stale-but-coherent note passes here exactly as it passes
+    check_ceiling_notes.py.
   * Every prose claim in FACTS.md -- the environment contract, the command
     block, the incident narratives, the file:line citations, the permission
     proposal -- is invisible to this check. FACTS.md says so itself, in its

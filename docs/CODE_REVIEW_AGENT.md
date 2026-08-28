@@ -200,7 +200,12 @@ it in both directions, including to review findings themselves.
 
 **Duplicate documentation drifts.** Two near-complete copies of the same facts
 will diverge, and did so within a single commit. Prefer one canonical statement
-plus a pointer over two blocks that must be hand-synced with no check.
+plus a pointer over two blocks that must be hand-synced with no check. The
+canonical copies for this loop are versioned in the repository: facts and
+canonical command forms in `docs/agents/FACTS.md`, the gate protocol in
+`docs/agents/GATE_PROTOCOL.md`, the dispatch band metric in
+`docs/agents/DISPATCH.md`, and one ritual file per verb under
+`docs/agents/rituals/`.
 
 ---
 

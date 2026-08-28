@@ -93,7 +93,7 @@ Prose is this repository's most defect-prone surface, and it has no compiler.
 |---|---|
 | **0** | one file, no shared constant |
 | **1** | a shared constant with one consumer |
-| **2** | a file another open branch is also editing; anything that adds a file-scope `(:test)` (the `fenix6` `globals` ceiling has **7 free** at `211f106` — `FACTS.md` §5.1); anything touching `scripts/expected_tests.txt` |
+| **2** | a file another open branch is also editing; anything that adds a file-scope `(:test)` (it spends `fenix6` `globals` headroom — current figure in `FACTS.md` §5.1, never copied here); anything touching `scripts/expected_tests.txt` |
 | **3** | a manifest device change, a workflow change, a developer field id, `source/StrongRowView.mc`'s `startSession` — several in-flight branches routinely touch it |
 
 ---
@@ -135,19 +135,28 @@ rounds on one task), never by triage.
 
 ### Escalation is automatic, not discretionary
 
-Any of these raises the band mid-task, and the raise is recorded as a comment so
-the history is auditable:
+Any of these raises the band **by one step** mid-task — Trivial → Routine →
+Standard → Heavy → Critical, and Critical is the ceiling. The raise is recorded
+as a comment so the history is auditable:
 
-* a gate returns blocking findings → **+1** for the fix round;
-* a fix round introduces a new false claim → **+1**, and the next round is
+* a gate returns blocking findings → **+1 band** for the fix round;
+* a fix round introduces a new false claim → **+1 band**, and the next round is
   constrained to **subtraction only**;
-* the same claim is wrong twice → **delete it**, +1 (do not reword a third
-  time);
+* the same claim is wrong twice → **delete it**, **+1 band** (do not reword a
+  third time);
 * measured behaviour contradicts the issue's diagnosis → **re-triage** from
   zero, do not patch forward;
-* a test that should have failed did not → **+1**, the check is blind (this is
-  the `jouleClampBench` shape: 308 green cases and both real clamp lines
+* a test that should have failed did not → **+1 band**, the check is blind (this
+  is the `jouleClampBench` shape: 308 green cases and both real clamp lines
   deleted).
+
+The unit is a **band, not a point**. A point would leave most escalations inside
+the band they started in, which is not a raise at all.
+
+An escalated band is recorded in the escalation comment, not by rewriting the
+header's axis line — the header keeps its triage scores, and the axis-sum rule
+at §3 governs headers at filing and triage only. Re-score the axes only if the
+issue changed materially.
 
 **De-escalate only** after two consecutive clean gates, and **never below
 Standard while R ≥ 2**.
@@ -194,8 +203,10 @@ the geometry was fine and the numbers were not.
   any test, and no checker existed) S1 P2 (comment prose stating figures) I1 =
   **9, Standard**.
 * *The same change today*, with `scripts/check_pip_geometry.py` in the tree
-  deriving every row: R2 **V1** S0 P2 I0 = **5, Routine** — and the P≥2
-  guardrail strikes "no gate", so it is Routine **plus one lens**.
+  deriving every row: R2 **V0** S0 P2 I0 = **4, Routine** — and the P≥2
+  guardrail strikes "no gate", so it is Routine **plus one lens**. V=0 because
+  an existing runner-free checker derives it, which is the §1 V=0 cell
+  verbatim; `check_pip_geometry.py` runs at `.github/workflows/ci.yml:167`.
 
 Either way the metric asks for **two agents, or three**. The run that carried
 it used 31. That is the gap this file exists to close, and it does not depend on
@@ -218,11 +229,18 @@ it as implementable work is the mis-dispatch; the band is for the *analysis*
 that follows the measurement, not for the measurement.
 
 **#160 — "the no-model-identifier rule is enforced by no CI job"** (open). A
-tooling change: R2 V0 (a checker would catch it by definition, and a checker is
-the deliverable) S1 P1 I3 (`.github/workflows/ci.yml`, which every branch
-touches) = **7, Standard**. Note V=0 is only honest **because the change ships
-the check**; asserting the rule in a document and calling it enforced is how it
-went unenforced for months in the first place.
+tooling change: R2 **V1** (no check exists yet and this change **adds** one —
+the §1 V=1 cell, not V=0, which requires a checker already in the tree) S1 P1
+I3 (`.github/workflows/ci.yml`, which every branch touches) = **8, Standard**.
+Asserting the rule in a document and calling it enforced is how it went
+unenforced for months in the first place; a check that does not exist yet buys
+nothing until it is written.
+
+Both scores above were corrected in review, and **neither correction moves a
+band**: #141-today 5 → 4, Routine either way; #160 7 → 8, Standard either way.
+They are corrected anyway because §5 calibrates on these examples, and the
+error ran in the exact direction §5 warns about — an axis score that does not
+match its own anchor cell.
 
 **Trivial, for contrast**: correcting a `file:line` in a PR body you authored,
 before any review has read it. R0 V1 S0 P1 I0 = **2**. The orchestrator does it
@@ -242,7 +260,9 @@ byte-preserved; a scorer that cannot score an issue leaves it and says why
 rather than guessing. Then one large-tier **calibration pass** re-scores two per
 batch at band boundaries, fixes anything off by a band, resolves the unscored,
 and sweeps for rule violations — no stall-breaker tier in any header, no
-`ultracode=yes` below Critical, every axis sum matching its band.
+`ultracode=yes` below Critical, every axis sum matching its band, and every
+axis *score* matching its own anchor cell in §1 rather than only the sum
+matching.
 
 Expect scorers to run **low**, concentrated on **V** (check which component a
 cited line actually lives in before believing a check covers it) and **I**

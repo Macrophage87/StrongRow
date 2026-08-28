@@ -371,9 +371,11 @@ Current headroom, verbatim from the newest anchor in the tree (the
 
     CEILING v08-display-fixes fenix6: 246 used of 253, 7 free -- the 8th file-scope (:test) added reds
 
-Eleven older anchors are also in the tree. `check_ceiling_notes.py` enforces
-that copies sharing an anchor are identical and that each one's arithmetic
-closes; **it cannot tell you which anchor is newest**, and a stale-but-coherent
+Older anchors are also in the tree. Do not carry a count of them in prose:
+`python3 scripts/check_ceiling_notes.py` prints every note line with its
+`file:line`, and that enumeration is the only one that cannot go stale.
+`check_ceiling_notes.py` enforces that copies sharing an anchor are identical
+and that each one's arithmetic closes; **it cannot tell you which anchor is newest**, and a stale-but-coherent
 note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count

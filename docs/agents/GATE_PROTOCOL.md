@@ -143,10 +143,15 @@ agent that wrote it — is silent by construction.
 * the **exact command**, runnable as written;
 * the result — the `PASSED (passed=N, failed=0, errors=0)` line plus
   `scripts/check_ciq_tests.py`'s verdict (`FACTS.md` §1.2, §2.2);
-* **evidence the tests actually executed** — a count that *can fail*. Here that
-  is `bash scripts/check_expected_tests.sh` against
-  `scripts/expected_tests.txt`, which reds when the executed set and the pin
-  disagree. Never a quiet mode that suppresses the evidence;
+* **evidence the tests actually executed** — a count that *can fail*. That is
+  `scripts/check_ciq_tests.py`'s comparison of the RESULTS table and the
+  `Ran N tests` line against `scripts/expected_tests.txt` (`FACTS.md` §1.2):
+  it reds when the *executed* set and the pin disagree, and a simulator that
+  died before any test ran cannot produce it. Never a quiet mode that
+  suppresses the evidence. `bash scripts/check_expected_tests.sh` is the
+  **pin** check, not this (`FACTS.md` §2.2, §5.2): it is a static scan of
+  `source/` against the pin and is green with no simulator running
+  (verified at `af880ea`), so it never stands as execution evidence;
 * the raw result files, at a path every lens can read.
 
 **No lens accepts a relayed number.** If a lens needs the total, it reads the

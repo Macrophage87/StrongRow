@@ -73,19 +73,27 @@ surrounding page.
 
 v0.8: "`run-tests` green at **362/362** in the Connect IQ 9.2.0 simulator".
 That figure is the shared gate measurement (`GATE_PROTOCOL.md` §4) — the
-`PASSED (passed=N, failed=0, errors=0)` line plus
-`bash scripts/check_expected_tests.sh`, at the exact commit being tagged. It
-agrees with `FACTS.md` §5.2's pinned count at `211f106`; if the two disagree,
-one of them is stale and the release stops until you know which.
+`PASSED (passed=N, failed=0, errors=0)` line plus `scripts/check_ciq_tests.py`'s
+verdict, which is the part that reds if the simulator died before any test ran,
+at the exact commit being tagged. It agrees with `FACTS.md` §5.2's pinned count
+at `211f106`; if the two disagree, one of them is stale and the release stops
+until you know which.
 
 ## 7. Tag, publish, and label honestly
 
 * Tag the exact commit the body names.
-* Every release since v0.4 whose purpose is private dashboard distribution has
-  been flagged **prerelease**. Note the consequence: `v0.6` is the newest
-  release *not* flagged prerelease, so GitHub's `latest` flag points at it
-  while `v0.8` exists. That is correct behaviour, not a mistake to "fix" by
-  un-flagging a prerelease.
+* `v0.7`, `v0.7.1` and `v0.8` are flagged **prerelease**; `v0.4`, `v0.5` and
+  `v0.6` are not — verified with
+  `gh release list --json tagName,isPrerelease,isLatest` (re-run 2026-08-28:
+  six releases returned against `--limit 30`, so not truncated). Flag a new
+  private-distribution release **prerelease**, as every release from `v0.7`
+  onward has been. Note the consequence: `v0.6` is the newest release *not*
+  flagged prerelease, so GitHub's `latest` flag points at it while `v0.8`
+  exists. That is correct behaviour, not a mistake to "fix" by un-flagging a
+  prerelease — and not a mistake to "fix" by flagging `v0.5`/`v0.6`, which
+  would move `latest` off `v0.6` onto nothing. The bodies of `v0.5` and `v0.6`
+  both open "Beta release for private dashboard distribution", so purpose does
+  not predict the flag; only the flag does.
 * The body opens with the build provenance sentence — commit, key, device
   parts, product count, suite total — before any feature prose.
 

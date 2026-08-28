@@ -107,6 +107,11 @@ exist to prevent a recurrence. Follow them exactly:
 
 ## Environment constraints
 
+> **Superseded — verify before relying on this.** `docs/agents/FACTS.md` §1.1 is
+> the canonical environment contract; the paragraph below is under open issue #79
+> as false as stated. Read `docs/agents/FACTS.md` first, and `docs/agents/README.md`
+> for the rest of the loop's canonical documents.
+
 Assume the execution environment cannot compile Monkey C or run the Connect IQ
 simulator (the SDK container's blob host is egress-blocked; `raw.githubusercontent.com`
 is reachable for upstream source reading). Therefore: all local verification is source

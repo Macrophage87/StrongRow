@@ -87,8 +87,9 @@ suite measurement (`GATE_PROTOCOL.md` §4) — they are per-mutation by nature.
   `scripts/expected_tests.txt` **in the same commit**. New names must not
   collide with the parser suite's synthetic literals.
 * A **file-scope** `(:test)` costs one `globals` member on the fenix6 family.
-  **7 free** at `211f106`; the 8th added is the first that reds
-  (`FACTS.md` §5.1). Check before you add three.
+  Check the current headroom in `FACTS.md` §5.1 before you add several — the
+  figure is deliberately not repeated here, because a second copy of it is
+  invisible to `check_ceiling_notes.py` and would drift silently.
 * Two runner-free suites red locally on a Windows CRLF checkout and are green
   in CI (`FACTS.md` §4.1). **Do not "fix" them and do not report them as
   regressions.**
