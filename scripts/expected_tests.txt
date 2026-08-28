@@ -457,3 +457,17 @@ Hsi.test_ct_diagHsiIgnoresRejectedFrames
 Hsi.test_pip_markRidesTheStatusRowOnly
 Hsi.test_pip_absentStrainIsHollowAndPresentIsFilled
 Hsi.test_life_shutdownKeepsHeatFieldInvariantOnThrow
+
+# source/RrHrvTest.mc -- epic #59 (#37, #38, #39, #40, #46, #68 and the rr_diag
+# receive-path diagnostic). Inside `module RrHrv`, so the names carry the
+# module: the simulator prints `RrHrv.test_rr_...` for a (:test) declared inside
+# a module block, and this pin has to carry the name the RUNNER prints. The
+# module block is a fenix6 `globals` requirement, not a style choice -- see the
+# CEILING note at the top of that file.
+#
+# The c0/c1/c2 prefixes are the commit partition: c0 pins are green in every
+# epoch of the change, c1 pins the new symbols, c2 are the differentials that
+# were shown RED before the fix.
+RrHrv.test_rr_c0_noFilterSurvivorIsTheSentinel
+RrHrv.test_rr_c0_theSentinelIsRejectedByTheFilter
+RrHrv.test_rr_c0_filterConvertsBeforeRangeChecking

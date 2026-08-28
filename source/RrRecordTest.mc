@@ -97,13 +97,33 @@ function buildRr(ivals) {
 
 // -------- #15 rMSSD-freshness / #16 gap-reset predicates (issue #32) --------
 // rrIsFresh(now, ts, thresh): strict `<`; never-seen (ts==0) is not fresh.
+//
+// #54: THE NEVER-SEEN CASE USED TO ASSERT ITS PROPERTY WITHOUT TESTING IT, and
+// the asymmetry with rrGapExceeded below is why it slipped past review twice.
+// The old case was rrIsFresh(10000, 0, 5000) != false. With now = 10000 and
+// thresh = 5000, `now - 0 = 10000` already fails the `< threshMs` test, so the
+// assertion held WITH OR WITHOUT the `tsMs > 0` guard -- measured: deleting the
+// guard outright left the suite green. now = 3000 puts the never-seen stamp
+// INSIDE the window, so the guard is the only thing that can produce false:
+// guard present -> false; guard deleted -> 3000 - 0 < 5000 -> true, and the
+// mutant dies.
+//
+// THE TWO CASES LOOK SYMMETRICAL AND ARE NOT. Do not "simplify" this one back
+// to a large `now` to match the rrGapExceeded case below. That one works with
+// any now because its comparison is `>`, so a zero stamp pushes the result the
+// WRONG way and the guard is load-bearing for the expected value; for `<` a
+// zero stamp pushes the SAME way as the guard, which makes the guard invisible.
+//
+// This matters beyond tidiness: rrIsFresh's never-seen behaviour is what
+// decides what rr_interval and rmssd emit before the first beat of a session
+// (#46, #68), so it has to be a tested property rather than a stated one.
 (:test) function test_rr_isFresh_states(logger) {
     var ok = true;
     if (StrongRowView.rrIsFresh(10000, 9000, 5000) != true)  { logger.error("fresh 1s should be true");  ok = false; }
     if (StrongRowView.rrIsFresh(10000, 4000, 5000) != false) { logger.error("stale 6s should be false"); ok = false; }
     if (StrongRowView.rrIsFresh(10000, 5000, 5000) != false) { logger.error("boundary == thresh must be false (strict <)"); ok = false; }
     if (StrongRowView.rrIsFresh(10000, 5001, 5000) != true)  { logger.error("just inside thresh should be true"); ok = false; }
-    if (StrongRowView.rrIsFresh(10000, 0,    5000) != false) { logger.error("never-seen (ts=0) must be false"); ok = false; }
+    if (StrongRowView.rrIsFresh(3000,  0,    5000) != false) { logger.error("never-seen (ts=0) must be false EVEN INSIDE the window -- the tsMs > 0 guard is the only thing that can produce it here"); ok = false; }
     return ok;
 }
 
