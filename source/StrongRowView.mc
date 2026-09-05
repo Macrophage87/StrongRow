@@ -5681,9 +5681,9 @@ class StrongRowView extends Ui.View {
     // rather than four cases with four chances to be asymmetric. That
     // asymmetry is a real failure mode and not a hypothetical one: a version
     // handling only `raw > ac` passes half the differentials, which is why
-    // test_lock_c2_aSubharmonicLockIsRefusedAndTheMedianSurvives and
-    // test_lock_c2_aHarmonicLockIsRefusedAndTheMedianSurvives are two cases
-    // and not one.
+    // test_lock_c2_aThreeToOneSubharmonicLockStillSnaps and
+    // test_lock_c2_aThreeToOneHarmonicLockStillSnaps are two cases and not
+    // one.
     //
     // The tolerance is RELATIVE TO THE RATIO -- `tol * 2.0` and `tol * 3.0`,
     // not one absolute width -- so the 3:1 band is proportionally as wide as
