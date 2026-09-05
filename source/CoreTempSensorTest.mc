@@ -336,6 +336,24 @@ function ctFreshProbe(openThrows) {
 
 // Boundary semantics of the one freshness predicate: strict `<`, and a
 // never-seen stamp is not fresh. Same contract as StrongRowView.rrIsFresh.
+//
+// #70, A CORRECTION AT ITS SOURCE. The last line below used to be commented
+// "negative stamp must be false", and that gloss asserted something this
+// predicate does not decide and must not decide: System.getTimer() is a SIGNED
+// 32-bit count from device start, so between 24.855 and 49.71 days of uptime
+// EVERY stamp is negative and a negative stamp is an ordinary live reading.
+// Reading the sign as absence is the defect #70 is about, and activity
+// i183553852 recorded the consequence -- 33 valid CORE frames decoded and no
+// core_temperature, skin_temperature, heat_strain_index or
+// max_core_temperature written for the whole row.
+//
+// The ASSERTION is unchanged and still correct, for a reason the old gloss did
+// not give: ts = -500 with now = 10000 is a pair that STRADDLES the counter's
+// zero crossing, so the true age is 10500 ms, which is past the 5000 ms
+// window. It is stale by ARITHMETIC, not by sign -- and it holds identically
+// before and after #70's fix, which is why this is a prose correction and not
+// a differential. The differential for the in-band negative case is
+// RrHrv.test_rr_c2_ctIsFreshOnANegativeClock.
 (:test) function test_ct_isFreshPredicate(logger) {
     var ok = true;
     if (CoreTempSensor.ctIsFresh(10000, 9000, 5000) != true)  { logger.error("fresh 1s should be true"); ok = false; }
@@ -343,7 +361,7 @@ function ctFreshProbe(openThrows) {
     if (CoreTempSensor.ctIsFresh(10000, 5000, 5000) != false) { logger.error("boundary == thresh must be false (strict <)"); ok = false; }
     if (CoreTempSensor.ctIsFresh(10000, 5001, 5000) != true)  { logger.error("just inside thresh should be true"); ok = false; }
     if (CoreTempSensor.ctIsFresh(10000, 0,    5000) != false) { logger.error("never-seen (ts=0) must be false"); ok = false; }
-    if (CoreTempSensor.ctIsFresh(10000, -500, 5000) != false) { logger.error("negative stamp must be false"); ok = false; }
+    if (CoreTempSensor.ctIsFresh(10000, -500, 5000) != false) { logger.error("a stamp/now pair straddling the counter's zero crossing is 10500 ms old and must be STALE -- by age, not by sign (#70)"); ok = false; }
     return ok;
 }
 

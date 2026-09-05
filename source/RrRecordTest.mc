@@ -102,11 +102,20 @@ function buildRr(ivals) {
 // the asymmetry with rrGapExceeded below is why it slipped past review twice.
 // The old case was rrIsFresh(10000, 0, 5000) != false. With now = 10000 and
 // thresh = 5000, `now - 0 = 10000` already fails the `< threshMs` test, so the
-// assertion held WITH OR WITHOUT the `tsMs > 0` guard -- measured: deleting the
+// assertion held WITH OR WITHOUT the presence guard -- measured: deleting the
 // guard outright left the suite green. now = 3000 puts the never-seen stamp
 // INSIDE the window, so the guard is the only thing that can produce false:
 // guard present -> false; guard deleted -> 3000 - 0 < 5000 -> true, and the
 // mutant dies.
+//
+// #70 CHANGED THE GUARD'S SPELLING, not its job: it was `tsMs > 0` when the
+// paragraph above was written and is `tsMs != 0` now, because on a negative
+// System.getTimer() the sign test read every live stamp as never-seen. The
+// argument above is unchanged -- 0 still means never-seen and this case is
+// still the only thing that can catch the guard's deletion. The mirror of it
+// on the negative side of zero is
+// RrHrv.test_rr_c0_neverSeenIsStillNeverSeenOnANegativeClock, where the
+// guard is load-bearing for EVERY threshold rather than only a small `now`.
 //
 // THE TWO CASES LOOK SYMMETRICAL AND ARE NOT. Do not "simplify" this one back
 // to a large `now` to match the rrGapExceeded case below. That one works with
@@ -123,7 +132,7 @@ function buildRr(ivals) {
     if (StrongRowView.rrIsFresh(10000, 4000, 5000) != false) { logger.error("stale 6s should be false"); ok = false; }
     if (StrongRowView.rrIsFresh(10000, 5000, 5000) != false) { logger.error("boundary == thresh must be false (strict <)"); ok = false; }
     if (StrongRowView.rrIsFresh(10000, 5001, 5000) != true)  { logger.error("just inside thresh should be true"); ok = false; }
-    if (StrongRowView.rrIsFresh(3000,  0,    5000) != false) { logger.error("never-seen (ts=0) must be false EVEN INSIDE the window -- the tsMs > 0 guard is the only thing that can produce it here"); ok = false; }
+    if (StrongRowView.rrIsFresh(3000,  0,    5000) != false) { logger.error("never-seen (ts=0) must be false EVEN INSIDE the window -- the presence guard is the only thing that can produce it here"); ok = false; }
     return ok;
 }
 
