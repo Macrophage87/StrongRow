@@ -269,6 +269,11 @@ module Lock {
         // The REAL workout start, through the shipping startWorkout().
         function startWorkoutLive() { startWorkout(); }
 
+        // Did it actually start? Read so a case can tell "the estimator is
+        // empty because the reset ran" from "the estimator is empty because
+        // startWorkout bailed before doing anything".
+        function isStarted() { return mStarted; }
+
         function rowFrom(spm, strokes, t0) {
             var per = 60.0 / spm;
             var t = t0;
@@ -2112,6 +2117,129 @@ module Lock {
                      "comes back at the rate actually rowed since START; " +
                      "ringCount() is " + p.ringCount() + ", out() is " +
                      p.out() + ", expected 1 and 24.0");
+        return false;
+    }
+    return true;
+}
+
+// -- D3, c2: the differentials for the START boundary --------------------------
+//
+// RED before the wiring, green after it. The wiring is ONE line -- a call to
+// resetStrokeBaseline() from beginSessionAccum() -- and these three cases are
+// the whole of what it changes.
+//
+// WHY beginSessionAccum() AND NOT startSession(). Three reasons, and the third
+// is the one that decided it:
+//   * it is the function this file already describes as the one "every
+//     recording-start path calls" (see beginWorkAccum's caller note), and it is
+//     called exactly once per recording start -- from onPrimary's free-row arm,
+//     from startWorkout, and from initialize where it is a no-op because
+//     resetDetector has just run;
+//   * it leaves startSession() untouched, so a branch in flight that edits
+//     startSession has nothing to merge here rather than one line to merge;
+//   * startSession() IS NOT REACHABLE FROM A (:test) -- it calls
+//     Rec.createSession -- so a probe has to stub it to drive the start path at
+//     all, and a reset placed inside it would be stubbed out with it and pinned
+//     by nothing. That is the trap this repository names: a test that does not
+//     call the shipping code pins nothing.
+
+// THE BASELINE DOES NOT SURVIVE A RECORDING START.
+(:test) function test_lock_c2_startingASessionDropsThePreStartBaseline(logger) {
+    var p = new Lock.Probe();
+    // Boat handling before START: real strokes through the shipping
+    // registerStroke, at the rate the recording shows the detector believing on
+    // a stationary boat.
+    p.rowAt(28.0, 12);
+    var before = p.rateBase();
+    if (!(before > 0.0)) {
+        logger.error("setup: pre-START strokes must have established a " +
+                     "baseline for there to be anything to drop; rateBase() " +
+                     "is " + before);
+        return false;
+    }
+
+    p.beginAccum();
+
+    if (p.rateBase() != 0.0) {
+        logger.error("a recording start must judge itself against nothing " +
+                     "inherited: the baseline established before START was " +
+                     before + " and is still " + p.rateBase() + ", expected " +
+                     "0.0. On i183553852 that carried 29.57 spm out of a " +
+                     "stationary boat and into the first work interval");
+        return false;
+    }
+    return true;
+}
+
+// AND NEITHER DOES THE STROKE-PERIOD RING, which is the half that actually put
+// a number on the screen.
+(:test) function test_lock_c2_startingASessionEmptiesTheStrokeRing(logger) {
+    var p = new Lock.Probe();
+    p.rowAt(28.0, 12);
+    if (!(p.ringCount() > 0 && p.out() > 0.0)) {
+        logger.error("setup: twelve pre-START strokes must fill the ring (" +
+                     p.ringCount() + ") and publish a rate (" + p.out() + ")");
+        return false;
+    }
+
+    p.beginAccum();
+
+    if (p.ringCount() != 0 || p.ringIdx() != 0) {
+        logger.error("the ring must be empty at START, not merely overwritten " +
+                     "as later strokes arrive: count " + p.ringCount() +
+                     ", index " + p.ringIdx());
+        return false;
+    }
+    if (p.out() != 0.0) {
+        logger.error("and so the SHIPPING outputRate() must publish nothing " +
+                     "-- drawRate renders that as \"--.-\" and the FIT " +
+                     "records the app's own no-data 0.0, instead of the 28.8 " +
+                     "spm a stationary boat produced. out() is " + p.out());
+        return false;
+    }
+    if (!(p.lastStrokeT() < -50.0)) {
+        logger.error("mLastStrokeT must be back at the \"no previous stroke\" " +
+                     "sentinel, or the FIRST stroke after START still forms a " +
+                     "period with the LAST one before it and exactly one " +
+                     "pre-START period survives; lastStrokeT() is " +
+                     p.lastStrokeT());
+        return false;
+    }
+    return true;
+}
+
+// THROUGH THE REAL START PATH, which is what separates "the seam works" from
+// "the app reaches it".
+//
+// startWorkout() is the shipping function, driven with only startSession()
+// neutralised. Deleting the one wiring line leaves the two cases above green if
+// they were written against resetStrokeBaseline() directly -- this is the one
+// that cannot be satisfied any other way.
+(:test) function test_lock_c2_theRealStartPathClearsTheCarryOver(logger) {
+    var p = new Lock.Probe();
+    p.rowAt(28.0, 12);
+    if (!(p.rateBase() > 0.0 && p.ringCount() > 0)) {
+        logger.error("setup: nothing established before START");
+        return false;
+    }
+
+    p.startWorkoutLive();
+
+    if (p.rateBase() != 0.0 || p.ringCount() != 0 || p.out() != 0.0) {
+        logger.error("the SHIPPING startWorkout() must leave the estimator " +
+                     "empty: rateBase() " + p.rateBase() + ", ringCount() " +
+                     p.ringCount() + ", outputRate() " + p.out() +
+                     ", all expected 0. The first work interval is judged " +
+                     "against what the athlete rows in it, not against what " +
+                     "the boat was doing on the way to the start");
+        return false;
+    }
+
+    // AND THE START ITSELF STILL HAPPENED. A wiring that reset the estimator by
+    // making startWorkout bail early would satisfy every line above.
+    if (!p.isStarted()) {
+        logger.error("startWorkout() must still have started the recording; " +
+                     "mStarted is false");
         return false;
     }
     return true;
