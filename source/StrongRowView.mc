@@ -2759,6 +2759,32 @@ class StrongRowView extends Ui.View {
         return lastBeatMs > 0 && (nowMs - lastBeatMs) > threshMs;
     }
 
+    // Pure: the LATER of two stamps on one clock, where 0 means NEVER-SEEN and
+    // is therefore not a time at all.
+    //
+    // #70. The two rr_diag gap slots baseline their measurement at "the later
+    // of the previous arrival and the start of this row", and both sites wrote
+    // that as a bare `>` against a field that is 0 until it is first stamped.
+    // On a POSITIVE clock 0 loses every comparison, so the sentinel behaved
+    // like "no baseline" by accident. On a negative clock -- System.getTimer()
+    // between 24.855 and 49.71 days of uptime -- 0 WINS every comparison, so an
+    // unset baseline displaces a real stamp and the slot then measures nothing
+    // at all. Hoisted into one function so the two sites cannot disagree about
+    // what an unstamped baseline means, which is the shape #37 established for
+    // the range gate one screen up.
+    //
+    // ORDERING IS PLAIN `>`, NOT A DIFFERENCE. Two stamps in the same half of
+    // the signed cycle compare correctly with `>`, and a difference form would
+    // be relying on two's-complement wraparound that nothing here has measured
+    // (see test_rr_c0_stampArithmeticOnANegativeClock, which LOGS that question
+    // rather than answering it). The wrap crossing itself stays out of scope --
+    // #70's other direction.
+    static function laterStamp(a, b) {
+        if (a == 0) { return b; }
+        if (b == 0) { return a; }
+        return (b > a) ? b : a;
+    }
+
     // Pure: should startSession() declare the three CORE developer fields?
     // Extracted from the inline condition it replaces so the decision is
     // reachable from a (:test) without an ActivityRecording.Session -- the

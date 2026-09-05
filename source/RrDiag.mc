@@ -194,10 +194,31 @@ const I_MAXGAP_BEAT  = 19;
 const I_FLAGS        = 20;
 
 // -- flag bits of I_FLAGS ---------------------------------------------------
-// Read at readout, not latched, because both are set synchronously in
-// startSensor and never change afterwards.
+// The first two are read at readout, not latched, because both are set
+// synchronously in startSensor and never change afterwards.
 const F_RR_REGISTERED = 1;   // registerSensorDataListener accepted heartBeatIntervals
 const F_SENSOR_OK     = 2;   // a sensor listener of either shape was registered
+
+// #70. The SIGN of System.getTimer() at the moment START was pressed.
+//
+// LATCHED, unlike the two above, and that is forced rather than chosen: this
+// records a property of ONE instant -- session start -- and the counter moves
+// afterwards, so reading it at stopAndSave would answer a different question.
+// StrongRowView.rrDiagSessionReset is the only writer.
+//
+// WHY A BIT AT ALL. System.getTimer() is a signed 32-bit millisecond count from
+// DEVICE start, so between 24.855 and 49.71 days of uptime every stamp the app
+// takes is negative. Activity i183553852 (v0.9) was rowed inside that band and
+// showed the consequence -- rr_diag REC_STAGED = 0 with REC_INVALID = 13335
+// while BEAT_ACCEPT = 1597 -- but the file could only be read that way by
+// INFERENCE, from the device's uptime. This bit makes the next such row say so
+// directly.
+//
+// WHAT IT DOES NOT SAY, stated because a diagnostic that is over-read is worse
+// than none: it is the sign at START only. A row that STRADDLES the wrap (a
+// one-minute-in-49.7-days event) reads exactly as one that did not, and this
+// change does not fix that crossing -- see #70.
+const F_CLOCK_NEG     = 4;   // System.getTimer() was NEGATIVE at session start
 
 // -- rrAccept's classification codes ----------------------------------------
 // These live HERE, beside the counters they feed, and that placement is the

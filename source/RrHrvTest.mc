@@ -689,6 +689,72 @@ class RrProbe extends StrongRowView {
                  "the last rr_interval write after an all-rejected batch");
 }
 
+// #70's new symbol. laterStamp(a, b) is "the later of two stamps on one clock,
+// where 0 means never-seen", and it exists because the two rr_diag gap-baseline
+// sites each wrote that as a bare `>` -- correct only while the clock is
+// positive, where the 0 sentinel loses every comparison by luck.
+//
+// Green from the commit that introduces it. The call sites are still the old
+// inline `>` at this commit; wiring them is the fix, and the c2 gap-slot
+// differential below proves the wiring. (That case does not exist yet at this
+// commit, so it is described rather than named -- scripts/check_source_refs.py
+// reds on a comment that names a guard which has not been written, which is
+// exactly the forward reference it was built to catch.)
+//
+// The THIRD row of each half is the one that matters and is why this symbol
+// exists at all: with a negative stamp and an unset (0) baseline, `>` picks 0.
+(:test) function test_rr_c1_laterStampTreatsZeroAsNeverSeen(logger) {
+    var ok = true;
+    // Positive clock: ordinary max, and the sentinel loses either way round.
+    if (StrongRowView.laterStamp(1000, 2000) != 2000) { logger.error("later(1000,2000)"); ok = false; }
+    if (StrongRowView.laterStamp(2000, 1000) != 2000) { logger.error("later(2000,1000)"); ok = false; }
+    if (StrongRowView.laterStamp(1000, 0)    != 1000) { logger.error("later(1000,0) must ignore the sentinel"); ok = false; }
+    if (StrongRowView.laterStamp(0, 1000)    != 1000) { logger.error("later(0,1000) must ignore the sentinel"); ok = false; }
+    // Negative clock: ordering still holds, and -1 is LATER than -2000000000.
+    if (StrongRowView.laterStamp(-2000000000, -1999000000) != -1999000000) { logger.error("later(-2e9,-1.999e9)"); ok = false; }
+    if (StrongRowView.laterStamp(-1999000000, -2000000000) != -1999000000) { logger.error("later(-1.999e9,-2e9)"); ok = false; }
+    // THE CASE `>` GETS WRONG: an unset baseline must not displace a real stamp.
+    if (StrongRowView.laterStamp(-2000000000, 0) != -2000000000) {
+        logger.error("later(-2e9, 0) returned " + StrongRowView.laterStamp(-2000000000, 0) +
+                     " -- an UNSET baseline displaced a real negative stamp, which " +
+                     "is exactly what the bare `>` did");
+        ok = false;
+    }
+    if (StrongRowView.laterStamp(0, -2000000000) != -2000000000) { logger.error("later(0,-2e9)"); ok = false; }
+    // Both never-seen stays never-seen, so the caller's own `!= 0` gate still
+    // sees a sentinel rather than a time.
+    if (StrongRowView.laterStamp(0, 0) != 0) { logger.error("later(0,0) must stay 0"); ok = false; }
+    return ok;
+}
+
+// #70's new flag bit. F_CLOCK_NEG must be a distinct power of two, or ORing the
+// three bits into slot 20 is lossy and every recorded file's flags byte is
+// re-keyed. The bit is not SET by anything at this commit; that is the fix, and
+// the c2 flags differential below is what proves it gets set. (Described rather
+// than named for the same check_source_refs.py reason as the case above.)
+(:test) function test_rr_c1_theClockSignFlagBitIsDistinct(logger) {
+    var ok = true;
+    if ($.RrDiag.F_CLOCK_NEG != 4) {
+        logger.error("F_CLOCK_NEG is " + $.RrDiag.F_CLOCK_NEG + ", not 4 -- moving " +
+                     "a flag bit re-keys the flags slot of every recorded file");
+        ok = false;
+    }
+    if (($.RrDiag.F_CLOCK_NEG & $.RrDiag.F_RR_REGISTERED) != 0
+            || ($.RrDiag.F_CLOCK_NEG & $.RrDiag.F_SENSOR_OK) != 0) {
+        logger.error("the rr_diag flag bits overlap, so the OR into slot 20 is lossy");
+        ok = false;
+    }
+    // It fits the UINT16 slot with the other two set, which is the only size
+    // question a flags slot has.
+    var all = $.RrDiag.F_RR_REGISTERED | $.RrDiag.F_SENSOR_OK | $.RrDiag.F_CLOCK_NEG;
+    if (all != 7 || $.RrDiag.clamp(all) != all) {
+        logger.error("all three flags together read " + all + " and clamp to " +
+                     $.RrDiag.clamp(all));
+        ok = false;
+    }
+    return ok;
+}
+
 }
 
 module RrHrv {
