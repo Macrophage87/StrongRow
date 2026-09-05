@@ -33,6 +33,35 @@ THREE JOBS, and the first is the one that matters.
    pull request body quotes. If the rule, the tolerance, the fixtures or the
    scoring changes, the figures move and this reds, naming the one that moved.
 
+MUTATION MATRIX, so "this suite pins the harness" is a measurement and not a
+claim. Each row is ONE edit to scripts/lock_snap_replay.py (or to a fixture),
+applied to a scratch copy of scripts/, after which this suite is run. A pin
+that does not red under the mutation it claims to guard is decoration, and
+decoration reads as coverage. Reproduce any row with one substitution:
+
+  #   the edit                                          named failures
+  M1  delete the guard: `r = ac` unconditionally             33
+  M2  `q = raw / ac` (drop the max/min swap)                 20
+  M3  `d <= tol` (absolute, not relative to the ratio)       13
+  M4  LOCK_HARM_TOL 0.10 -> 0.30                             22
+  M5  `return False` for the 3:1 band                        29
+  M6  drop `raw <= 0.0 or ac <= 0.0` from the predicate       2
+  M7  LOCK_SNAP_K 0.30 -> 0.25                               19
+  M8  count an absent enhanced_speed as a slow boat           2
+
+  baseline (unmutated): 0 failures.
+
+Eight of eight are killed, and all eight by NAMED checks. That was not true
+when the matrix was first run: M1, M2 and M6 killed the suite with an unhandled
+ZeroDivisionError instead, which is a kill that names no check and stops every
+later assertion from running. `ratio()` below and the try/except in section A8
+exist because of that measurement, not in anticipation of it.
+
+Note M7: mutating LOCK_SNAP_K rather than anything #193 added still reds
+nineteen checks, including the fixture cross-checks in section B. That is the
+point of section B -- the published figures depend on the WHOLE output-stage
+rule, not only on the part this branch changed.
+
 Run: python3 scripts/test_lock_snap_replay.py
 """
 
@@ -52,6 +81,24 @@ def check(cond, what):
 
 def near(got, want, what, eps=5e-4):
     check(abs(got - want) <= eps, "%s: got %r, want %r" % (what, got, want))
+
+
+def ratio(a, b):
+    """a:b as a float, with b == 0 answering infinity rather than raising.
+
+    A GUARD AGAINST THE SUITE FAILING BY TRACEBACK. Measured, on the mutation
+    matrix for this branch: three mutants of scripts/lock_snap_replay.py --
+    deleting the guard, dropping the max/min swap, and dropping the predicate's
+    non-positive clause -- killed this suite with an unhandled
+    ZeroDivisionError from `wrong / correct` where a mutant left no refusals to
+    split. A traceback IS a kill, but it is not a diagnosis: it names no check,
+    so the mutation report cannot say WHICH pin caught it, and every assertion
+    after the raise never ran. `check` below turns the same three into named
+    failures.
+    """
+    if b == 0:
+        return float("inf") if a else float("nan")
+    return float(a) / float(b)
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +184,21 @@ def section_a():
     for a, b in ((28.0, 20.0), (20.0, 28.0), (50.0, 20.0), (20.0, 50.0)):
         check(not L.harmonic_of_lock(a, b),
               "A8 %r/%r is not a harmonic" % (a, b))
-    check(not L.harmonic_of_lock(0.0, 20.0), "A8 a zero median is not one")
-    check(not L.harmonic_of_lock(20.0, 0.0), "A8 no lock is not one")
-    check(not L.harmonic_of_lock(None, 20.0), "A8 null is not arithmetic")
+    # The degenerate inputs are called through a CATCH, not bare. Without it a
+    # predicate that dropped its non-positive clause would divide by zero and
+    # kill the suite by traceback -- a kill that names no check and stops every
+    # later assertion. Measured on this branch's mutation matrix: that mutant
+    # went from "CRASH: ZeroDivisionError" to the three named failures below.
+    for a, b, what in ((0.0, 20.0, "a zero median"), (20.0, 0.0, "no lock"),
+                       (None, 20.0, "a null median"),
+                       (20.0, None, "a null lock"),
+                       (-5.0, 20.0, "a negative median")):
+        try:
+            check(not L.harmonic_of_lock(a, b), "A8 %s is not a harmonic" % what)
+        except Exception as e:
+            check(False, "A8 %s must ANSWER, not raise: harmonic_of_lock(%r, "
+                         "%r) raised %s. An absent or non-positive value must "
+                         "not be arithmetic." % (what, a, b, type(e).__name__))
 
     # (A9) The guard cannot reach the NO-LOCK arm. Every figure in this file
     #      rests on the fix being confined to the snap.
@@ -298,11 +357,17 @@ def section_c(rows):
         t = L.truth(r)
         bw, bc = L.split(r, t, L.fires(r))
         rw, rc = L.split(r, t, L.refusals(r, sa, sb))
-        got = "above" if rw / rc > bw / bc else "below"
+        check(rc > 0 and rw > 0,
+              "C5 %s: the guard must refuse SOME snaps of each kind at tol "
+              "%.2f -- it refused %d the truth calls wrong and %d it calls "
+              "correct, and a split with a zero in it is a different result, "
+              "not a ratio" % (key, L.LOCK_HARM_TOL, rw, rc))
+        got = "above" if ratio(rw, rc) > ratio(bw, bc) else "below"
         check(got == want_dir[key],
               "C5 %s: at tol %.2f the refusal quality (%.2f:1) must be %s the "
               "base rate (%.2f:1); it is %s"
-              % (key, L.LOCK_HARM_TOL, rw / rc, want_dir[key], bw / bc, got))
+              % (key, L.LOCK_HARM_TOL, ratio(rw, rc), want_dir[key],
+                 ratio(bw, bc), got))
     # And the magnitudes, because "above" carries no weight on its own: the
     # reported row's margin is 6.12 against 4.02 and hold-out B's is 2.64
     # against 2.57, which is not the same finding.
@@ -314,8 +379,8 @@ def section_c(rows):
         t = L.truth(r)
         bw, bc = L.split(r, t, L.fires(r))
         rw, rc = L.split(r, t, L.refusals(r, sa, sb))
-        near(rw / rc, want[0], "C5 %s refusal quality" % key, 0.005)
-        near(bw / bc, want[1], "C5 %s base rate" % key, 0.005)
+        near(ratio(rw, rc), want[0], "C5 %s refusal quality" % key, 0.005)
+        near(ratio(bw, bc), want[1], "C5 %s base rate" % key, 0.005)
 
 
 def main():
