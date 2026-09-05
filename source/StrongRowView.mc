@@ -135,72 +135,106 @@ const FOOT_IDLE     = 4;   // not started yet
 // The VALUES are unchanged from the class consts they replace.
 const MIN_RATE = 6.0;             // slowest period the detector will accept
 const MAX_RATE = 40.0;            // hard ceiling on anything that reaches the file
-const LOCK_SNAP_K = 0.30;         // a locked rate deviating more snaps to the lock
+const LOCK_SNAP_K = 0.30;         // a locked rate deviating more snaps to the
+                                  // lock, UNLESS the disagreement is a near-2:1
+                                  // harmonic -- see LOCK_HARM_TOL below (#193)
 const FAST_NEEDS_LOCK = 30.0;     // the ABSOLUTE no-lock gate, in spm
 
 // ---- the harmonic bound on the snap (#193) --------------------------------
-// THE DEFECT. LOCK_SNAP_K above has no plausibility bound: whatever the lock
-// says, a median that disagrees with it by more than 30% is discarded and the
-// lock is published. But the autocorrelation of a stroke signal peaks at
-// integer MULTIPLES and DIVISORS of the true period, so the lock can sit on a
-// harmonic or a subharmonic of the cadence being rowed -- and at those ratios
-// the snap does not kill a half/double reading, it CREATES one, over a median
-// that was right.
+// THE DEFECT LOCK_SNAP_K HAD. Until this guard, whatever the lock said, a
+// median disagreeing with it by more than 30% was discarded and the lock was
+// published, with no plausibility bound at all. But the autocorrelation of a
+// stroke signal peaks at integer MULTIPLES and DIVISORS of the true period, so
+// the lock can sit on a harmonic of the cadence being rowed -- and at that
+// ratio the snap does not kill a half/double reading, it CREATES one over a
+// median that was right.
 //
 // Measured on recording i183553852 (3385 records; regenerate any of this with
-// `python3 scripts/lock_snap_replay.py`): the published rate differed from the
-// detector's own median on 645 of the records that published anything, and 642
-// of those equalled the lock exactly. On 343 the two differed by more than a
-// FACTOR OF TWO. Records 2489-2505 read 18.5 -> 6.4 -> 18.5 -> 6.4 -> 33.3 spm
-// in ten seconds while the median never moved off 18.52; the lock was walking
-// between the fundamental, a 2.901 subharmonic and a 3.200 harmonic.
+// `python3 scripts/lock_snap_replay.py`): the shipped rule, replayed from the
+// recorded inputs, substitutes the lock on 643 of the records that published
+// anything -- every one of them differing from the detector's own median. On
+// 343 the two differ by more than a FACTOR OF TWO. Both figures come from the
+// REPLAYED series and never from the recorded one, so #194's residual cannot
+// land in them.
 //
 // LOCK_HARM_TOL IS THE BAND HALF-WIDTH AS A FRACTION OF THE RATIO it is
-// applied to, so at 0.10 the refusal bands are [1.80, 2.20] and [2.70, 3.30].
-// A ratio inside either one is a harmonic lock and the median survives;
-// everything else snaps exactly as it did before. At 0.10 the snap still fires
-// on 401 of 643, 245 of 356 and 124 of 175 disagreements of the three recorded
-// rows -- this NARROWS the snap, it does not delete it.
+// applied to, so at 0.10 the refusal band is [1.80, 2.20]. A ratio inside it
+// is a harmonic lock and the median survives; every other disagreement snaps
+// exactly as it did before. At 0.10 the snap still fires on 505 of 643, 284 of
+// 356 and 143 of 175 disagreements of the three recorded rows -- this NARROWS
+// the snap, it does not delete it.
 //
 // A MODULE-SCOPE CONST, like the four above and for the same measured reason
 // they were moved here: a module-scope const costs no member of `globals`
 // because it is inlined (the ceiling note at scripts/list_tests.py:78-87,
 // probed by bisection on the fenix6 family, SDK 9.2.0). An earlier revision of
-// this branch asserted the opposite and was retracted in c2c.
+// this branch asserted the opposite and was retracted.
 //
-// THE VALUE IS MEASURED AND IT IS A SINGLE-ROW FIT. Both halves of that
-// sentence are load-bearing:
+// ---- WHY 2:1 ONLY, AND HOW THAT WAS DECIDED --------------------------------
 //
-//   the floor       the two reported records sit at ratios 2.901 and 3.200,
-//                   which need 0.033 and 0.067. Under 0.067 the reported
-//                   sequence is not fixed at all.
-//   the ceiling     the two bands must stay disjoint, which needs under 0.20.
-//   the plateau     on the reported row, of the snaps the guard refuses, the
-//                   ratio of ones a 31 s centred median of the median series
-//                   calls WRONG to ones it calls CORRECT is flat at 6.0-6.4:1
-//                   across 0.08-0.12, against a 4.02:1 base rate over all 643
-//                   snaps. Its argmax is 0.11.
-//   why 0.10        two hold-out recordings do NOT corroborate that peak. On
-//                   i178249719 the guard's refusals run at 2.36:1 against that
-//                   row's own 3.56:1 base rate -- WORSE than refusing at
-//                   random -- and on i174014735 at 2.64:1 against 2.57:1,
-//                   which is too close to call. Fitting a third digit to one
-//                   recording is not a measurement, so the round number in the
-//                   plateau is taken instead of the row's argmax.
-//   what does hold  the DIRECTION reproduces on all three rows: the count of
-//                   records whose published rate differs from the median by
-//                   more than 2x falls at every tolerance swept, by 46%, 37%
-//                   and 36% at this one.
+// THE FIRST REVISION OF THIS BRANCH ALSO REFUSED A NEAR-3:1 RATIO, AND WAS
+// WRONG TO. It chose both bands against a 31 s centred median of `rate_raw`,
+// which cannot referee this dispute at all: `rate_raw` is one of the two
+// candidates, so a truth derived from it flatters any rule whose action is
+// "publish `rate_raw`". The review found the witness that can -- the FIT
+// NATIVE `cadence` field, a SECOND DETECTOR. This app READS ai.currentCadence
+// (nativeCadence, below) and writes no native record field, so that series is
+// independent of both the median and the lock. It counts BLADE MOVEMENTS
+// rather than drives (see the 89-109-against-66-68 measurement further down
+// this file), so it is right in RATIO and wrong in LEVEL; it is used with one
+// scalar per row and every conclusion is swept over that scalar +-25%.
+// Regenerate all of it with `python3 scripts/lock_snap_replay.py witness`.
+//
+// Scored against it, pooled over three rows -- wrong-snaps : right-snaps:
+//
+//     all snaps, the base rate      118 : 73    1.62:1   p=0.0014
+//     what the 2:1 band refuses      40 : 8     5.00:1   p=0.00003
+//     what a 3:1 band would refuse   10 : 16    0.62:1   p=0.33
+//
+// The 2:1 band keeps its direction and its significance at EVERY calibration
+// in the sweep; a 3:1 band reaches significance at none of them and its point
+// estimate is adverse. n is small -- 48 and 26 scored records -- and the
+// p-values ignore the serial correlation between adjacent seconds, which is
+// certainly present and inflates them. So the claim here is not "a 3:1 band is
+// harmful" but "a 3:1 band has no support, while the 2:1 band's support is
+// strong and calibration-robust", and only the supported half ships.
+//
+// WHERE #193's MOTIVATING SEQUENCE WENT. The issue was filed on records
+// 2489-2505 of that row, and THIS GUARD NO LONGER TOUCHES THEM -- both ratios
+// there are 3:1. What the recording shows: records 2489-2499 read
+// 18.5 -> 6.4 -> 18.5 -> 6.4 spm in eleven seconds while the median held
+// 18.52, and 2503-2505 read 33.3 against a median that had by then fallen to
+// 10.42; the lock was walking between the fundamental, a 2.901 subharmonic and
+// a 3.200 harmonic. But records 2489-3383 carry step_type 5 (SFIT_COOL), so
+// that window is the COOL-DOWN, one second after the eighth work interval
+// ended -- not a piece. Over that lap the watch's own counter recorded 97
+// cycles in 896.2 s (6.49 spm) against the lock's 6.383, and it read ZERO for
+// the 187 consecutive records from 2488 while enhanced_speed decayed
+// 2.04 -> 1.26 m/s. Whether the median was RIGHT there is therefore NOT
+// established, and the available independent evidence says it was not. #199 is
+// the field check.
+//
+// THE TOLERANCE. 0.10 is a round number inside a range, not an argmax, and no
+// attempt is made to defend it over 0.09 or 0.11: 48 scored records cannot
+// resolve a third digit. It must be at least 0.05 wide to cover the
+// 38-against-20 pair at ratio 1.90, and its lower edge at 0.10 (1.80) stays
+// half a ratio clear of the snap's own threshold at 1.30. Narrowing it was
+// tried and measured WORSE: at 0.05 the pooled split is 23:15 (p=0.26) against
+// 50:24 at 0.10, and on one hold-out row every scored change is wrong.
 //
 // WHAT THIS IS NOT. It is not #149's defect, which is the median and the lock
 // AGREEING and both being wrong; nothing here touches that. It is not #10's,
 // whose worked example is a 28 spm median against a 20 spm lock -- a ratio of
-// 1.40, outside both bands, so a legitimate surge is still pinned to the
-// lagging lock exactly as it is today. No confidence threshold is used, and
+// 1.40, outside the band, so a legitimate surge is still pinned to the lagging
+// lock exactly as it is today. No confidence threshold is used, and
 // deliberately: lock_confidence is unnormalised (#189, 179 records of the
-// reported row exceed 1.0, to a maximum of 13.11), and measured on that row a
-// conf >= 0.3 gate keeps 71% of the impossible samples while conf >= 0.5
-// discards 16-18% of clean work seconds.
+// reported row exceed 1.0, to a maximum of 13.11), and #189 measures a
+// conf >= 0.5 gate as discarding "roughly a sixth" of clean work seconds while
+// conf >= 0.3 keeps 71% of the impossible samples -- that 71% being taken on
+// #189's denominator of 364, which scripts/lock_snap_replay.py corrects to 359
+// because five of those records carry no enhanced_speed at all. Neither figure
+// is regenerable from anything committed here: no fixture in this repository
+// carries lock_confidence, and they are quoted as #189's, not re-measured.
 const LOCK_HARM_TOL = 0.10;       // harmonic band half-width, as a fraction
 
 // ---- the RELATIVE no-lock gate (#149) ------------------------------------
@@ -5671,26 +5705,26 @@ class StrongRowView extends Ui.View {
         return g;
     }
 
-    // Pure: is the lock a HARMONIC or SUBHARMONIC of the median rather than a
-    // second opinion about the same cadence? See the LOCK_HARM_TOL note at the
-    // top of this file for the defect, the measurement and what the tolerance
-    // does and does not rest on.
+    // Pure: is the lock a 2:1 HARMONIC of the median rather than a second
+    // opinion about the same cadence? See the LOCK_HARM_TOL note at the top of
+    // this file for the defect, the measurement, why the band set is 2:1 ONLY,
+    // and what the tolerance does and does not rest on.
     //
     // `q` IS max/min, so a harmonic (the median is the double) and a
     // subharmonic (the lock is) are ONE comparison against ONE tolerance
-    // rather than four cases with four chances to be asymmetric. That
-    // asymmetry is a real failure mode and not a hypothetical one: a version
-    // handling only `raw > ac` passes half the differentials, which is why
+    // rather than two cases with two chances to be asymmetric. That asymmetry
+    // is a real failure mode and not a hypothetical one: a version handling
+    // only `raw > ac` passes half the differentials, which is why
     // test_lock_c2_aThreeToOneSubharmonicLockStillSnaps and
     // test_lock_c2_aThreeToOneHarmonicLockStillSnaps are two cases and not
     // one.
     //
-    // The tolerance is RELATIVE TO THE RATIO -- `tol * 2.0` and `tol * 3.0`,
-    // not one absolute width -- so the 3:1 band is proportionally as wide as
-    // the 2:1 band. A single absolute width would make the 3:1 band tighter in
-    // relative terms exactly where the median is noisiest, because a ratio of
-    // three is reached at the long-period end where one stroke of jitter moves
-    // the ratio furthest.
+    // The tolerance is RELATIVE TO THE RATIO -- `tol * 2.0`, not an absolute
+    // spm width -- so the band is a proportion of the ratio it guards and does
+    // not have to be re-tuned if another integer ratio is ever added. Only 2.0
+    // is checked: a 3:1 band was measured against an independent detector and
+    // had no support (10:16, p=0.33, against the 2:1 band's 40:8, p=0.00003),
+    // and it is not here rather than being here and narrow.
     //
     // Null and non-positive inputs answer FALSE rather than throwing: an
     // absent value must not be arithmetic, the rule every other predicate in
@@ -5706,10 +5740,7 @@ class StrongRowView extends Ui.View {
         var q = (raw > ac) ? raw / ac : ac / raw;
         var d = q - 2.0;
         if (d < 0.0) { d = -d; }
-        if (d <= $.LOCK_HARM_TOL * 2.0) { return true; }
-        d = q - 3.0;
-        if (d < 0.0) { d = -d; }
-        return d <= $.LOCK_HARM_TOL * 3.0;
+        return d <= $.LOCK_HARM_TOL * 2.0;
     }
 
     // Pure: the whole output-stage decision, as a function of the three inputs
@@ -5732,10 +5763,12 @@ class StrongRowView extends Ui.View {
                 var dev = r - ac;
                 if (dev < 0.0) { dev = -dev; }
                 if (dev > $.LOCK_SNAP_K * ac) {
-                    // #193: a disagreement by a near-integer factor of two or
-                    // three is the lock reading the wrong autocorrelation
-                    // peak, not a verdict on the median. Refuse it and keep
-                    // the median; every other disagreement snaps as before.
+                    // #193: a disagreement by a near-integer factor of TWO is
+                    // the lock reading the wrong autocorrelation peak, not a
+                    // verdict on the median. Refuse it and keep the median;
+                    // every other disagreement -- including a 3:1 ratio, which
+                    // an independent detector declined to support -- snaps as
+                    // before.
                     if (!harmonicOfLock(r, ac)) { r = ac; }
                 }
             }
@@ -5822,8 +5855,8 @@ class StrongRowView extends Ui.View {
     // autocorrelation lock to agree (kills phantom bursts from non-rowing
     // hand motion), and a locked reading that disagrees with the lock by
     // more than 30% snaps to it (kills residual half/double readings) --
-    // UNLESS the disagreement is by a near-integer factor of two or three, in
-    // which case the lock is on a harmonic and the median is kept (#193; see
+    // UNLESS the disagreement is by a near-integer factor of TWO, in which
+    // case the lock is on a harmonic and the median is kept (#193; see
     // harmonicOfLock and the LOCK_HARM_TOL note at the top of this file)
     hidden function outputRate() {
         return gatedRate(mRate, mAcPeriod, mRateBase);
