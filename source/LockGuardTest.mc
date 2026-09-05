@@ -509,11 +509,18 @@ module Lock {
 // -- c2: the #193 differentials -- RED against c1, by design -----------------
 //
 // Each case below asserts what gatedRate must do AFTER the harmonic guard
-// lands in c3, and each is RED in this commit. They replace
-// test_lock_c0_theSnapSubstitutesAHarmonicLockAtRatioTwoAndThree, which pinned
-// the same triples returning the LOCK and is retired here: a characterization
-// pin and its differential cannot both be green, and keeping the old one
-// renamed would leave the suite asserting two answers to one question.
+// lands in c3, and each is RED in this commit. They replace the c0
+// characterization that pinned the same triples returning the LOCK, which is
+// RETIRED in this commit: a characterization pin and its differential cannot
+// both be green, and keeping the old one under a new name would leave the
+// suite asserting two answers to one question. The retired case is named in
+// c2's commit message and its behaviour survives in
+// scripts/test_lock_snap_replay.py section A4, which pins the SHIPPED answer
+// for the same triples against the Python transcription and stays green
+// through c3. It is NOT named here: scripts/check_source_refs.py requires
+// every (:test) named in a source/ comment to exist, and a comment naming a
+// deleted guard is exactly the claim-stronger-than-its-evidence that check was
+// written for. It caught this one -- run 33972805039, test-tooling.
 //
 // Every case reads its answer back through the SHIPPING outputRate() via
 // Lock.at(...).out(). Nothing here re-implements the decision -- the trap this
