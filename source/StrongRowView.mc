@@ -4044,8 +4044,15 @@ class StrongRowView extends Ui.View {
     // drawn from it is wrong: under two's-complement wrapping that subtraction
     // is 1296, which IS the true age of that pair, so `true` is the CORRECT
     // answer and the example demonstrates nothing about the hazard. It is
-    // withdrawn as evidence rather than reworded. What actually breaks across
-    // the seam is stated below.
+    // withdrawn as evidence rather than reworded.
+    //
+    // POINTING THE OTHER WAY, and recorded because it is the only thing in this
+    // tree that bears on subtraction at the seam at all: IF that line's own
+    // "measured" was a real observation, then its `true` is itself evidence
+    // that `-` wraps -- without wrapping the subtraction is 4294966000, which
+    // is not `< 5000`, and hrHave would have returned false. The provenance of
+    // that "measured" is unknown, so this is a hypothesis and not a
+    // measurement, and the withdrawal above stands either way.
     //
     // THE WRAP CROSSING IS STILL NOT FIXED HERE, and **#70** still owns it.
     // rrIsFresh above is the same shape and the pair must not diverge about a
@@ -4064,14 +4071,16 @@ class StrongRowView extends Ui.View {
     // rrIsFresh, rrGapExceeded and CoreTempSensor.ctIsFresh took in the same
     // commit, because a sign test is not a presence test.
     //
-    // WHAT THAT DOES NOT BUY. Sign-agnostic is not rollover-safe: a stamp and
-    // a `now` on OPPOSITE sides of the seam still compare in the WRONG
-    // ORDER -- a post-seam stamp is a large negative and loses `>` to a
-    // pre-seam large positive that is EARLIER in real time.
-    // What the DIFFERENCE term does there depends on whether Monkey C's `-` wraps
-    // two's-complement the way its `+` was measured to; only `+` has been measured
-    // (test_rr_c0_stampArithmeticOnANegativeClock), so treat the crossing as
-    // UNSPECIFIED rather than as a known false-fresh. #70's other direction.
+    // WHAT THAT DOES NOT BUY. Sign-agnostic is not rollover-safe: this function
+    // is UNSPECIFIED for a stamp and a `now` on opposite sides of the seam, and
+    // that is #70's other direction. Do not read a mechanism into that word --
+    // two revisions of this paragraph have now described the crossing wrongly
+    // (v0.9's "goes large-negative and reads as fresh", and a round-1 revision
+    // that named an order comparison this function does not make), so the third
+    // description is deliberately absent rather than reworded. Only Monkey C's
+    // `+` has been measured at the seam
+    // (test_rr_c0_stampArithmeticOnANegativeClock); `-` is the operation this
+    // line performs and it is measured nowhere.
     //
     // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
     // freshness is about R-R batch arrival and this is about a bpm read. Two

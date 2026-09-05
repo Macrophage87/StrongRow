@@ -852,12 +852,13 @@ module CueFix {
     // SCOPE, stated precisely because the neighbouring hazard is already an open
     // question here: this pins the guard's contract on a backwards step, using
     // small unambiguous stamps. It does NOT claim to reproduce
-    // System.getTimer()'s 32-bit wrap -- whether that presents as a backwards
-    // step or as correct two's-complement arithmetic depends on Monkey C's
-    // overflow semantics, which nothing in this repository measures and which
-    // #70 owns for the pre-existing rrIsFresh / hrHave pair. The guard is
-    // written so either answer is safe: the worst case is one window's delay,
-    // once.
+    // System.getTimer()'s 32-bit wrap. Monkey C's ADDITION at that seam is
+    // measured, not assumed -- test_rr_c0_stampArithmeticOnANegativeClock logs
+    // 2147483647 + 1 evaluating to -2147483648 on every CI run -- so the wrap
+    // presents as a large BACKWARDS step, which is the shape this case pins.
+    // #70 still owns the crossing itself for the pre-existing rrIsFresh /
+    // hrHave pair. The guard is written so either answer is safe: the worst
+    // case is one window's delay, once.
     var back = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
                                      $.CUEZ_IN, $.CUEZ_ABOVE, 5000, 1000);
     if (back[0] != $.CUEZ_IN) {

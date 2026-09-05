@@ -293,7 +293,7 @@ function arrEq(got, exp, logger, what) {
                      "argument depends on this being exact");
         ok = false;
     }
-    // The same subtraction with the operands hidden from constant folding.
+    // The same subtraction with the operands behind an array read.
     var st = [-2000000000, -1999999900];
     if (st[1] - st[0] != 100) {
         logger.error("the same subtraction through variables gave " + (st[1] - st[0]));
