@@ -950,17 +950,28 @@ module CueFix {
     // discards the pending change and the next candidate starts a fresh clock --
     // otherwise an intermittent spike accumulates credit across the gaps between
     // its appearances, which is a total, not a persistence test.
+    //
+    // THE STAMPS ARE RELATIVE TO THE WINDOW, not absolute. Written as 0 / 3000
+    // / 3250 / 6000, this section silently stopped testing anything the moment
+    // the window fell below 2750 ms: the second spike would have earned it
+    // honestly and the assertion would have failed for a reason that has
+    // nothing to do with banking. The first spike is interrupted at `outw`,
+    // the second starts 250 ms later and is read at `2 * outw` -- so it has
+    // been asking for outw - 250 (short) while the elapsed time since the
+    // FIRST one appeared is 2 * outw (twice the window), which is what a
+    // banking implementation would count.
     var brk = StrongRowView.cueStep(17.0, CueFix.LO, CueFix.HI,
-                                    $.CUEZ_IN, $.CUEZ_ABOVE, 0, 3000);
+                                    $.CUEZ_IN, $.CUEZ_ABOVE, 0, outw);
     var again = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
-                                      brk[0], brk[1], brk[2], 3250);
+                                      brk[0], brk[1], brk[2], outw + 250);
     var stillIn = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
-                                        again[0], again[1], again[2], 6000);
+                                        again[0], again[1], again[2],
+                                        2 * outw);
     if (stillIn[0] != $.CUEZ_IN) {
-        logger.error("(d) the second spike had been asking for 2750 ms, not " +
-                     "6000 -- the interrupted first spike must not have banked " +
-                     "credit for it. Zone is " + stillIn[0] + ", expected " +
-                     $.CUEZ_IN);
+        logger.error("(d) the second spike had been asking for " +
+                     (outw - 250) + " ms, not " + (2 * outw) + " -- the " +
+                     "interrupted first spike must not have banked credit for " +
+                     "it. Zone is " + stillIn[0] + ", expected " + $.CUEZ_IN);
         return false;
     }
 

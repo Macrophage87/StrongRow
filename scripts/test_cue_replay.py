@@ -169,9 +169,13 @@ def _():
 @case("A10 persistence means CONTINUOUS -- an interrupted spike banks nothing "
       "(theWindows... (d))")
 def _():
-    brk = R.cue_step(17.0, LO, HI, IN, ABOVE, 0, 3000)
-    again = R.cue_step(19.5, LO, HI, brk[0], brk[1], brk[2], 3250)
-    still = R.cue_step(19.5, LO, HI, again[0], again[1], again[2], 6000)
+    # Stamps relative to the window, for the reason the Monkey C twin's (d)
+    # states: as absolutes (3000 / 3250 / 6000) this case stops testing banking
+    # the moment the window falls below 2750 ms.
+    out = R.CUE_PERSIST_OUT_MS
+    brk = R.cue_step(17.0, LO, HI, IN, ABOVE, 0, out)
+    again = R.cue_step(19.5, LO, HI, brk[0], brk[1], brk[2], out + 250)
+    still = R.cue_step(19.5, LO, HI, again[0], again[1], again[2], 2 * out)
     return still[0], IN
 
 
