@@ -465,6 +465,71 @@ module Lock {
     }
     return true;
 }
+// THE SNAP ACROSS A HARMONIC OR SUBHARMONIC LOCK, as shipped (#193).
+//
+// CHARACTERIZATION ONLY. Every triple below is read off recording i183553852
+// (3385 records, 2026-09-05) and is replayed by scripts/lock_snap_replay.py
+// from scripts/fixtures/lock_snap_records.txt, so the two sides of the
+// transcription assert the same vectors -- the pairing scripts/cue_replay.py
+// and source/CueZoneTest.mc already keep, for the reason stated there.
+//
+// This case asserts what `gatedRate` DOES today, not what it should do. The
+// autocorrelation of a stroke signal peaks at integer multiples and divisors of
+// the true period, so a lock can sit on a harmonic or a subharmonic; the snap
+// has no plausibility bound, so it substitutes the lock anyway and CREATES the
+// half/double read it exists to kill. #193's fix retires this case and replaces
+// it with the two c2 differentials, which is why the substitution is pinned
+// here first: without it the c2 red does not say which behaviour moved.
+(:test) function test_lock_c0_theSnapSubstitutesAHarmonicLockAtRatioTwoAndThree(logger) {
+    // [median spm, lock period s, what gatedRate returns TODAY, what it is]
+    //
+    // 9.4 s is a 6.383 spm lock against an 18.52 spm median -- a ratio of
+    // 2.901, the near-3:1 SUBHARMONIC the rower saw at records 2489-2499 while
+    // the median never moved. 1.8 s is a 33.333 spm lock against a 10.42 spm
+    // median -- a ratio of 3.200, the near-3:1 HARMONIC at records 2503-2505.
+    var cases = [[18.518518, 9.4, 60.0 / 9.4], [10.416667, 1.8, 60.0 / 1.8],
+                 [39.0, 3.0, 20.0], [10.0, 3.0, 20.0]];
+    for (var i = 0; i < cases.size(); i++) {
+        var p = Lock.at(cases[i][0], cases[i][1]);
+        if (!Lock.near(p.out(), cases[i][2])) {
+            logger.error("as shipped, a median of " + cases[i][0] +
+                         " spm against a " + cases[i][1] + " s lock (" +
+                         (60.0 / cases[i][1]) + " spm) must come out as " +
+                         cases[i][2] + "; got " + p.out());
+            return false;
+        }
+    }
+    return true;
+}
+
+// A DISAGREEMENT THAT IS NOT A HARMONIC STILL SNAPS -- green in EVERY epoch.
+//
+// The guard #193 adds refuses the snap only at a near-2:1 or near-3:1 ratio.
+// This case is the other half of that statement and it is the one that keeps
+// the fix from being "delete the snap": each pair below is a disagreement the
+// snap must still resolve in the lock's favour, before and after.
+//
+// The 28.0-against-20.0 pair is #10's worked example (a legitimate surge the
+// snap wrongly pins to the lagging lock). Its ratio is 1.40, outside both
+// bands, so #193 leaves #10 exactly where it is rather than half-fixing it --
+// pinned here so that claim is checked rather than asserted in prose.
+(:test) function test_lock_c0_aNonHarmonicDisagreementSnapsInEveryEpoch(logger) {
+    // [median spm, lock period s, expected out, ratio for the message]
+    var cases = [[28.0, 3.0, 20.0], [26.1, 3.0, 20.0], [13.9, 3.0, 20.0],
+                 [34.0, 3.0, 20.0], [10.416667, 9.4, 60.0 / 9.4]];
+    for (var i = 0; i < cases.size(); i++) {
+        var p = Lock.at(cases[i][0], cases[i][1]);
+        if (!Lock.near(p.out(), cases[i][2])) {
+            logger.error("a median of " + cases[i][0] + " spm against a " +
+                         cases[i][1] + " s lock disagrees by more than " +
+                         $.LOCK_SNAP_K + " of the lock at a ratio that is " +
+                         "NOT near 2:1 or 3:1, so it must snap to " +
+                         cases[i][2] + " in every epoch; got " + p.out());
+            return false;
+        }
+    }
+    return true;
+}
 
 // -- c1: the new symbols, pinned where they are epoch-invariant ---------------
 //
