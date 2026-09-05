@@ -1,0 +1,94 @@
+# The first 216 seconds of i183553852: session start through the end of the
+# first work interval -- the window the START-baseline defect (D3) is argued
+# from.
+#
+# A COMPANION to scripts/fixtures/cue_reversal_row.txt, never a widening of it.
+# That file carries row_stroke_rate for the eight WORK intervals and says in its
+# own header that "the native cadence, speed and rate_base series that the
+# START-baseline defect is argued from are NOT here and must not be added",
+# because cue_replay.py consumes it POSITIONALLY and every cue figure would then
+# depend on a series the cue never sees. This is that companion. It is read by
+# scripts/start_witness.py and by nothing else; no cue figure derives from it.
+#
+# WHY ONE FILE CARRIES SEVEN SERIES, against FIELD_DATA.md 2's "one series per
+# file". That rule's stated reason is the positional hazard above, and its named
+# remedy for files that must stay aligned is speed_witness.py's -- "the two
+# fixtures zipped, with alignment CHECKED rather than assumed". Here the whole
+# question IS the relationship between seven quantities AT THE SAME SECOND:
+# whether the number on screen came from a baseline established before START.
+# Splitting them into seven files and re-zipping them would move the alignment
+# risk without reducing it. So: one series PER LINE, each NAMED rather than
+# positional, and start_witness.py REFUSES to load the file unless every series
+# has the same length -- a raise, not a best-effort pairing. Recorded here as a
+# deliberate departure rather than left to be noticed.
+#
+# FORMAT
+#   ROW <key> <label>          starts a row
+#   SERIES <name> <v> <v> ...  one named series, one value per recorded second
+#   Lines beginning with # and blank lines are ignored.
+#
+# ABSENCE ENCODING, PER SERIES, because the seven do NOT share one convention
+# and inventing a shared one later would silently redefine the zeros already
+# written here:
+#   row_stroke_rate  0 is the app's NO-DATA SENTINEL. outputRate() returns 0.0
+#                    both when nothing has been measured AND when the gate
+#                    zeroed the reading, and drawRate renders both as "--.-".
+#                    6 of the 216 seconds carry it.
+#   rate_raw         0 is the DETECTOR's own "no median": the period ring is
+#                    empty or has timed out. 0 seconds here.
+#   rate_base        0 is "nothing established yet". NO second here carries it
+#                    -- the file opens at 29.5716, which is the defect.
+#   lock_rate        0 is a SUBSTITUTED MARKER for NO LOCK, not a rate. There is
+#                    no rate to write when the autocorrelation has not locked
+#                    (60.0/0.0 is not a number), and 0 is safe because a lock is
+#                    a rate in [MIN_RATE, MAX_RATE] by construction. That is the
+#                    app's own argument, at the lock_rate note in
+#                    source/StrongRowView.mc. 14 seconds here.
+#   enhanced_speed   0 IS A REAL READING -- the same convention
+#                    lock_guard_speed.txt states in those words. A stationary
+#                    boat reads 0 m/s and 7 seconds here do.
+#   cadence          0 IS A REAL READING: the watch's own rowing cadence, zero
+#                    when it has seen no blade movement. 7 seconds here.
+#   step_type        never absent. 1 == SFIT_WARMUP, 2 == SFIT_WORK.
+#
+# PROVENANCE, so this is reproducible from the original with any FIT decoder:
+#   source file    i183553852.fit, recorded 2026-09-05 on app v0.9
+#   messages       record (FIT global message 20), in timestamp order
+#   values         row_stroke_rate  DEVELOPER field id 0
+#                  rate_raw         DEVELOPER field id 23
+#                  rate_base        DEVELOPER field id 24
+#                  lock_rate        DEVELOPER field id 20
+#                  step_type        DEVELOPER field id 17
+#                  enhanced_speed   NATIVE field 73 of global 20, m/s
+#                  cadence          NATIVE field 4 of global 20, rpm
+#                  The developer ids are the map in docs/agents/FACTS.md 5.3.
+#                  rate_base is id 24, NOT id 4 -- id 4 is avg_rmssd, and a
+#                  developer field id is unique per field_description, so
+#                  decoding the wrong id silently returns a different quantity.
+#   window         the FIRST record of the session, inclusive, through the LAST
+#                  record of the first contiguous run of step_type == 2,
+#                  inclusive -> 216 consecutive seconds, 35 of step_type 1
+#                  and 181 of step_type 2, with no gap: every adjacent pair
+#                  is exactly 1 s apart, which start_witness.py asserts on load
+#   precision      float32 in the file, written here to 4 decimal places with
+#                  trailing zeros stripped; cadence and step_type are integers
+#                  in the file and are written as integers
+#
+# CROSS-CHECKS a reader can run against the original in two minutes, every one
+# of them pinned by scripts/test_start_witness.py:
+#   the first record      row_stroke_rate 28.8461, rate_raw 28.8461, rate_base 29.5716,
+#                         enhanced_speed 0, cadence 0 -- a STATIONARY
+#                         BOAT displaying 28.8 spm
+#   the gap               35 s from the first record to the first work second
+#   work interval 1       rate_base first 22.6813, min 15.2863, max 23.6958
+#   the binding count     fastGate(rate_base) is strictly below the absolute
+#                         FAST_NEEDS_LOCK on 148 of the interval's 181
+#                         seconds, and 0 of those 148 carry no lock
+ROW start i183553852 session start through the end of work interval 1
+SERIES row_stroke_rate 28.8461 0 0 0 0 0 0 28.8461 28.8461 28.8461 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.0001 25.0001 25.0001 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 21.7392 21.7392 21.7392 21.7392 21.7392 21.7392 25.0001 25.0001 25.0001 25.0001 25.0001 23.4375 23.4375 23.4375 23.4375 23.4375 23.4375 23.4375 23.4375 22.0588 22.0588 22.0588 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 19.2307 19.2307 19.2307 17.2414 17.2414 17.2414 17.2414 16.1291 16.1291 16.1291 16.1291 16.1291 16.1291 16.1291 17.2414 17.2414 17.2414 17.2414 17.2414 17.2414 17.2414 17.4418 17.4418 17.4418 17.6471 17.6471 17.6471 18.2927 18.2927 18.2927 19.2308 19.2308 19.2308 20 20 20 20 20 20 20 19.2308 19.2308 19.2308 19.2308 19.2308 19.2308 18.0722 18.0722 18.0722 18.0722 17.6469 17.6469 17.6469 17.442 17.442 17.442 17.442 17.442 17.442 17.442 17.442 17.442 17.442 17.6469 17.6469 17.6469 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.8571 17.8571 17.8571 17.8571 17.2413 17.2413 17.2413 17.2413 16.1292 16.1292 16.1292 16.1292 16.1292 16.1292 16.1292 16.1292 15.3061 15.3061 15.3061 15.3061 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 15.625 15.625 15.625 15.625 15.3061 15.3061 15.3061 15.3061
+SERIES rate_raw 28.8461 34.0907 36.5854 36.5854 36.5854 36.5854 36.5854 28.8461 28.8461 28.8461 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.862 25.0001 25.0001 25.0001 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 21.7392 21.7392 21.7392 21.7392 21.7392 21.7392 25.0001 25.0001 25.0001 25.0001 25.0001 23.4375 23.4375 23.4375 23.4375 23.4375 23.4375 23.4375 23.4375 22.0588 22.0588 22.0588 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 21.1268 19.2307 19.2307 19.2307 17.2414 17.2414 17.2414 17.2414 16.1291 16.1291 16.1291 16.1291 16.1291 16.1291 16.1291 17.2414 17.2414 17.2414 17.2414 17.2414 17.2414 17.2414 17.4418 17.4418 17.4418 17.6471 17.6471 17.6471 18.2927 18.2927 18.2927 19.2308 19.2308 19.2308 20 20 20 20 20 20 20 19.2308 19.2308 19.2308 19.2308 19.2308 19.2308 18.0722 18.0722 18.0722 18.0722 17.6469 17.6469 17.6469 17.442 17.442 17.442 17.442 17.442 17.442 17.442 17.442 17.442 17.442 17.6469 17.6469 17.6469 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.6471 17.8571 17.8571 17.8571 17.8571 17.2413 17.2413 17.2413 17.2413 16.1292 16.1292 16.1292 16.1292 16.1292 16.1292 16.1292 16.1292 15.3061 15.3061 15.3061 15.3061 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 14.7059 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 17.8571 15.625 15.625 15.625 15.625 15.3061 15.3061 15.3061 15.3061
+SERIES rate_base 29.5716 29.662 29.8004 29.8004 29.8004 29.9361 29.9361 29.6636 29.6636 29.6636 28.7132 28.7132 28.0004 28.0004 27.4658 27.4658 27.4658 27.4658 27.0648 27.0648 27.0648 26.5487 26.5487 26.5487 25.1932 25.1932 24.1766 24.1766 24.1766 23.4141 23.4141 22.9954 22.9954 22.9954 22.9954 22.6813 22.6813 23.261 23.261 23.6958 23.6958 23.6958 23.6312 23.6312 23.5828 23.5828 23.5828 23.5465 23.5465 23.5465 23.1746 23.1746 23.1746 22.6626 22.6626 22.6626 22.6626 22.2787 22.2787 22.2787 22.2787 21.5167 21.5167 21.5167 20.4479 20.4479 20.4479 20.4479 19.3682 19.3682 19.3682 19.3682 18.5584 18.5584 18.5584 18.2291 18.2291 18.2291 18.2291 17.9822 17.9822 17.9822 17.8471 17.8471 17.8471 17.7971 17.7971 17.7971 17.921 17.921 17.921 18.2485 18.2485 18.2485 18.6863 18.6863 18.6863 18.6863 18.6863 19.0148 19.0148 19.0688 19.0688 19.0688 19.0688 19.0688 19.0688 18.8196 18.8196 18.8196 18.8196 18.5265 18.5265 18.5265 18.2553 18.2553 18.2553 18.2553 18.052 18.052 18.052 17.8995 17.8995 17.8995 17.8364 17.8364 17.8364 17.789 17.789 17.789 17.789 17.7536 17.7536 17.7536 17.7269 17.7269 17.7269 17.7269 17.707 17.707 17.707 17.692 17.692 17.692 17.692 17.6808 17.6808 17.6808 17.6724 17.6724 17.6724 17.6724 17.666 17.666 17.666 17.6613 17.6613 17.6613 17.6613 17.6577 17.6577 17.6577 17.7076 17.7076 17.7076 17.7076 17.591 17.591 17.591 17.591 17.2256 17.2256 17.2256 17.2256 16.9515 16.9515 16.9515 16.9515 16.5401 16.5401 16.5401 16.5401 16.0816 16.0816 16.0816 16.0816 15.7377 15.7377 15.7377 15.4797 15.4797 15.4797 15.4797 15.2863 15.2863 15.2863 15.929 15.929 15.929 15.929 16.411 16.411 16.411 16.411 16.7725 16.7725 16.7725 16.7725 16.4856 16.4856 16.4856 16.4856 16.1907 16.1907 16.1907 16.1907
+SERIES lock_rate 0 0 0 0 0 0 0 0 0 0 25 25 25 25 25 25 25 25 25.8621 25.8621 26.4085 26.4085 26.4085 26.4085 26.4085 26.4085 0 0 0 0 25 25 24.1936 24.1936 23.7342 23.7342 23.4668 23.4668 24.057 24.057 24.4255 24.4255 24.6521 24.6521 23.9969 23.9969 23.6203 23.6203 23.3999 23.3999 23.2696 23.2696 22.4965 22.4965 22.0568 22.0568 21.1853 21.1853 20.6947 20.6947 19.8704 19.8704 19.4065 19.4065 18.6623 18.6623 18.2425 18.2425 17.5777 17.5777 16.8159 16.8159 16.7559 16.7559 16.7201 16.7201 16.6987 16.6987 16.6859 16.6859 16.3154 16.3154 16.4541 16.4541 16.5385 16.5385 16.5895 16.5895 16.6203 16.6203 17.4114 17.4114 17.9232 17.9232 18.245 18.245 18.245 18.9087 18.9087 18.8449 18.8449 18.8068 18.8068 18.3251 18.3251 17.6236 17.6236 16.8411 16.8411 16.4041 16.4041 16.1526 16.1526 16.3544 16.3544 16.4779 16.4779 16.9264 16.9264 16.8216 16.8216 17.1423 17.1423 17.3407 17.3407 17.462 17.462 17.5355 17.5355 17.58 17.58 17.6067 17.6067 17.6229 17.6229 17.6325 17.6325 17.6383 17.6383 17.6418 17.6418 17.6439 17.6439 17.6452 17.6452 17.6459 17.6459 17.6464 17.6464 17.6467 17.6467 17.6468 17.6468 17.6469 17.6469 17.647 17.647 17.647 17.647 17.647 17.647 17.647 17.647 17.647 17.647 17.6471 17.6471 17.2414 17.2414 17.0068 17.0068 16.498 16.498 16.2071 16.2071 16.0374 16.0374 15.9373 15.9373 15.5487 15.5487 15.0176 15.0176 14.716 14.716 14.5408 14.5408 14.4377 14.4377 14.3765 14.3765 14.3401 14.3401 14.3183 14.3183 15.8133 15.8133 16.8702 16.8702 17.575 17.575 18.0269 18.0269 18.3093 18.3093 18.3093 18.3093 16.8246 16.8246 16.044 16.044 16.044 15.6094 15.6094 15.3598 15.3598
+SERIES enhanced_speed 0 0 0 0 0 0 0 0.221 0.594 0.646 0.878 1.107 1.346 1.579 1.798 2.073 2.327 2.487 2.643 2.767 2.717 2.632 2.568 2.471 2.396 2.356 2.29 2.204 2.126 2.135 2.104 2.062 2.066 2.123 2.141 2.199 2.161 2.052 2.103 2.056 2.073 2.12 2.189 2.266 2.313 2.405 2.414 2.448 2.527 2.686 2.695 2.757 2.85 2.789 2.825 2.788 2.793 2.69 2.75 2.695 2.691 2.667 2.623 2.619 2.498 2.504 2.463 2.459 2.39 2.44 2.356 2.403 2.367 2.35 2.37 2.353 2.349 2.379 2.413 2.338 2.335 2.269 2.276 2.228 2.269 2.301 2.267 2.286 2.301 2.27 2.246 2.351 2.376 2.408 2.41 2.352 2.387 2.314 2.338 2.338 2.312 2.326 2.34 2.238 2.233 2.253 2.246 2.328 2.262 2.304 2.278 2.288 2.351 2.335 2.322 2.41 2.429 2.371 2.414 2.432 2.425 2.419 2.425 2.396 2.354 2.386 2.38 2.336 2.341 2.382 2.342 2.319 2.349 2.338 2.346 2.37 2.396 2.368 2.343 2.393 2.399 2.379 2.409 2.412 2.382 2.374 2.39 2.365 2.338 2.37 2.388 2.344 2.328 2.353 2.336 2.318 2.353 2.371 2.362 2.379 2.385 2.361 2.331 2.346 2.359 2.326 2.295 2.31 2.275 2.246 2.233 2.22 2.215 2.199 2.154 2.195 2.188 2.19 2.188 2.184 2.208 2.208 2.198 2.202 2.233 2.263 2.294 2.245 2.246 2.254 2.266 2.272 2.28 2.29 2.344 2.375 2.334 2.356 2.417 2.442 2.413 2.42 2.448 2.455 2.413 2.405 2.377 2.348 2.323 2.272 2.253 2.239 2.212 2.183 2.166 2.135
+SERIES cadence 0 0 0 0 0 0 0 24 24 24 25 25 25 25 26 26 26 26 23 23 24 24 25 25 24 24 24 24 24 27 27 27 25 25 25 25 25 19 19 19 20 20 20 19 19 19 19 19 19 19 19 22 22 22 22 22 22 22 20 20 21 21 22 22 22 22 22 21 21 27 27 26 26 28 28 32 33 33 33 31 33 33 33 28 28 28 26 26 26 23 23 23 23 21 21 21 19 19 21 21 22 22 24 24 27 27 30 30 31 32 32 32 32 33 35 35 34 34 34 34 34 29 29 29 29 29 26 26 26 26 26 30 30 30 30 35 35 35 35 34 33 33 34 34 32 34 34 35 35 36 36 35 36 36 34 34 36 36 33 35 35 34 34 35 35 34 34 33 33 32 32 30 30 29 29 29 31 31 31 29 29 30 30 30 30 29 29 28 28 29 29 32 32 32 28 28 29 31 31 31 31 28 28 31 31 31 31 31 29 29 29 30 30 31 31 30
+SERIES step_type 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2

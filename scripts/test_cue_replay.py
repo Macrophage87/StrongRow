@@ -518,12 +518,14 @@ def _():
     # re-derived instead of taken on trust -- which is exactly what #149 says
     # was missing the first time these constants were chosen.
     #
-    #   ADMISSIBLE   flips/min at or below 0.70x the memoryless machine's, on
+    #   ADMISSIBLE   flips/min at or below R.FLICKER_BOUND (0.70) x the
+    #                memoryless machine's, read from the harness rather than
+    #                restated here so the two cannot disagree, on
     #                EVERY row. The sign-reversal fast path alone already costs
-    #                the reversal row 1.18 -> 1.77 flips/min, which is 0.665 of
+    #                the reversal row 1.18 -> 1.77 flips/min, which is 0.667 of
     #                raw, so 0.70 is the nearest round bound above what the fix
     #                spends before any retune: the retune is allowed at most
-    #                3.5 further points of the flicker suppression the cue was
+    #                3.3 further points of the flicker suppression the cue was
     #                introduced for.
     #   CHOSEN       of the admissible settings, the one with the smallest MEAN
     #                ADOPT LAG over the three rows -- the latch alone, with the
@@ -544,7 +546,7 @@ def _():
             ratios.append(R.score(laps, lo, hi, st)["flips_per_min"]
                           / R.score(laps, lo, hi, R.zones_raw)["flips_per_min"])
             lags.append(R.adopt_lag(laps, lo, hi, out_ms, in_ms, True)["mean_s"])
-        if max(ratios) > 0.70:
+        if max(ratios) > R.FLICKER_BOUND:
             continue
         mean_lag = sum(lags) / len(lags)
         if best_lag is None or mean_lag < best_lag:
@@ -573,28 +575,40 @@ def _():
     # the change moves the first and barely moves the second, and that the
     # second's MAXIMUM does not move at all -- so the pin has to cover both or
     # the interesting half is unguarded.
+    #
+    # EACH EDGE-LAG MEAN CARRIES ITS DENOMINATOR, and that is not decoration.
+    # edge_lag() averages only the crossings THAT machine followed within 90 s.
+    # The faster machine follows MORE of them -- calm 127 -> 138 of 165,
+    # reversal 45 -> 53 of 60 -- and the ones it newly follows are the SLOW
+    # ones, which raises its own mean. So "6.93 -> 6.34" is not a like-for-like
+    # comparison and must never be quoted as one; on the 127 calm crossings
+    # BOTH machines follow, the same change is 6.93 -> 5.53. Pinning the
+    # denominators is what stops the bare pair being read as a measurement of
+    # improvement -- this repository's "wrong pair" class.
     before, after = [], []
     for _k, lo, hi, _l, laps in R.load_all():
-        b = R.adopt_lag(laps, lo, hi, 4000, 1000, False)
+        b = R.adopt_lag(laps, lo, hi, *R.SHIPPED_BEFORE)
         a = R.adopt_lag(laps, lo, hi, R.CUE_PERSIST_OUT_MS,
                         R.CUE_PERSIST_IN_MS, R.CUE_REVERSAL_FAST)
-        eb = R.edge_lag(laps, lo, hi, R.tuned(4000, 1000, False))
+        eb = R.edge_lag(laps, lo, hi, R.zones_before)
         ea = R.edge_lag(laps, lo, hi, R.zones_cue)
         before.append(("%.2f" % b["mean_s"], "%.2f" % b["max_s"],
-                       "%.2f" % eb["mean_s"], "%.0f" % eb["max_s"]))
+                       "%.2f" % eb["mean_s"], "%.0f" % eb["max_s"],
+                       "%d/%d" % (eb["followed"], eb["crossings"])))
         after.append(("%.2f" % a["mean_s"], "%.2f" % a["max_s"],
-                      "%.2f" % ea["mean_s"], "%.0f" % ea["max_s"]))
+                      "%.2f" % ea["mean_s"], "%.0f" % ea["max_s"],
+                      "%d/%d" % (ea["followed"], ea["crossings"])))
     # and the edge-lag maximum on calm with NO latch at all, which is what
     # shows the residue is the deadband rather than the windows
     _k, lo, hi, _l, calm = R.load_fixture()[0]
     nolatch = "%.0f" % R.edge_lag(calm, lo, hi, R.tuned(0, 0, True))["max_s"]
     return [before, after, nolatch], \
-           [[("2.01", "4.00", "6.93", "84"),
-             ("1.86", "4.00", "10.16", "84"),
-             ("1.29", "4.00", "4.36", "56")],
-            [("0.91", "2.00", "6.34", "85"),
-             ("0.85", "2.00", "7.73", "82"),
-             ("0.52", "2.00", "2.91", "54")],
+           [[("2.01", "4.00", "6.93", "84", "127/165"),
+             ("1.86", "4.00", "10.16", "84", "49/54"),
+             ("1.29", "4.00", "4.36", "56", "45/60")],
+            [("0.91", "2.00", "6.34", "85", "138/165"),
+             ("0.85", "2.00", "7.73", "82", "49/54"),
+             ("0.52", "2.00", "2.91", "54", "53/60")],
             "89"]
 
 
@@ -613,6 +627,72 @@ def _():
     return ["%.2f" % shipped, "%.2f" % fast_only, "%.2f" % now,
             "%.2f" % (fast_only - shipped), "%.2f" % (now - shipped)], \
            ["1.18", "1.77", "1.86", "0.59", "0.68"]
+
+
+@case("D10 the BEFORE column, which is the defect itself, comes off the tool")
+def _():
+    # 22 / 8 / 20 is what the sign-reversal fix removes, and for one round a
+    # shipping comment quoted it under "regenerate with python3
+    # scripts/cue_replay.py" -- a command whose every `opposite` column read 0,
+    # because the machine that produced 22/8/20 was no longer in the tree.
+    # R.zones_before IS that machine, named once, and main() now prints its row.
+    out = []
+    for _k, lo, hi, _l, laps in R.load_all():
+        c = R.coherence(laps, lo, hi, R.zones_before)
+        out.append((c["opposite"], c["disagree"], c["ambiguous"], c["shown"]))
+    return [R.SHIPPED_BEFORE, out], \
+           [(4000, 1000, False),
+            [(22, 707, 3053, 3496), (8, 300, 811, 1436), (20, 185, 705, 1420)]]
+
+
+@case("D11 the design table: (a) and (b), both at the then-shipped latch")
+def _():
+    # THE TABLE THE SHIPPED DESIGN WAS CHOSEN ON. For one round three of its
+    # rows described a machine that existed nowhere -- candidate (b) had no
+    # implementation at all -- which is the same defect as #149's, in the
+    # artifact that argues #149's numbers moved. R.design_b is that
+    # implementation.
+    #
+    # BOTH AT 4000/1000 ON PURPOSE. The reversal rule and the window retune
+    # landed together; scoring one design at the old latch and the other at the
+    # new one would confound them. The windows are chosen separately, by D6,
+    # with the reversal rule held fixed.
+    out = []
+    for _k, lo, hi, _l, laps in R.load_all():
+        for fn in (R.design_a, R.design_b):
+            c = R.coherence(laps, lo, hi, fn)
+            sc = R.score(laps, lo, hi, fn)
+            out.append((c["opposite"], c["disagree"],
+                        "%.1f" % c["ambiguous_pct"],
+                        "%.2f" % sc["flips_per_min"], sc["scored"]))
+    return [R.DESIGN_LATCH, out], \
+           [(4000, 1000),
+            [(0, 685, "87.2", "1.20", 3496), (0, 706, "87.3", "1.11", 3474),
+             (0, 292, "55.3", "1.17", 1436), (0, 300, "56.5", "1.18", 1428),
+             (0, 165, "48.8", "1.77", 1420), (0, 185, "49.6", "1.20", 1400)]]
+
+
+@case("D12 (b)'s lower flicker is partly a SCORING ARTEFACT, and the arithmetic "
+      "says so exactly")
+def _():
+    # The argument the design table rests on, made checkable rather than
+    # asserted. score() skips seconds where the strategy shows no zone -- see
+    # its `zc[i] == CUEZ_NONE: continue`, which runs BEFORE `scored += 1` and
+    # before `prev` is updated -- so under (b) a RED -> white -> BLUE sequence
+    # counts as ONE flip and the white seconds leave the denominator entirely.
+    #
+    # The drop in (b)'s scored count is EXACTLY the opposite-side count the
+    # shipped machine had: 3496-3474 = 22, 1436-1428 = 8, 1420-1400 = 20. That
+    # is not a coincidence, and it is why (b)'s flips/min is not comparable with
+    # (a)'s.
+    out = []
+    for _k, lo, hi, _l, laps in R.load_all():
+        a_scored = R.score(laps, lo, hi, R.design_a)["scored"]
+        b_scored = R.score(laps, lo, hi, R.design_b)["scored"]
+        opp_before = R.coherence(laps, lo, hi, R.zones_before)["opposite"]
+        out.append((a_scored - b_scored, opp_before,
+                    a_scored - b_scored == opp_before))
+    return out, [(22, 22, True), (8, 8, True), (20, 20, True)]
 
 
 def main():

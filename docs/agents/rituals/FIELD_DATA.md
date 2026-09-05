@@ -28,18 +28,41 @@ any FIT decoder can rebuild it from the originals.
 
 ## 2. The fixture
 
-One series per file. `scripts/fixtures/` holds the two that exist:
+One series per file, and `scripts/fixtures/` holds the four that exist:
 
-| File | Series |
-|---|---|
-| `cue_work_laps.txt` | per-second `row_stroke_rate` for the work laps of two recordings |
-| `lock_guard_speed.txt` | per-second `enhanced_speed` for **the same laps, in the same order, second for second** |
+| File | Series | Read by |
+|---|---|---|
+| `cue_work_laps.txt` | per-second `row_stroke_rate` for the work laps of two recordings | `cue_replay.py` |
+| `lock_guard_speed.txt` | per-second `enhanced_speed` for **the same laps, in the same order, second for second** | `speed_witness.py` |
+| `cue_reversal_row.txt` | per-second `row_stroke_rate` for the eight work intervals of `i183553852` | `cue_replay.py` |
+| `start_carryover.txt` | seven named series over the first 216 s of `i183553852` — session start through the end of work interval 1 | `start_witness.py` |
 
 **Do not widen a fixture; add a companion.** `cue_replay.py` consumes
 `cue_work_laps.txt` positionally and that file's header promises "NOTHING BUT
 STROKE RATE IS HERE". Adding a speed column would make every cue figure depend
 on a series the cue never sees. The second file states its own reason for
-existing in exactly those terms.
+existing in exactly those terms, and the third repeats the promise verbatim —
+its header names the `rate_base`, cadence and speed series that another change
+wanted and says they are "NOT here and must not be added".
+
+**The fourth file is a stated exception, and the shape of the exception is the
+rule.** `start_carryover.txt` carries seven series, because the question it
+exists for *is* the relationship between seven quantities **at the same
+second** — whether a number on screen came from a baseline established before
+START. Splitting them into seven files and re-zipping them would move the
+alignment risk without reducing it. What pays for the exception is the two
+things this section actually protects:
+
+* **no positional consumption** — every series is on its own `SERIES <name>`
+  line and is read by name, so nothing can silently shift by a column;
+* **alignment is a refusal, not a best effort** — `start_witness.load()` raises
+  if any two series differ in length, and `test_start_witness.py` B2 drives that
+  refusal. That is `speed_witness.py`'s rule ("the two fixtures zipped, with
+  alignment CHECKED rather than assumed") applied inside one file instead of
+  across two.
+
+A multi-series fixture that lacks either property is a widening, not an
+exception. Say which you are doing, in the file's own header.
 
 **When two fixtures must stay aligned, the harness enforces it.**
 `speed_witness.py`'s `rows()` returns "the two fixtures zipped, with alignment

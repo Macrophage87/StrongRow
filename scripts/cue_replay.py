@@ -167,6 +167,103 @@ def cue_step_tuned(rate, lo, hi, cur, cand, since, now,
     return [cur, cand, since]
 
 
+# The machine that shipped BEFORE the sign-reversal fast path and the retune:
+# 4000 / 1000 windows, no fast path. It is no longer in the tree, so it is
+# spelled out here ONCE and every "before" figure in main() and in the CUE_*
+# comment block comes through this name rather than through a bare tuned(...)
+# call at the point of use. Quoting a before figure without saying which machine
+# produced it is how the superseded analysis published a table for a rule that
+# never shipped.
+SHIPPED_BEFORE = (4000, 1000, False)
+
+
+def zones_before(series, lo, hi):
+    return zones_cue_tuned(series, lo, hi, *SHIPPED_BEFORE)
+
+
+# ---------------------------------------------------------------------------
+# THE REJECTED CANDIDATE, implemented so its figures can be printed rather than
+# asserted from memory.
+#
+# WHY A REJECTED DESIGN IS IN THE SHIPPING HARNESS. The choice between this and
+# the sign-reversal fast path was published as a table, and for one round that
+# table quoted five numbers for a machine that existed nowhere -- the exact
+# shape of the defect this file was written to stop, reappearing in the file
+# that stops it. Either the numbers come out of committed code or they are not
+# evidence. They are cheap to produce, so they are produced.
+#
+# CANDIDATE (b), "white, then latch": when the candidate is on the OPPOSITE side
+# of the band from the displayed zone, drop the display to CUEZ_NONE at once and
+# make the new zone earn the ordinary out-of-band window before it appears.
+#
+# THE SECOND CLAUSE IS LOAD-BEARING AND IS EASY TO GET WRONG. cueStep adopts any
+# zone out of CUEZ_NONE without delay, so a naive "return NONE" would show white
+# for exactly one tick and then adopt -- which is candidate (a) with a 250 ms
+# stutter, not a different design at all. The `cur == CUEZ_NONE` fast path is
+# therefore suppressed for precisely the state this branch creates: white on
+# screen with the reversal's own zone already pending.
+def cue_step_white(rate, lo, hi, cur, cand, since, now,
+                   out_ms=None, in_ms=None):
+    out_ms = CUE_PERSIST_OUT_MS if out_ms is None else out_ms
+    in_ms = CUE_PERSIST_IN_MS if in_ms is None else in_ms
+    want = cue_target(rate, lo, hi, cur)
+    if want == cur:
+        return [cur, cur, now]
+    if want == CUEZ_NONE or cur == CUEZ_NONE:
+        pending_reversal = (cur == CUEZ_NONE and want != CUEZ_NONE
+                            and cand == want and cand != CUEZ_NONE)
+        if not pending_reversal:
+            return [want, want, now]
+    elif ((want == CUEZ_BELOW and cur == CUEZ_ABOVE)
+          or (want == CUEZ_ABOVE and cur == CUEZ_BELOW)):
+        return [CUEZ_NONE, want, now]
+    if want != cand:
+        return [cur, want, now]
+    if now < since:
+        return [cur, want, now]
+    need = in_ms if want == CUEZ_IN else out_ms
+    if (now - since) >= need:
+        return [want, want, now]
+    return [cur, cand, since]
+
+
+def zones_cue_white(series, lo, hi, out_ms=None, in_ms=None, tick_ms=TICK_MS):
+    per_sec = max(1, 1000 // tick_ms)
+    zone, cand, since = CUEZ_NONE, CUEZ_NONE, 0
+    out = []
+    for i, v in enumerate(series):
+        for k in range(per_sec):
+            now = i * 1000 + k * tick_ms
+            zone, cand, since = cue_step_white(v, lo, hi, zone, cand, since,
+                                               now, out_ms, in_ms)
+        out.append(zone)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# THE DESIGN COMPARISON, at a FIXED latch.
+#
+# THE LATCH IS HELD AT THE THEN-SHIPPED 4000 / 1000 ON PURPOSE, and this is the
+# methodological point of the whole block: the sign-reversal fast path and the
+# window retune are two separate changes that landed together, and scoring one
+# design at 4000/1000 against the other at 2000/500 would confound them. What
+# the table below answers is "which reversal rule", with the windows held fixed
+# at the value both designs were proposed against. The windows are then chosen
+# separately, by the sweep, with the reversal rule held fixed -- see SWEEP.
+DESIGN_LATCH = SHIPPED_BEFORE[:2]
+
+
+def design_a(series, lo, hi):
+    """Adopt the opposite zone at once -- the design that shipped."""
+    return zones_cue_tuned(series, lo, hi, DESIGN_LATCH[0], DESIGN_LATCH[1],
+                           True)
+
+
+def design_b(series, lo, hi):
+    """Drop to white, then make the new zone earn the ordinary window."""
+    return zones_cue_white(series, lo, hi, DESIGN_LATCH[0], DESIGN_LATCH[1])
+
+
 # ---------------------------------------------------------------------------
 # THE TWO CUES BEING COMPARED, each as a per-second series of displayed zones.
 def zones_raw(series, lo, hi):
@@ -215,6 +312,8 @@ def tuned(out_ms, in_ms, reversal, tick_ms=TICK_MS):
     """A strategy, in the shape score()/coherence() consume."""
     return lambda s, lo, hi: zones_cue_tuned(s, lo, hi, out_ms, in_ms,
                                              reversal, tick_ms)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -397,8 +496,17 @@ def edge_lag(laps, lo, hi, strategy):
                 unfollowed += 1
             else:
                 lags.append(hit)
+    # THE MEAN IS OVER THE FOLLOWED CROSSINGS ONLY, and `followed` is returned
+    # beside it because the two are not separable afterwards. A FASTER machine
+    # follows MORE of the slow crossings, and the ones it newly follows are the
+    # slow ones -- which raises its own mean. So two edge-lag means taken at
+    # different tunings are over DIFFERENT POPULATIONS and are not directly
+    # comparable; comparing them without the denominator is this repository's
+    # "wrong pair" defect. Callers that need a like-for-like number must
+    # intersect the followed sets themselves.
     return {
         "crossings": len(lags) + unfollowed,
+        "followed": len(lags),
         "unfollowed": unfollowed,
         "mean_s": (sum(lags) / len(lags)) if lags else float("nan"),
         "median_s": statistics.median(lags) if lags else float("nan"),
@@ -550,6 +658,11 @@ def spike_fraction(laps, mult):
 SWEEP = ((4000, 1000), (3000, 1000), (3000, 750), (2000, 1000), (2000, 500),
          (1500, 500), (1000, 1000), (1000, 500), (1000, 250), (0, 0))
 
+# The admissibility bound of the selection rule, in ONE place so the harness and
+# scripts/test_cue_replay.py D6 cannot disagree about it. Its justification is
+# in the CUE_* comment block of source/StrongRowView.mc and in D6.
+FLICKER_BOUND = 0.70
+
 
 def sweep(rows):
     print("LATCH SWEEP -- design (a), the sign-reversal fast path ON in every")
@@ -563,9 +676,10 @@ def sweep(rows):
     print()
     for key, lo, hi, label, laps in rows:
         print("=== %s -- target %d-%d spm" % (key, lo, hi))
-        print("    %-11s %5s %5s %6s %6s %6s %6s %6s %6s %6s %5s"
-              % ("latch ms", "opp", "dis", "amb%", "flips", "FH%", "fl%",
-                 "edgeM", "adptM", "adptX", "1Hz"))
+        rawflips = score(laps, lo, hi, zones_raw)["flips_per_min"]
+        print("    %-11s %5s %5s %6s %6s %6s %6s %6s %6s %6s %6s %5s"
+              % ("latch ms", "opp", "dis", "amb%", "flips", "ratio", "FH%",
+                 "fl%", "edgeM", "adptM", "adptX", "1Hz"))
         for out_ms, in_ms in SWEEP:
             st = tuned(out_ms, in_ms, True)
             sc = score(laps, lo, hi, st)
@@ -576,18 +690,49 @@ def sweep(rows):
             agree = all(abs(sc[k] - score(laps, lo, hi, hz)[k]) < 1e-9
                         for k in ("false_high", "false_low", "missed_high",
                                   "flips_per_min"))
-            print("    %-11s %5d %5d %6.1f %6.2f %6.1f %6.1f %6.2f %6.2f %6.2f %5s"
+            print("    %-11s %5d %5d %6.1f %6.2f %6.3f %6.1f %6.1f %6.2f %6.2f %6.2f %5s"
                   % ("%d/%d" % (out_ms, in_ms), co["opposite"], co["disagree"],
                      co["ambiguous_pct"], sc["flips_per_min"],
+                     sc["flips_per_min"] / rawflips,
                      sc["false_high"], sc["false_low"], el["mean_s"],
                      al["mean_s"], al["max_s"], agree))
         raw = score(laps, lo, hi, zones_raw)
         rawc = coherence(laps, lo, hi, zones_raw)
-        print("    %-11s %5d %5d %6.1f %6.2f %6.1f %6.1f %6s %6s %6s %5s"
+        print("    %-11s %5d %5d %6.1f %6.2f %6.3f %6.1f %6.1f %6s %6s %6s %5s"
               % ("raw", rawc["opposite"], rawc["disagree"],
-                 rawc["ambiguous_pct"], raw["flips_per_min"],
+                 rawc["ambiguous_pct"], raw["flips_per_min"], 1.0,
                  raw["false_high"], raw["false_low"], "0.00", "-", "-", "-"))
         print()
+
+    # THE TWO QUANTITIES THE SELECTION RULE ACTUALLY TURNS ON, printed rather
+    # than left inside a test case. `ratio` above is per row; the rule uses the
+    # WORST row, and it breaks ties on the mean adopt lag over all three. Both
+    # were computed only inside test_cue_replay.py D6 for one round, and a
+    # figure derived from the sweep but not printed by it is how "0.665 of raw"
+    # -- a division of two ROUNDED numbers -- reached a shipping comment.
+    print("THE SELECTION RULE, over every row at once. Admissible = worst ratio")
+    print("at or below %.2f; chosen = smallest mean adopt lag among those."
+          % FLICKER_BOUND)
+    print("    %-11s %11s %11s  %s" % ("latch ms", "worst ratio", "mean adopt",
+                                       "admissible"))
+    best, best_lag = None, None
+    for out_ms, in_ms in SWEEP:
+        st = tuned(out_ms, in_ms, True)
+        ratios, lags = [], []
+        for _k, lo, hi, _l, laps in rows:
+            ratios.append(score(laps, lo, hi, st)["flips_per_min"]
+                          / score(laps, lo, hi, zones_raw)["flips_per_min"])
+            lags.append(adopt_lag(laps, lo, hi, out_ms, in_ms, True)["mean_s"])
+        worst = max(ratios)
+        mean_lag = sum(lags) / len(lags)
+        ok = worst <= FLICKER_BOUND
+        if ok and (best_lag is None or mean_lag < best_lag):
+            best, best_lag = (out_ms, in_ms), mean_lag
+        print("    %-11s %11.6f %11.6f  %s"
+              % ("%d/%d" % (out_ms, in_ms), worst, mean_lag,
+                 "yes" if ok else "no"))
+    print("    -> chosen %s; the tree carries %s"
+          % (best, (CUE_PERSIST_OUT_MS, CUE_PERSIST_IN_MS)))
     return 0
 
 
@@ -623,21 +768,44 @@ def main(argv):
         # THE NUMBER AND THE COLOUR AS A PAIR. Printed for the same strategies
         # the table above scores, because a machine can be good at one and bad
         # at the other -- and the reported defect lives entirely here.
-        print("    %-14s %10s %11s %9s %9s"
+        # THE PAIR TABLE, over FIVE strategies rather than two. The three
+        # added rows are the ones a reader cannot otherwise obtain:
+        #   shipped 4000/1000  the machine BEFORE this change. It is the only
+        #                      row with a non-zero `opposite` count, and those
+        #                      counts -- 22 / 8 / 20 -- ARE THE DEFECT. For one
+        #                      round they were quoted in a shipping comment
+        #                      under "regenerate with python3
+        #                      scripts/cue_replay.py", which printed 0.
+        #   design (a) / (b)   the two candidates, BOTH at the then-shipped
+        #                      4000/1000 latch, so the design choice is not
+        #                      confounded with the later retune.
+        print("    %-20s %10s %11s %9s %9s"
               % ("strategy", "opposite", "disagree", "ambig%", "shown"))
-        for name, fn in (("raw (before)", zones_raw),
+        for name, fn in (("raw (memoryless)", zones_raw),
+                         ("shipped 4000/1000", zones_before),
+                         ("design (a) @4000", design_a),
+                         ("design (b) @4000", design_b),
                          ("cueStep (after)", zones_cue)):
             c = coherence(laps, lo, hi, fn)
-            print("    %-14s %10d %11d %8.1f%% %9d"
+            sc = score(laps, lo, hi, fn)
+            print("    %-20s %10d %11d %8.1f%% %9d   flips %.2f"
                   % (name, c["opposite"], c["disagree"], c["ambiguous_pct"],
-                     c["shown"]))
+                     c["shown"], sc["flips_per_min"]))
         e = edge_lag(laps, lo, hi, zones_cue)
+        eb = edge_lag(laps, lo, hi, zones_before)
         a2 = adopt_lag(laps, lo, hi, CUE_PERSIST_OUT_MS, CUE_PERSIST_IN_MS,
                        CUE_REVERSAL_FAST)
-        print("    edge lag mean %.2f s, median %.0f s, max %.0f s, %d of %d "
-              "crossings never followed; adopt lag mean %.2f s, max %.2f s"
-              % (e["mean_s"], e["median_s"], e["max_s"], e["unfollowed"],
-                 e["crossings"], a2["mean_s"], a2["max_s"]))
+        # EDGE LAG CARRIES ITS DENOMINATOR, because the two means are over
+        # DIFFERENT crossing sets: a faster machine follows more of the slow
+        # crossings and so raises its own mean. Printing "6.93 -> 6.34" without
+        # "127 of 165 -> 138 of 165" beside it is the "wrong pair" defect.
+        print("    edge lag  before %.2f s over %d of %d crossings"
+              "  ->  after %.2f s over %d of %d"
+              % (eb["mean_s"], eb["followed"], eb["crossings"],
+                 e["mean_s"], e["followed"], e["crossings"]))
+        print("    edge lag  median %.0f s, max %.0f s after; adopt lag mean "
+              "%.2f s, max %.2f s"
+              % (e["median_s"], e["max_s"], a2["mean_s"], a2["max_s"]))
         # Cross-check, printed rather than asserted: the windows are wall-clock,
         # so driving the same series at a DIFFERENT tick must give the same
         # answer as the 250 ms one. A difference means the transcription has
