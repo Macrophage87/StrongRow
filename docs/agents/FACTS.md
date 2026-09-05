@@ -412,17 +412,6 @@ none, which is why `source/CueZoneTest.mc` and `source/LockGuardTest.mc` put
 everything -- fixtures and cases alike -- inside `module CueFix` and
 `module Lock`.
 
-**THE COUNT WAS RE-DERIVED ON THE REBASED TREE, never added up.** Two branches
-in flight both moved this number, and 385 + 11 + 4 was carried in a review
-thread as the expected total for a different pair of branches. A pinned count
-is measured with `scripts/list_tests.py` on the tree it describes;
-arithmetic across two diffs is how a stale-but-plausible figure survives.
-
-**Inside existing modules, so the ceiling in §5.1 does not move.** A file-scope
-`(:test)` costs one `globals` member; a `(:test)` inside a `module` block costs
-none, which is why `source/CueZoneTest.mc` and `source/LockGuardTest.mc` put
-everything -- fixtures and cases alike -- inside `module CueFix` and
-`module Lock`.
 
 Any `(:test)` addition, removal or rename edits `scripts/expected_tests.txt`
 **in the same commit**. The check closes drift, not coordinated shrink:
