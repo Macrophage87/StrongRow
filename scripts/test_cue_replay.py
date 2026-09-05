@@ -9,7 +9,8 @@ TWO JOBS, and the first is the one that matters.
    that is exactly how the superseded analysis came to publish figures for a
    machine that never shipped. So every vector in section A below is a vector
    source/CueZoneTest.mc ALREADY ASSERTS against the real Monkey C: the same
-   rates, the same 3999/4000 and 999/1000 boundaries, the same deadband cases,
+   rates, the same one-millisecond-either-side-of-a-window boundaries (read
+   from the constants on both sides, never restated), the same deadband cases,
    the same backwards clock. Change the rule on one side only and one of the two
    suites reds. The pairing is stated case by case, so the correspondence can be
    checked by reading rather than assumed.
@@ -20,7 +21,16 @@ TWO JOBS, and the first is the one that matters.
    already happened (window keyed on the zone being LEFT rather than on the
    candidate; a run length counted in samples rather than milliseconds).
 
-2. THE PUBLISHED FIGURES ARE PINNED. Section C re-derives every number quoted in
+2. THE EXPLORER IS PINNED TO THE MIRROR AT THE SHIPPED POINT. cue_replay.py
+   carries two implementations on purpose: cue_step, which is the line-for-line
+   mirror of the Monkey C and takes no options, and cue_step_tuned, which takes
+   the three settings as arguments so the latch sweep can ask what-if. Section D
+   sweeps them against each other at (CUE_PERSIST_OUT_MS, CUE_PERSIST_IN_MS,
+   CUE_REVERSAL_FAST) and reds if they part company -- otherwise the sweep could
+   be exploring a machine the mirror does not describe, which is the same defect
+   as the transcription drifting from the Monkey C, one level down.
+
+3. THE PUBLISHED FIGURES ARE PINNED. Section C re-derives every number quoted in
    the CUE_* comment block of source/StrongRowView.mc from the committed
    fixture. If the rule, the fixture or the scoring changes, the figures move
    and this reds, naming the one that moved -- so the comment can never drift
@@ -93,11 +103,12 @@ def _():
     return [above, below], [IN, IN]
 
 
-@case("A5 re-entry pays no deadband and costs 1 s "
+@case("A5 re-entry pays no deadband and costs CUE_PERSIST_IN_MS "
       "(theDeadbandIsPaidOnExitOnly (c) -- now (d))")
 def _():
-    early = R.cue_step(16.0, LO, HI, BELOW, IN, 0, 999)[0]
-    late = R.cue_step(16.0, LO, HI, BELOW, IN, 0, 1000)[0]
+    inw = R.CUE_PERSIST_IN_MS
+    early = R.cue_step(16.0, LO, HI, BELOW, IN, 0, inw - 1)[0]
+    late = R.cue_step(16.0, LO, HI, BELOW, IN, 0, inw)[0]
     return [early, late], [BELOW, IN]
 
 
@@ -117,31 +128,34 @@ def _():
            [IN, ABOVE, IN, IN, BELOW, IN]
 
 
-@case("A7 leaving the band takes 4000 ms, to the millisecond "
-      "(theWindowsAreFourSecondsAndOneOnAClock (a))")
+@case("A7 leaving the band takes CUE_PERSIST_OUT_MS, to the millisecond "
+      "(theWindowsAreTheTwoConstantsOnAClock (a))")
 def _():
-    early = R.cue_step(19.5, LO, HI, IN, ABOVE, 0, 3999)[0]
-    late = R.cue_step(19.5, LO, HI, IN, ABOVE, 0, 4000)[0]
+    out = R.CUE_PERSIST_OUT_MS
+    early = R.cue_step(19.5, LO, HI, IN, ABOVE, 0, out - 1)[0]
+    late = R.cue_step(19.5, LO, HI, IN, ABOVE, 0, out)[0]
     return [early, late], [IN, ABOVE]
 
 
-@case("A8 returning to the band takes 1000 ms, not four "
+@case("A8 returning to the band takes CUE_PERSIST_IN_MS, the shorter window "
       "(theWindows... (b))")
 def _():
-    early = R.cue_step(17.0, LO, HI, ABOVE, IN, 0, 999)[0]
-    late = R.cue_step(17.0, LO, HI, ABOVE, IN, 0, 1000)[0]
+    inw = R.CUE_PERSIST_IN_MS
+    early = R.cue_step(17.0, LO, HI, ABOVE, IN, 0, inw - 1)[0]
+    late = R.cue_step(17.0, LO, HI, ABOVE, IN, 0, inw)[0]
     return [early, late], [ABOVE, IN]
 
 
-@case("A9 the window is chosen by the CANDIDATE, so BELOW->ABOVE pays 4 s "
+@case("A9 the window is chosen by the CANDIDATE, not by the zone being left "
       "(theWindows... (c))")
 def _():
     # THE MUTANT THIS KILLS: need chosen by the zone being LEFT
     # (`CUE_PERSIST_IN_MS if cur == CUEZ_IN else ...`), which is the rule the
-    # superseded analysis replayed. It would adopt here at 1000 ms.
-    early = R.cue_step(25.0, LO, HI, BELOW, ABOVE, 0, 3999)[0]
-    late = R.cue_step(25.0, LO, HI, BELOW, ABOVE, 0, 4000)[0]
-    mid = R.cue_step(25.0, LO, HI, BELOW, ABOVE, 0, 1000)[0]
+    # superseded analysis replayed. It would adopt here at CUE_PERSIST_IN_MS.
+    out = R.CUE_PERSIST_OUT_MS
+    early = R.cue_step(25.0, LO, HI, BELOW, ABOVE, 0, out - 1)[0]
+    late = R.cue_step(25.0, LO, HI, BELOW, ABOVE, 0, out)[0]
+    mid = R.cue_step(25.0, LO, HI, BELOW, ABOVE, 0, R.CUE_PERSIST_IN_MS)[0]
     return [early, late, mid], [BELOW, ABOVE, BELOW]
 
 
@@ -335,18 +349,85 @@ def _():
     return out, ["1.0", "5.5", "1.3", "3.5"]
 
 
-@case("C9 the 250 ms tick and a 1 Hz drive give the same table")
+# ===========================================================================
+# D. THE SECOND FIXTURE, THE EXPLORER, AND THE NUMBER/COLOUR PAIR.
+#
+#    Section letter D and not C2 because these are pinned against the ROW THAT
+#    REPORTED THE DEFECT, not against the two rows the cue was chosen from. The
+#    two sets of figures must not be mixed: C's are what the CUE_* comment
+#    quotes.
+# ===========================================================================
+
+@case("D1 the explorer reproduces the mirror exactly at the shipped setting")
 def _():
-    # The wall-clock property, asserted rather than merely printed: a window
-    # that had become a per-call count would separate the two.
+    # THE DEFECT THIS KILLS: cue_step_tuned drifting from cue_step, which would
+    # let the sweep publish a table for a machine the mirror does not describe.
+    # Swept over every ordered pair of zones and a rate on each side of the
+    # band, at stamps either side of both windows.
+    zs = (NONE, BELOW, IN, ABOVE)
+    got, want = [], []
+    for rate in (0.0, 7.0, 14.5, 16.0, 17.0, 18.0, 19.5, 25.0):
+        for cur in zs:
+            for cand in zs:
+                for now in (0, 1, R.CUE_PERSIST_IN_MS - 1, R.CUE_PERSIST_IN_MS,
+                            R.CUE_PERSIST_OUT_MS - 1, R.CUE_PERSIST_OUT_MS,
+                            R.CUE_PERSIST_OUT_MS + 1):
+                    want.append(R.cue_step(rate, LO, HI, cur, cand, 0, now))
+                    got.append(R.cue_step_tuned(
+                        rate, LO, HI, cur, cand, 0, now,
+                        R.CUE_PERSIST_OUT_MS, R.CUE_PERSIST_IN_MS,
+                        R.CUE_REVERSAL_FAST))
+    return got, want
+
+
+@case("D2 the reversal fixture is the eight work intervals its header claims")
+def _():
+    rows = R.load_fixture(R.REVERSAL_FIXTURE)
+    got = [(k, lo, hi, len(laps), sum(len(s) for s in laps),
+            [len(s) for s in laps])
+           for k, lo, hi, _label, laps in rows]
+    return got, [("reversal", 16, 18, 8, 1443,
+                  [181, 180, 181, 180, 181, 180, 180, 180])]
+
+
+@case("D3 the reversal row's interval medians and no-data counts")
+def _():
+    # The two cross-checks its header offers a reader with a FIT decoder.
+    _k, _lo, _hi, _l, laps = R.load_fixture(R.REVERSAL_FIXTURE)[0]
+    meds = ["%.1f" % m for m in R.lap_medians(laps)]
+    zeros = [sum(1 for v in s if v == 0.0) for s in laps]
+    return [meds, zeros], \
+           [["17.6", "18.3", "17.6", "17.9", "18.7", "22.7", "23.8", "23.4"],
+            [0, 0, 5, 2, 0, 5, 11, 0]]
+
+
+@case("D4 the shipped cue puts the colour OPPOSITE the number on all three rows")
+def _():
+    # The defect, as a number, on every row this repository holds. `opposite`
+    # is the count that must reach zero; `disagree` and `ambiguous` are
+    # reported beside it because they are the sizes of the DELIBERATE
+    # disagreement and must be watched rather than minimised.
+    out = []
+    for _k, lo, hi, _l, laps in R.load_all():
+        c = R.coherence(laps, lo, hi, R.zones_cue)
+        out.append((c["opposite"], c["disagree"], c["ambiguous"], c["shown"]))
+    return out, [(22, 707, 3053, 3496),
+                 (8, 300, 811, 1436),
+                 (20, 185, 705, 1420)]
+
+
+@case("D5 a 125 ms drive gives the same table as the 250 ms tick, every row")
+def _():
+    # C9's 1 Hz probe, at a tick that DIVIDES every window this file has
+    # carried. A 1 Hz drive cannot observe a sub-second window expiring, so
+    # once CUE_PERSIST_IN_MS goes below 1000 a 1 Hz disagreement would be a
+    # fact about the probe. 125 ms is not.
     same = []
-    for key in ("calm", "choppy"):
-        _k, lo, hi, _l, laps = [r for r in R.load_fixture() if r[0] == key][0]
+    for _k, lo, hi, _l, laps in R.load_all():
         a = R.score(laps, lo, hi, R.zones_cue)
-        b = R.score(laps, lo, hi,
-                    lambda s, l, h: R.zones_cue(s, l, h, 1000))
+        b = R.score(laps, lo, hi, lambda s, l, h: R.zones_cue(s, l, h, 125))
         same.append(tab(a) == tab(b))
-    return same, [True, True]
+    return same, [True, True, True]
 
 
 def main():

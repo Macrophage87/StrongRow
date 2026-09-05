@@ -718,7 +718,10 @@ module CueFix {
 //     "you're fine" is cheap;
 //   * a change to an OUT-OF-BAND instruction must persist PERSIST_OUT; a change
 //     back INTO the band needs only PERSIST_IN;
-//   * DEADBAND = 1.0 spm, PERSIST_OUT = 4 s, PERSIST_IN = 1 s.
+//   * the three tunables are $.CUE_DEADBAND, $.CUE_PERSIST_OUT_MS and
+//     $.CUE_PERSIST_IN_MS in StrongRowView.mc, and the cases below read them
+//     from there rather than restating them. A second copy of a tunable in a
+//     test is a copy that has to be edited by the commit that retunes it.
 //
 // WHY THE DIRECTIONS ARE NOT SYMMETRIC. The damaging error is FALSE-HIGH:
 // telling the athlete to ease off while they are actually in the band. In the
@@ -749,7 +752,8 @@ module CueFix {
 // NOT apply.
 (:test) function test_cue_theDeadbandIsPaidOnExitOnly(logger) {
     // (a) and (b): a rate that leaves the band by less than 1.0 spm does not
-    // change the instruction AT ALL -- not after four seconds, not after ten.
+    // change the instruction AT ALL -- not after either window, not after ten
+    // seconds.
     // Driven as a real frame sequence at the 250 ms tick, feeding each step's
     // output back in, so an implementation that merely delayed the change would
     // still red here.
@@ -794,9 +798,9 @@ module CueFix {
     // recorded choppy-water pattern, and an ordinary frame sequence at the call
     // site, which feeds mCueZone/mCueCand/mCueSince straight back in every
     // frame. Under the mutant the widened band would belong to the pending
-    // ABOVE, 18.5 would be plainly over 18, and the cue would turn red after
-    // four seconds: a FALSE-HIGH, the exact error direction this feature was
-    // measured and chosen to remove.
+    // ABOVE, 18.5 would be plainly over 18, and the cue would turn red once the
+    // out-of-band window expired: a FALSE-HIGH, the exact error direction this
+    // feature was measured and chosen to remove.
     var spike = StrongRowView.cueStep(20.0, CueFix.LO, CueFix.HI,
                                       $.CUEZ_IN, $.CUEZ_IN, 0, 0);
     if (spike[0] != $.CUEZ_IN || spike[1] != $.CUEZ_ABOVE) {
@@ -847,14 +851,18 @@ module CueFix {
     // get back into, and an athlete who corrected exactly onto the edge would be
     // told to keep correcting.
     var early = StrongRowView.cueStep(16.0, CueFix.LO, CueFix.HI,
-                                      $.CUEZ_BELOW, $.CUEZ_IN, 0, 999);
+                                      $.CUEZ_BELOW, $.CUEZ_IN, 0,
+                                      $.CUE_PERSIST_IN_MS - 1);
     if (early[0] != $.CUEZ_BELOW) {
-        logger.error("(d) re-entry still owes its 1 s at 999 ms; zone is " +
-                     early[0] + ", expected " + $.CUEZ_BELOW);
+        logger.error("(d) re-entry still owes its window one millisecond " +
+                     "short of CUE_PERSIST_IN_MS (" + $.CUE_PERSIST_IN_MS +
+                     " ms); zone is " + early[0] + ", expected " +
+                     $.CUEZ_BELOW);
         return false;
     }
     var late = StrongRowView.cueStep(16.0, CueFix.LO, CueFix.HI,
-                                     $.CUEZ_BELOW, $.CUEZ_IN, 0, 1000);
+                                     $.CUEZ_BELOW, $.CUEZ_IN, 0,
+                                     $.CUE_PERSIST_IN_MS);
     if (late[0] != $.CUEZ_IN) {
         logger.error("(d) 16.0 IS the band's lower edge, and coming back from " +
                      "below costs no deadband -- reaching the edge is enough. " +
@@ -865,42 +873,54 @@ module CueFix {
 }
 
 // THE TWO WINDOWS, and what they are measured against.
-(:test) function test_cue_theWindowsAreFourSecondsAndOneOnAClock(logger) {
-    // (a) LEAVING the band takes PERSIST_OUT = 4 s. Both edges, so the window is
-    // pinned at its boundary rather than "somewhere before ten seconds". 19.5
-    // clears hi + DEADBAND = 19.0, so only the time is under test here.
+//
+// EVERY STAMP BELOW IS $.CUE_PERSIST_OUT_MS / $.CUE_PERSIST_IN_MS, never a
+// literal. The case is about the SHAPE of the machine -- a window that is paid
+// to the millisecond, chosen by the candidate, measured on a clock -- and not
+// about which two numbers the windows currently are. Those two numbers get
+// their own case, so that retuning them moves exactly one assertion instead of
+// eleven.
+(:test) function test_cue_theWindowsAreTheTwoConstantsOnAClock(logger) {
+    var outw = $.CUE_PERSIST_OUT_MS;
+    var inw = $.CUE_PERSIST_IN_MS;
+
+    // (a) LEAVING the band takes CUE_PERSIST_OUT_MS. Both edges, so the window
+    // is pinned at its boundary rather than "somewhere before ten seconds".
+    // 19.5 clears hi + DEADBAND = 19.0, so only the time is under test here.
     var oe = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
-                                   $.CUEZ_IN, $.CUEZ_ABOVE, 0, 3999);
+                                   $.CUEZ_IN, $.CUEZ_ABOVE, 0, outw - 1);
     var ol = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
-                                   $.CUEZ_IN, $.CUEZ_ABOVE, 0, 4000);
+                                   $.CUEZ_IN, $.CUEZ_ABOVE, 0, outw);
     if (oe[0] != $.CUEZ_IN) {
-        logger.error("(a) a candidate that has been asking for 3999 ms has not " +
-                     "yet earned the 4 s out-of-band window; zone is " + oe[0] +
+        logger.error("(a) a candidate that has been asking for " + (outw - 1) +
+                     " ms has not yet earned the " + outw +
+                     " ms out-of-band window; zone is " + oe[0] +
                      ", expected " + $.CUEZ_IN);
         return false;
     }
     if (ol[0] != $.CUEZ_ABOVE) {
-        logger.error("(a) at 4000 ms the out-of-band change is due and must be " +
-                     "taken -- a genuine overshoot has to arrive; zone is " +
-                     ol[0] + ", expected " + $.CUEZ_ABOVE);
+        logger.error("(a) at " + outw + " ms the out-of-band change is due and " +
+                     "must be taken -- a genuine overshoot has to arrive; " +
+                     "zone is " + ol[0] + ", expected " + $.CUEZ_ABOVE);
         return false;
     }
 
-    // (b) RETURNING to the band takes PERSIST_IN = 1 s, not four. "You're fine"
-    // is the cheap claim and must come back quickly, or the cue keeps shouting at
-    // an athlete who has already corrected.
+    // (b) RETURNING to the band takes CUE_PERSIST_IN_MS, which is the SHORTER
+    // of the two. "You're fine" is the cheap claim and must come back quickly,
+    // or the cue keeps shouting at an athlete who has already corrected.
     var ie = StrongRowView.cueStep(17.0, CueFix.LO, CueFix.HI,
-                                   $.CUEZ_ABOVE, $.CUEZ_IN, 0, 999);
+                                   $.CUEZ_ABOVE, $.CUEZ_IN, 0, inw - 1);
     var il = StrongRowView.cueStep(17.0, CueFix.LO, CueFix.HI,
-                                   $.CUEZ_ABOVE, $.CUEZ_IN, 0, 1000);
+                                   $.CUEZ_ABOVE, $.CUEZ_IN, 0, inw);
     if (ie[0] != $.CUEZ_ABOVE) {
-        logger.error("(b) 999 ms is not yet the 1 s re-entry window; zone is " +
-                     ie[0] + ", expected " + $.CUEZ_ABOVE);
+        logger.error("(b) " + (inw - 1) + " ms is not yet the " + inw +
+                     " ms re-entry window; zone is " + ie[0] + ", expected " +
+                     $.CUEZ_ABOVE);
         return false;
     }
     if (il[0] != $.CUEZ_IN) {
-        logger.error("(b) at 1000 ms the return to the band is due; zone is " +
-                     il[0] + ", expected " + $.CUEZ_IN);
+        logger.error("(b) at " + inw + " ms the return to the band is due; " +
+                     "zone is " + il[0] + ", expected " + $.CUEZ_IN);
         return false;
     }
 
@@ -909,14 +929,15 @@ module CueFix {
     // than left to be inferred: any out-of-band instruction is the expensive
     // claim and pays the long window.
     var xe = StrongRowView.cueStep(25.0, CueFix.LO, CueFix.HI,
-                                   $.CUEZ_BELOW, $.CUEZ_ABOVE, 0, 3999);
+                                   $.CUEZ_BELOW, $.CUEZ_ABOVE, 0, outw - 1);
     var xl = StrongRowView.cueStep(25.0, CueFix.LO, CueFix.HI,
-                                   $.CUEZ_BELOW, $.CUEZ_ABOVE, 0, 4000);
+                                   $.CUEZ_BELOW, $.CUEZ_ABOVE, 0, outw);
     if (xe[0] != $.CUEZ_BELOW || xl[0] != $.CUEZ_ABOVE) {
         logger.error("(c) an out-of-band instruction is the expensive claim " +
-                     "whichever zone it replaces: at 3999 ms the zone is " +
-                     xe[0] + " (expected " + $.CUEZ_BELOW + ") and at 4000 ms " +
-                     xl[0] + " (expected " + $.CUEZ_ABOVE + ")");
+                     "whichever zone it replaces: at " + (outw - 1) +
+                     " ms the zone is " + xe[0] + " (expected " +
+                     $.CUEZ_BELOW + ") and at " + outw + " ms " + xl[0] +
+                     " (expected " + $.CUEZ_ABOVE + ")");
         return false;
     }
 
@@ -941,8 +962,9 @@ module CueFix {
     // (e) PERSISTENCE IS MEASURED IN TIME, NOT IN CALLS. Forty calls at one
     // instant: any implementation that counts invocations reaches its threshold
     // here, one that reads the clock cannot. At the 250 ms tick a window counted
-    // in callbacks would make PERSIST_OUT = 4 mean one second rather than four,
-    // and would silently retune itself if the tick period ever changed.
+    // in callbacks would make CUE_PERSIST_OUT_MS a count of frames rather than
+    // a duration, and would silently retune itself if the tick period ever
+    // changed.
     var z = $.CUEZ_IN;
     var cd = $.CUEZ_IN;
     var sc = 5000;
@@ -988,8 +1010,8 @@ module CueFix {
 }
 
 // THE SPIKE CASE, END TO END ON THE DRAW PATH -- what the maintainer would
-// actually notice, and the case that separates "four seconds" from "four
-// frames" at the real call site.
+// actually notice, and the case that separates the out-of-band WINDOW from a
+// count of four frames at the real call site.
 //
 // FIVE consecutive frames of a 25.0 spm reading, spanning 1000 ms of injected
 // clock at the 250 ms tick. Both halves matter and together they are the whole
@@ -998,8 +1020,9 @@ module CueFix {
 // something to correct against.
 //
 // Five rather than two, deliberately: an implementation that counted callbacks
-// with PERSIST_OUT = 4 would flip on the fifth frame while barely a second of
-// clock had passed.
+// rather than milliseconds would flip on the fourth or fifth frame while barely
+// a second of clock had passed. The assertions below are stated in frames and
+// in absolute stamps, and hold for any out-of-band window of 1500 ms or more.
 (:test) function test_cue_theScreenLagsTheColourNotTheNumber(logger) {
     var p = CueFix.workProbe();
     p.setRate(17.0);
@@ -1057,7 +1080,7 @@ module CueFix {
     // adopts without delay and which is what section (b) of
     // test_cue_c0_theSteadyAndTheWhiteStatesAreUnchanged actually exercises.
     //
-    // THE STAMPS START LATE ON PURPOSE. With every stamp under 4000 ms a call
+    // THE STAMPS START LATE ON PURPOSE. With every stamp under one window a call
     // site that never wrote mCueSince back would be indistinguishable from one
     // that did, because `now - 0` is already past the window. Starting at 60 s
     // makes the window relative to the candidate rather than to zero, so this
