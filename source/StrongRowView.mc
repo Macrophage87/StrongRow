@@ -741,7 +741,8 @@ const CUEZ_ABOVE = 2;    // ease off
 
 // ============ the cue's three tunables ======================================
 // CHOSEN BY REPLAY AGAINST TWO RECORDED ROWS, not by feel -- and every figure
-// below is REGENERABLE IN ONE COMMAND:
+// below is REGENERABLE IN ONE COMMAND, except the two named under WHAT IS
+// STILL NOT REGENERABLE below:
 //
 //     python3 scripts/cue_replay.py
 //     python3 scripts/cue_replay.py --sweep
@@ -753,16 +754,47 @@ const CUEZ_ABOVE = 2;    // ease off
 // (the two the cue was originally chosen against) and
 // scripts/fixtures/cue_reversal_row.txt (the later one that reported the colour
 // pointing the opposite way from the number). scripts/test_cue_replay.py
-// re-derives every number quoted here and reds if any of them moves, so this
-// comment can no longer drift away from the data.
+// re-derives every number quoted here except those two and reds if any of them
+// moves, so this comment can no longer drift away from the data.
 //
-// THAT IS NOW TRUE OF THE BEFORE COLUMNS TOO, and for one revision it was not.
-// The figures describing the machine that shipped BEFORE this change -- the
-// opposite-side counts, the #149 table's left-hand column, the two rejected
-// designs -- were reachable only as library calls with no command behind them
-// and no case asserting them. `zones_before`, `design_a` and `design_b` in
-// scripts/cue_replay.py are those machines, `main()` prints all of them, and
-// D10 / D11 / D12 pin them.
+// THAT IS NOW TRUE OF THE BEFORE COLUMN TOO, and for one revision it was not
+// true of any of it. The machine that shipped BEFORE this change is the
+// 4000/1000 windows with no fast path. It is named `zones_before` in
+// scripts/cue_replay.py, `main()` prints its opposite / disagree / ambiguous
+// / shown row as `shipped 4000/1000`, and D10 pins those four. The two
+// designs compared at that same latch -- `design_a`, WHICH SHIPPED, and
+// `design_b`, which was rejected -- are printed on the same table and are
+// pinned by D11 and D12.
+//
+// WHAT IS STILL NOT REGENERABLE BY EITHER COMMAND, named here rather than
+// left to be found, because a header claiming otherwise is the defect this
+// block exists to stop:
+//   * the BETTER/WORSE figures below are that machine's FALSE-HIGH,
+//     false-low, missed-HIGH and median lag. No command prints them --
+//     main()'s pair table carries only the four coherence columns, and
+//     every --sweep row is design (a), as that table's own header says --
+//     and no case asserts them: D10 calls coherence, and score() is never
+//     called on zones_before.
+//   * the per-second table below headed `raw (before)` is the MEMORYLESS
+//     machine, not this one, and main() has always printed it. It is listed
+//     here because the ATTRIBUTION, not the regenerability, was wrong: an
+//     earlier revision of this paragraph assigned that column to the machine
+//     that shipped before this change and said no command produced it. Both
+//     halves were false -- it is the memoryless machine's column, and
+//     `python3 scripts/cue_replay.py` printed those five cells at every
+//     revision of this branch, including the one that denied it.
+//
+// A THIRD ITEM WAS DELETED RATHER THAN LABELLED: the LIKE-FOR-LIKE EDGE-LAG
+// DIFFERENCE -- the two machines' mean edge lag recomputed over only the
+// crossings both of them follow. It was true when it was measured and nothing
+// in the tree can produce it, because edge_lag() returns aggregates and no
+// per-crossing identity, so there is no way to intersect the two followed
+// sets. Its digits are deliberately not restated here: a retraction that
+// repeats the number leaves the unregenerable figure in the file, which is the
+// thing being removed. It is deleted rather than hedged because it is the
+// SECOND framing of a lag claim in this block to need correcting, and a claim
+// reworded twice is deleted rather than reworded a third time. What survives
+// about edge lag is the MAXIMUM, which is one machine at a time.
 //
 // RETRACTION, kept rather than edited away because the retracted claims were
 // load-bearing for the whole design. An earlier revision of this block quoted
@@ -931,11 +963,21 @@ const CUEZ_ABOVE = 2;    // ease off
 // edge_lag() averages only the crossings THAT machine followed within 90 s; the
 // faster machine follows MORE of them -- calm 127 -> 138 of 165, reversal
 // 45 -> 53 of 60 -- and the ones it newly follows are the SLOW ones, which
-// raises its own mean. On the 127 calm crossings both machines follow, the same
-// change is 6.93 -> 5.53 s, so the calm improvement is UNDERSTATED by the bare
-// pair and the reversal row's is OVERSTATED. cue_replay.py prints the
-// denominator beside each mean and D8 pins it. What survives either way is the
-// MAXIMUM, which is a property of one machine at a time. That residue is not the latch, it
+// raises its own mean. cue_replay.py prints the denominator beside each mean
+// and D8 pins both. So the pair above is NOT a measurement of improvement and
+// no difference of it is quoted here.
+//
+// A LIKE-FOR-LIKE FIGURE USED TO BE QUOTED HERE AND HAS BEEN DELETED: the two
+// machines' mean edge lag recomputed over only the crossings both follow. It
+// was true when it was measured and nothing committed can produce it --
+// edge_lag() exposes no per-crossing identity, so the two followed sets cannot
+// be intersected. Its digits are not restated, because a retraction that
+// repeats the number leaves the unregenerable figure in the file. If the
+// comparison is wanted, give edge_lag() a per-crossing key and pin it first;
+// until then the honest statement is the one below.
+//
+// WHAT SURVIVES UNQUALIFIED IS THE MAXIMUM, which is a property of one machine
+// at a time and needs no common denominator. That residue is not the latch, it
 // is the DEADBAND: a number a tenth of a spm over hi does not move a colour
 // showing IN, by design, and may never. Anyone attacking "the cue is slow" by
 // shortening these windows a SECOND time should read those two lines first --
@@ -3515,7 +3557,11 @@ class StrongRowView extends Ui.View {
         // the whole of it between two frames, 2.0 spm at the shipped default
         // 16-18. Measured on the three committed rows at the 250 ms tick: the
         // branch fires 9 / 2 / 14 times, never on consecutive ticks, minimum
-        // gap 2000 ms.
+        // gap 2000 ms. Printed by `python3 scripts/cue_replay.py` and pinned by
+        // scripts/test_cue_replay.py D13, which also asserts the other half:
+        // with the fast path OFF the same counts are 5 / 2 / 5 and the minimum
+        // gap doubles to 4000 ms, because a crossing then has to outlast the
+        // latch instead of pre-empting it.
         //
         // SO THE HYSTERESIS IS ZERO WHEN targetLo == targetHi, and nothing
         // clamps that: loadSettings swaps the pair when hi < lo but does not
