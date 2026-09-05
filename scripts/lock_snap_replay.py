@@ -335,6 +335,38 @@ def refusals(row, shipped, out):
     return [i for i in fires(row) if abs(out[i] - shipped[i]) > 1e-9]
 
 
+def second_order(row, shipped, out):
+    """(changed, up, no_lock, near_gate) -- the exposure this replay CANNOT see.
+
+    THE LIMITATION THIS QUANTIFIES. gatedRate is pure, so the guard's decision
+    on a record depends on nothing but that record's three inputs, and the
+    replay is exact for it. But `rate_base` is a RECURSION: nextRateBase folds
+    in what the output stage PUBLISHED, so on a live watch a refused snap feeds
+    a different baseline forward, and the baseline sets fastGate on later
+    strokes. This replay uses the RECORDED rate_base -- the one the unguarded
+    code produced -- so every figure here is FIRST-ORDER.
+
+    It cannot be closed offline. nextRateBase runs once per STROKE, from
+    registerStroke, and this fixture is per RECORD (about three records per
+    stroke at these cadences), so iterating the recursion here would be
+    replaying a machine that never ran -- the exact trap scripts/cue_replay.py
+    exists because of.
+
+    What CAN be bounded is the exposure, and it is small: rate_base is read
+    only by fastGate, which gatedRate consults only on the NO-LOCK arm, and
+    only records whose median sits near their own gate could flip if the
+    baseline moved. #199 is the field check.
+    """
+    n = len(row)
+    changed = [i for i in range(n) if abs(shipped[i] - out[i]) > 1e-9]
+    up = sum(1 for i in changed if out[i] > shipped[i])
+    no_lock = [i for i in range(n) if row.lock[i] <= 0.0 and row.raw[i] > 0.0]
+    near = sum(1 for i in no_lock
+               if abs(row.raw[i] - fast_gate(row.base[i]))
+               <= 0.20 * fast_gate(row.base[i]))
+    return len(changed), up, len(no_lock), near
+
+
 def work_laps(row, out):
     """Maximal contiguous runs of step_type == 2. Empty when step_type is
     absent from the recording, which is not the same thing as a row with no
@@ -438,6 +470,18 @@ def cmd_score(rows, args):
               "(%.2f:1)"
               % (len(ref), rw, rc, rw / max(1, rc), fw, fc, len(fi),
                  fw / max(1, fc)))
+        ch, up, nl, near = second_order(row, a, b)
+        print("    (f) SECOND-ORDER EXPOSURE -- what this replay cannot see")
+        print("        the guard moves the published value on %d records, %d "
+              "UP and %d down. rate_base is a recursion over what was "
+              "published and this replay uses the RECORDED one, so every "
+              "figure above is FIRST-ORDER." % (ch, up, ch - up))
+        print("        the exposure is bounded: rate_base is read only by "
+              "fastGate, which gatedRate consults only on the NO-LOCK arm -- "
+              "%d records, %.1f%% -- and only %d of them (%.1f%% of all "
+              "records) sit within 20%% of their own gate, where a moved "
+              "baseline could flip the decision. #199 is the field check."
+              % (nl, 100.0 * nl / len(row), near, 100.0 * near / len(row)))
         laps_a = work_laps(row, a)
         if not laps_a:
             print("    (d) no step_type in this recording, so it has no work "

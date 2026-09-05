@@ -383,11 +383,35 @@ def section_c(rows):
         near(ratio(bw, bc), want[1], "C5 %s base rate" % key, 0.005)
 
 
+# ---------------------------------------------------------------------------
+# SECTION D -- the LIMITATION's own figures. A caveat with a number in it is a
+# measurement; a caveat without one is an apology. These are the numbers the
+# PR body and #199 quote for what the replay cannot see.
+def section_d(rows):
+    want = {"i183553852": (242, 65, 382, 67),
+            "i178249719": (111, 27, 189, 39),
+            "i174014735": (51, 17, 77, 4)}
+    for row in rows:
+        a, b = L.series(row, None), L.series(row, L.LOCK_HARM_TOL)
+        got = L.second_order(row, a, b)
+        check(got == want[row.key],
+              "D1 %s second-order exposure (changed, up, no-lock, near-gate) "
+              "%r, got %r" % (row.key, want[row.key], got))
+    # The direction claim: the guard is NOT systematically raising the number.
+    row = rows[0]
+    ch, up, _, _ = L.second_order(row, L.series(row, None),
+                                  L.series(row, L.LOCK_HARM_TOL))
+    check(ch - up > up,
+          "D2 the PR body says most of the guard's changes move the published "
+          "rate DOWN, not up; %d down against %d up" % (ch - up, up))
+
+
 def main():
     rows = L.load()
     section_a()
     section_b(rows)
     section_c(rows)
+    section_d(rows)
     for f in FAILS:
         print("FAIL " + f)
     if FAILS:
