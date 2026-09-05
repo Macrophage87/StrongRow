@@ -456,6 +456,118 @@ module CueFix {
     return true;
 }
 
+// THE LATCH ITSELF, PINNED AGAINST ITS OWN CONSTANTS.
+//
+// c0 for the SIGN-REVERSAL change: this case is green before it and green after
+// it, and that is its whole job. The change gives one transition -- BELOW while
+// ABOVE is displayed, or the mirror -- a fast path out of the persistence
+// window. Every OTHER transition keeps paying, and if one of them stopped, the
+// feature would have been deleted rather than narrowed.
+//
+// READ THROUGH $.CUE_PERSIST_OUT_MS / $.CUE_PERSIST_IN_MS, never through a
+// literal, so this case says "the window, whatever it is" rather than "4000".
+// A case written against the numbers would have to be edited by the same commit
+// that retunes them, which would make it a differential for the retune instead
+// of a characterization of the latch -- and the two must not be the same case.
+(:test) function test_cue_c0_theLatchGovernsEverySameSideChange(logger) {
+    var out = $.CUE_PERSIST_OUT_MS;
+    var inw = $.CUE_PERSIST_IN_MS;
+
+    // Four transitions x two stamps. Each row is
+    //   [rate, displayed, candidate, window, zone just before, zone at]
+    // and the rate is chosen so cueTarget's answer IS the candidate: 19.5
+    // clears hi + DEADBAND, 14.5 clears lo - DEADBAND, 17.0 is mid-band.
+    var rows = [
+        [19.5, $.CUEZ_IN,    $.CUEZ_ABOVE, out, $.CUEZ_IN,    $.CUEZ_ABOVE],
+        [14.5, $.CUEZ_IN,    $.CUEZ_BELOW, out, $.CUEZ_IN,    $.CUEZ_BELOW],
+        [17.0, $.CUEZ_ABOVE, $.CUEZ_IN,    inw, $.CUEZ_ABOVE, $.CUEZ_IN],
+        [17.0, $.CUEZ_BELOW, $.CUEZ_IN,    inw, $.CUEZ_BELOW, $.CUEZ_IN]
+    ];
+    for (var i = 0; i < rows.size(); i++) {
+        var r = rows[i];
+        var early = StrongRowView.cueStep(r[0], CueFix.LO, CueFix.HI,
+                                          r[1], r[2], 0, r[3] - 1);
+        if (early[0] != r[4]) {
+            logger.error("row " + i + ": a candidate one millisecond short of " +
+                         "its window (" + (r[3] - 1) + " of " + r[3] + " ms) " +
+                         "must not have been adopted; zone is " + early[0] +
+                         ", expected " + r[4]);
+            return false;
+        }
+        var late = StrongRowView.cueStep(r[0], CueFix.LO, CueFix.HI,
+                                         r[1], r[2], 0, r[3]);
+        if (late[0] != r[5]) {
+            logger.error("row " + i + ": at exactly " + r[3] + " ms the change " +
+                         "is due and must be taken; zone is " + late[0] +
+                         ", expected " + r[5]);
+            return false;
+        }
+    }
+
+    // The two windows are DIFFERENT and the out-of-band one is the longer.
+    // Asserted as an inequality rather than as two numbers so it survives a
+    // retune of either constant: what must hold is that asserting an
+    // out-of-band instruction stays the expensive claim.
+    if (!(out > inw)) {
+        logger.error("CUE_PERSIST_OUT_MS (" + out + ") must stay strictly " +
+                     "greater than CUE_PERSIST_IN_MS (" + inw + "): leaving " +
+                     "the band is the expensive claim and withdrawing one is " +
+                     "the cheap one");
+        return false;
+    }
+    return true;
+}
+
+// THE NUMBER DOES NOT MOVE WHEN THE COLOUR DOES, on the shipping draw path,
+// ACROSS A SIGN REVERSAL.
+//
+// c0 for the same change, from the other side. The reported defect is a RED
+// numeral reading 7.0 -- an instruction pointing the opposite way from the
+// number beside it -- and the fix changes which COLOUR that frame carries. What
+// it must not change is the NUMERAL, which is the measurement.
+//
+// Green before the change (numeral 7.0, colour red) and green after it (numeral
+// 7.0, colour blue): this case asserts the numeral and says nothing about the
+// colour, deliberately. The colour is c2's differential.
+(:test) function test_cue_c0_theNumeralSurvivesASignReversal(logger) {
+    var p = CueFix.workProbe();
+
+    // Settle IN, then hold a 25.0 spm overshoot past the out-of-band window so
+    // the display is genuinely showing "ease off" rather than its start state.
+    p.setRate(17.0);
+    CueFix.renderAt(p, 0);
+    CueFix.renderAt(p, 250);
+    p.setRate(25.0);
+    for (var t = 500; t <= 500 + $.CUE_PERSIST_OUT_MS + 1000; t += 250) {
+        CueFix.renderAt(p, t);
+    }
+    var settled = CueFix.renderAt(p, 500 + $.CUE_PERSIST_OUT_MS + 1250);
+    if (CueFix.numeralColour(settled) != Gfx.COLOR_RED) {
+        logger.error("setup: a 25.0 spm overshoot held past the out-of-band " +
+                     "window must be showing red (COLOR_RED = " +
+                     Gfx.COLOR_RED + ") before the reversal is applied; got " +
+                     CueFix.numeralColour(settled));
+        return false;
+    }
+
+    // ONE frame of the lock subharmonic: 7.0 spm, the other side of the band.
+    p.setRate(7.0);
+    var d = CueFix.renderAt(p, 500 + $.CUE_PERSIST_OUT_MS + 1500);
+    var s = CueFix.numeralText(d);
+    if (s == null || !s.equals("7.0")) {
+        logger.error("the numeral is the measurement and follows outputRate() " +
+                     "on the frame it changes, whatever the cue does with the " +
+                     "colour; got '" + s + "', expected '7.0'");
+        return false;
+    }
+    if (p.rawRate() != 7.0) {
+        logger.error("the estimator's own output must be untouched by the cue; " +
+                     "outputRate() is " + p.rawRate() + ", expected 7.0");
+        return false;
+    }
+    return true;
+}
+
 // -- c1: the new symbols, pinned where they are epoch-invariant ---------------
 //
 // c1 introduces cueBandZone / cueTarget / cueStep / cueColour and wires them at
