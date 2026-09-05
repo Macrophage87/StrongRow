@@ -60,10 +60,16 @@ its inputs (`.github/workflows/ci.yml`, the "Check the test results
 ### 1.3 The digest-pinned CI container
 
 ```
-ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
+ghcr.io/matco/connectiq-tester@sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
 ```
 
-`# v2.8.0 = SDK 9.2.0`. Verified at source: the `&ciq_image` YAML anchor in
+`# v2.10.0 = SDK 9.2.0, device files 2026-08-31`. **Repinned from `v2.8.0`
+(`sha256:7a6f586c…`) for the fenix 9 family**: that image was built 2026-06-10
+and Garmin published fenix 9 on 2026-08-25, so its device files cannot contain
+them. v2.10.0 was built 2026-09-01 from upstream revision `5508cf7`
+(`RESOURCES_VERSION=2026-08-31`, `CONNECT_IQ_VERSION=9.2.0` — same SDK, newer
+devices); the digest was read from ghcr's `docker-content-digest` header.
+Verified at source: the `&ciq_image` YAML anchor in
 `.github/workflows/ci.yml` (the single in-workflow copy, aliased by
 `run-tests` and `release-build`) and the quotation in `docs/CI.md` under
 "The SDK container". **The digest is the pin; the tag is a comment.**
@@ -85,7 +91,7 @@ and dropping any one of them produces a failure that looks like a code defect:
 ```sh
 git -c core.autocrlf=false archive --format=tar origin/main | tar -x -C CLEANDIR
 MSYS_NO_PATHCONV=1 docker run --rm --entrypoint bash -v "WINPATH:/work" -w /work \
-  ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f \
+  ghcr.io/matco/connectiq-tester@sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105 \
   -c "bash scripts/run_ciq_tests.sh fr965"
 ```
 
@@ -561,7 +567,7 @@ Loaded on demand, by verb:
 CI run and fails if this file disagrees. The marker lines are the contract; the
 prose above is the explanation.
 
-    AGENTFACT ci-container sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
+    AGENTFACT ci-container sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
     AGENTFACT manifest-devices 12
     AGENTFACT pinned-tests 412
     AGENTFACT ceiling hrv-correctness 249 253 4
