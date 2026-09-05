@@ -232,6 +232,43 @@ module Lock {
         // so a case that drives a row, a pause and a resume as three rowAt()
         // calls silently loses the first stroke of each later leg. Every case
         // with more than one leg uses this instead.
+        // -- D3: the pre-START carry-over ---------------------------------
+        // READ-ONLY views of the stroke-period ring, so a case can assert that
+        // a recording start left NOTHING behind rather than inferring it from
+        // the rate alone. mRate can be 0.0 with a full ring (every period
+        // rejected) and non-zero with one entry, so the two are separate
+        // questions and get separate accessors.
+        function ringCount()   { return mPCount; }
+        function ringIdx()     { return mPIdx; }
+        function lastStrokeT() { return mLastStrokeT; }
+        function lastPeriod()  { return mLastPeriod; }
+        function baseHold()    { return mBaseHold; }
+
+        // The reset seam, called -- not transcribed.
+        function resetBaseline() { resetStrokeBaseline(); }
+
+        // The function every recording-start path calls, called directly. This
+        // is the reachable half of the START boundary: startSession() itself
+        // cannot run in process (it calls Rec.createSession), which is why
+        // source/CoreFieldGateTest.mc:10 says so and why check_step_fields.py
+        // is a static check.
+        function beginAccum() { beginSessionAccum(); }
+
+        // startSession() NEUTRALISED, exactly as HrProbe neutralises
+        // startSensor() and startGps(), so the REAL startWorkout() can be
+        // driven end to end. Returns true because both callers read the return
+        // as "a session exists and start() did not throw" and then proceed;
+        // returning false would make startWorkout() bail before it reached
+        // anything worth asserting on.
+        //
+        // THIS IS WHY THE RESET IS NOT INSIDE startSession(): a probe that
+        // stubs startSession stubs the reset with it, and the wiring would be
+        // pinned by nothing.
+        hidden function startSession() { return true; }
+
+        // The REAL workout start, through the shipping startWorkout().
+        function startWorkoutLive() { startWorkout(); }
+
         function rowFrom(spm, strokes, t0) {
             var per = 60.0 / spm;
             var t = t0;
@@ -1917,4 +1954,167 @@ module Lock {
 }
 
 // ---- end of `module Lock` -------------------------------------------------
+// -- D3, c0: the pre-START carry-over as it ships -----------------------------
+//
+// THE DEFECT. onLayout registers the accelerometer at APP LAUNCH, registerStroke
+// has no mStarted gate, and nothing on the recording-start path touches detector
+// state -- so boat handling before START fills the stroke-period ring and
+// establishes mRateBase, and the first frame of the session is judged against
+// it. Measured on i183553852 (2026-09-05, v0.9): the FIRST record of the
+// session, with enhanced_speed 0.00 and native cadence 0 -- a stationary boat --
+// carries rate_base 29.57, rate_raw 28.85 and row_stroke_rate 28.85. The app
+// displayed 28.8 spm for a boat that had not moved.
+//
+// Both cases here are green before the fix and green after it. They pin the
+// parts that do NOT move, and the second one is load-bearing for the honesty of
+// the claim rather than for its correctness.
+
+// PRE-START STROKES STILL REACH THE DETECTOR. The fix clears the carry-over at
+// START; it does not gate the listener, and a gate would be the wrong change --
+// the detector needs its warm-up to have a lock at all by the time the athlete
+// starts rowing.
+(:test) function test_lock_c0_preStartStrokesStillReachTheDetector(logger) {
+    var p = new Lock.Probe();
+    // No enterStep, no start of any kind: this is the app sitting on the
+    // watch face with the accelerometer listener already registered.
+    p.rowAt(28.0, 12);
+    if (!(p.rawRate() > 0.0)) {
+        logger.error("registerStroke has no mStarted gate and must not acquire " +
+                     "one: twelve strokes at 28.0 spm before START must still " +
+                     "produce a median. rawRate() is " + p.rawRate());
+        return false;
+    }
+    if (!(p.rateBase() > 0.0)) {
+        logger.error("the same strokes must still establish the baseline " +
+                     "through the shipping nextRateBase; rateBase() is " +
+                     p.rateBase());
+        return false;
+    }
+    return true;
+}
+
+// THE GATE SATURATES AT THE ABSOLUTE FOR EVERY BASELINE FROM 20.0 SPM UP, so an
+// inherited HIGH baseline is NOT what let the 28.8 through.
+//
+// This case exists to stop the fix being sold on the wrong mechanism. fastGate
+// is min(FAST_NEEDS_LOCK, max(LOCK_GATE_FLOOR, LOCK_REL_K * base)), and with the
+// shipped constants LOCK_REL_K * 20.0 is exactly FAST_NEEDS_LOCK -- so for every
+// base at or above 20.0 the gate IS the absolute, identical to the gate with no
+// baseline at all. On the recording above, rate_base never fell below 22.68
+// during the first work interval, so zeroing it would have changed no gate
+// decision on that file. What published the 28.8 was the stroke-period RING,
+// which held pre-START periods and gave mRate a median to publish; the baseline
+// reset is for the case this file does NOT show -- a SLOW pre-START handling
+// cadence establishing a base below 20.0, where fastGate does bind and would
+// zero genuine rowing.
+(:test) function test_lock_c0_theGateSaturatesForAnyBaselineFromTwentyUp(logger) {
+    var saturating = [20.0, 22.68, 25.0, 29.57, 40.0];
+    for (var i = 0; i < saturating.size(); i++) {
+        var g = StrongRowView.fastGate(saturating[i]);
+        if (!Lock.near(g, $.FAST_NEEDS_LOCK)) {
+            logger.error("a baseline of " + saturating[i] + " spm gives gate " +
+                         g + ", expected the absolute FAST_NEEDS_LOCK (" +
+                         $.FAST_NEEDS_LOCK + "). LOCK_REL_K * 20.0 is exactly " +
+                         "FAST_NEEDS_LOCK, so the relative term cannot exceed " +
+                         "the absolute from 20.0 up");
+            return false;
+        }
+        if (!Lock.near(g, StrongRowView.fastGate(0.0))) {
+            logger.error("a baseline of " + saturating[i] + " gives " + g +
+                         " and NO baseline gives " + StrongRowView.fastGate(0.0) +
+                         " -- these must be equal, which is why clearing a HIGH " +
+                         "inherited baseline changes no gate decision");
+            return false;
+        }
+    }
+    // And the case where it does bind: below the knee the gate is strictly
+    // tighter than the absolute, which is the failure the reset is really for.
+    var slow = StrongRowView.fastGate(8.0);
+    if (!(slow < $.FAST_NEEDS_LOCK)) {
+        logger.error("an 8.0 spm baseline -- a pre-START handling cadence -- " +
+                     "must gate strictly below the absolute, or the reset has " +
+                     "nothing to protect; gate is " + slow);
+        return false;
+    }
+    return true;
+}
+
+// -- D3, c1: the reset seam, called directly ----------------------------------
+//
+// resetStrokeBaseline() exists at this commit and is NOT wired to anything. That
+// is deliberate: the differential that matters is the WIRING -- does a recording
+// start actually reach it -- and it has to be shown red before it is shown
+// green. This case pins what the function does when it is called, so that when
+// the wiring lands there is no doubt about which half moved.
+(:test) function test_lock_c1_theResetSeamEmptiesTheEstimator(logger) {
+    var p = new Lock.Probe();
+    p.rowAt(28.0, 12);
+    if (!(p.rawRate() > 0.0 && p.rateBase() > 0.0 && p.ringCount() > 0)) {
+        logger.error("setup: twelve strokes at 28.0 spm must leave a median (" +
+                     p.rawRate() + "), a baseline (" + p.rateBase() +
+                     ") and a non-empty ring (" + p.ringCount() + ")");
+        return false;
+    }
+
+    p.resetBaseline();
+
+    if (p.rateBase() != 0.0) {
+        logger.error("the established baseline must be gone; rateBase() is " +
+                     p.rateBase());
+        return false;
+    }
+    if (p.ringCount() != 0 || p.ringIdx() != 0) {
+        logger.error("the stroke-period ring must be EMPTY, not merely " +
+                     "overwritten: count is " + p.ringCount() + ", index is " +
+                     p.ringIdx() + ", both expected 0");
+        return false;
+    }
+    if (p.rawRate() != 0.0) {
+        logger.error("the median goes with the ring it was built from; " +
+                     "rawRate() is " + p.rawRate());
+        return false;
+    }
+    if (p.out() != 0.0) {
+        logger.error("and so the SHIPPING outputRate() publishes nothing, " +
+                     "which is what drawRate renders as \"--.-\"; out() is " +
+                     p.out());
+        return false;
+    }
+    if (!(p.lastStrokeT() < -50.0)) {
+        logger.error("mLastStrokeT must be back at resetDetector's " +
+                     "\"no previous stroke\" sentinel, or the first stroke " +
+                     "after the reset forms a period with the last one before " +
+                     "it -- exactly the carry-over being removed. lastStrokeT()" +
+                     " is " + p.lastStrokeT());
+        return false;
+    }
+    if (p.lastPeriod() != 0.0 || p.baseHold() != 0) {
+        logger.error("lastPeriod() is " + p.lastPeriod() + " and baseHold() is " +
+                     p.baseHold() + ", both expected 0: the ring timeout must " +
+                     "go back to its default window and the baseline must be " +
+                     "free to build from the first post-reset stroke");
+        return false;
+    }
+
+    // AND IT IS A BOUNDARY, NOT A KILL SWITCH: strokes after it rebuild
+    // everything through the shipping path, and TWO are needed -- the first
+    // only sets mLastStrokeT.
+    p.rowFrom(24.0, 1, 100.0);
+    if (p.ringCount() != 0 || p.out() != 0.0) {
+        logger.error("one stroke after the reset forms no period, so the " +
+                     "numeral is still \"--.-\"; ringCount() is " +
+                     p.ringCount() + ", out() is " + p.out());
+        return false;
+    }
+    p.rowFrom(24.0, 1, 100.0 + 60.0 / 24.0);
+    if (p.ringCount() != 1 || !Lock.near(p.out(), 24.0)) {
+        logger.error("the SECOND stroke forms the first period and the numeral " +
+                     "comes back at the rate actually rowed since START; " +
+                     "ringCount() is " + p.ringCount() + ", out() is " +
+                     p.out() + ", expected 1 and 24.0");
+        return false;
+    }
+    return true;
+}
+
 }

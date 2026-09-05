@@ -1921,6 +1921,70 @@ class StrongRowView extends Ui.View {
         mSteps.add({ :type => STEP_DONE });
     }
 
+    // #9 / D3: EVERY RECORDING START JUDGES ITSELF AGAINST NOTHING INHERITED.
+    //
+    // NOT CALLED YET at the commit that introduces it -- the wiring is its own
+    // commit, so the differential that proves the wiring can be shown red
+    // first. Called from beginSessionAccum().
+    //
+    // WHY IT EXISTS. onLayout() calls startSensor(), which registers the
+    // accelerometer listener at APP LAUNCH; registerStroke() has no mStarted
+    // gate; so boat handling, a paddle to the start, or a bag being carried
+    // fills the stroke-period ring and establishes mRateBase before START is
+    // ever pressed. Measured on i183553852 (2026-09-05, v0.9): the FIRST record
+    // of the session, with enhanced_speed 0.00 and native cadence 0 -- the boat
+    // stationary -- carries rate_base 29.57 and row_stroke_rate 28.85. The app
+    // displayed 28.8 spm for a boat that had not moved, and 28.8 was also what
+    // landed in the file.
+    //
+    // WHAT IT RESETS, and it is exactly the RATE ESTIMATOR's own carry-over --
+    // the same subset the stroke-ring timeout in onSensorData already clears,
+    // plus the two things that timeout leaves alone because it is a timeout and
+    // this is a boundary:
+    //
+    //   mPeriods / mPIdx / mPCount   the stroke-period ring. THIS is what
+    //   mRate                        actually published the 28.8: mRate is the
+    //                                ring's median and outputRate() publishes it
+    //                                whenever it clears the gate.
+    //   mRateBase                    the established baseline fastGate keys on.
+    //   mLastStrokeT                 back to the -100.0 "no previous stroke"
+    //                                sentinel resetDetector uses, so the FIRST
+    //                                post-START stroke forms no period with the
+    //                                LAST pre-START one. Without it exactly one
+    //                                period still straddles the START press.
+    //   mLastPeriod                  0.0, which puts the ring timeout back on
+    //                                its 4.0 s default rather than on a window
+    //                                sized by a pre-START cadence.
+    //   mBaseHold                    0, so the baseline starts building from the
+    //                                first post-START stroke instead of sitting
+    //                                out up to NPER of them.
+    //
+    // WHAT IT DELIBERATELY DOES NOT RESET: the accelerometer/DSP state
+    // (mGrav*, mLp*, mVar*, mAxis, mEnv, mArmed) and the AUTOCORRELATION buffer
+    // (mAcBuf, mAcPeriod, mAcConf, mAcLowConf). Those are the warm-up, they take
+    // seconds of samples to rebuild (#9), and clearing them would make the first
+    // part of every row worse rather than better. mStrokeCount / mWorkStrokes
+    // are session counters and belong to beginSessionAccum, which is the caller.
+    //
+    // THE COST, STATED RATHER THAN DISCOVERED: the numeral reads "--.-" until
+    // TWO strokes have registered after START -- one to set mLastStrokeT, one to
+    // form the first period. At 20 spm that is about 6 s, at 26 spm about 4.6 s.
+    // It is NOT the ~10 s an autocorrelation lock takes to come up (#9): the
+    // lock is not needed below fastGate, and the same recording shows readings
+    // published from its first record with lock_rate 0.00 throughout the first
+    // ten seconds. "--.-" is the correct rendering of "nothing has been measured
+    // since you pressed START"; 28.8 was not.
+    hidden function resetStrokeBaseline() {
+        mPeriods     = new [NPER];
+        mPIdx        = 0;
+        mPCount      = 0;
+        mRate        = 0.0;
+        mRateBase    = 0.0;
+        mLastStrokeT = -100.0;
+        mLastPeriod  = 0.0;
+        mBaseHold    = 0;
+    }
+
     hidden function resetDetector() {
         mGravX = 0.0; mGravY = 0.0; mGravZ = 0.0;
         mLpX   = 0.0; mLpY   = 0.0; mLpZ   = 0.0;
