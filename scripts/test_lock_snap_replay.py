@@ -145,12 +145,22 @@ def section_a():
     near(L.gated_rate(39.0, 3.0, 19.2), 20.0, "A4 shipped, the 1.95 harmonic")
     near(L.gated_rate(10.0, 3.0, 19.2), 20.0, "A4 shipped, the 2.00 subharmonic")
 
-    # (A5) test_lock_c2_aSubharmonicLockIsRefused... and
-    #      test_lock_c2_aHarmonicLockIsRefused... -- the differentials.
-    near(L.gated_rate(18.518518, 9.4, 19.2, L.LOCK_HARM_TOL), 18.518518,
-         "A5 guarded, the 2.901 subharmonic is refused")
-    near(L.gated_rate(10.416667, 1.8, 19.2, L.LOCK_HARM_TOL), 10.416667,
-         "A5 guarded, the 3.200 harmonic is refused")
+    # (A5) THE 3:1 CASES, in both band sets. These are the two records the
+    #      branch was named after, and the shipping rule leaves them ALONE:
+    #      the independent witness says the lock was the better candidate
+    #      there (section E5). test_lock_c2_aThreeToOneSubharmonicLockStill-
+    #      Snaps and its harmonic mirror assert the same thing against the
+    #      Monkey C.
+    near(L.gated_rate(18.518518, 9.4, 19.2, L.LOCK_HARM_TOL), 60.0 / 9.4,
+         "A5 shipping bands, the 2.901 subharmonic STILL snaps")
+    near(L.gated_rate(10.416667, 1.8, 19.2, L.LOCK_HARM_TOL), 60.0 / 1.8,
+         "A5 shipping bands, the 3.200 harmonic STILL snaps")
+    #      And under ROUND 1's bands they were refused. Kept so the superseded
+    #      behaviour stays checkable rather than becoming unverifiable history.
+    near(L.gated_rate(18.518518, 9.4, 19.2, L.LOCK_HARM_TOL, L.BANDS_R1),
+         18.518518, "A5 round 1's bands refused the 2.901 subharmonic")
+    near(L.gated_rate(10.416667, 1.8, 19.2, L.LOCK_HARM_TOL, L.BANDS_R1),
+         10.416667, "A5 round 1's bands refused the 3.200 harmonic")
 
     # (A6) test_lock_c0_aNonHarmonicDisagreementSnapsInEveryEpoch. Ratios
     #      1.40 (#10's worked surge), 1.305, 1.439, 1.70 and 1.632.
@@ -171,19 +181,28 @@ def section_a():
          "A7 ratio 1.825 is inside the 2 band")
     near(L.gated_rate(34.0, 3.0, 19.2, L.LOCK_HARM_TOL), 20.0,
          "A7 ratio 1.700 is outside it")
-    near(L.gated_rate(20.0 / 3.10, 3.0, 19.2, L.LOCK_HARM_TOL), 20.0 / 3.10,
-         "A7 ratio 3.100 is inside the 3 band")
+    near(L.gated_rate(20.0 / 3.10, 3.0, 19.2, L.LOCK_HARM_TOL), 20.0,
+         "A7 ratio 3.100 SNAPS -- the shipping rule has no 3:1 band")
+    near(L.gated_rate(20.0 / 3.00, 3.0, 19.2, L.LOCK_HARM_TOL), 20.0,
+         "A7 an EXACT 3:1 ratio snaps too, so the band is gone and not merely "
+         "narrowed")
     near(L.gated_rate(20.0 / 3.45, 3.0, 19.2, L.LOCK_HARM_TOL), 20.0,
-         "A7 ratio 3.450 is outside it")
+         "A7 ratio 3.450 snaps in either band set")
+    near(L.gated_rate(20.0 / 3.10, 3.0, 19.2, L.LOCK_HARM_TOL, L.BANDS_R1),
+         20.0 / 3.10, "A7 round 1's bands refused ratio 3.100")
 
     # (A8) The predicate itself, symmetric by construction. A harmonic and its
     #      reciprocal must answer identically -- the asymmetry is the defect a
     #      four-case formulation invites.
-    for a, b in ((40.0, 20.0), (20.0, 40.0), (60.0, 20.0), (20.0, 60.0)):
-        check(L.harmonic_of_lock(a, b), "A8 %r/%r is a harmonic" % (a, b))
-    for a, b in ((28.0, 20.0), (20.0, 28.0), (50.0, 20.0), (20.0, 50.0)):
+    for a, b in ((40.0, 20.0), (20.0, 40.0)):
+        check(L.harmonic_of_lock(a, b), "A8 %r/%r is a 2:1 harmonic" % (a, b))
+    for a, b in ((28.0, 20.0), (20.0, 28.0), (50.0, 20.0), (20.0, 50.0),
+                 (60.0, 20.0), (20.0, 60.0)):
         check(not L.harmonic_of_lock(a, b),
-              "A8 %r/%r is not a harmonic" % (a, b))
+              "A8 %r/%r is not a harmonic under the shipping bands" % (a, b))
+    for a, b in ((60.0, 20.0), (20.0, 60.0)):
+        check(L.harmonic_of_lock(a, b, L.LOCK_HARM_TOL, L.BANDS_R1),
+              "A8 %r/%r WAS a harmonic under round 1's bands" % (a, b))
     # The degenerate inputs are called through a CATCH, not bare. Without it a
     # predicate that dropped its non-positive clause would divide by zero and
     # kill the suite by traceback -- a kill that names no check and stops every
@@ -253,65 +272,109 @@ def section_b(rows):
     check(sum(1 for v in rows[0].speed if v == 0.0) > 0,
           "B6 and 0.000 m/s is a real reading on it, not an absence")
 
-    # B7: the alignment the two files promise, checked rather than assumed.
+    # B7: the alignment the three files promise, checked rather than assumed.
     for row in rows:
         check(len(row.step) == len(row.raw) and len(row.speed) == len(row.raw),
               "B7 %s: the context fixture is line-for-line with the records"
               % row.key)
+        check(len(row.cad) == len(row.raw),
+              "B7 %s: the witness fixture is line-for-line with the records"
+              % row.key)
+
+    # B8: the witness fixture's own header cross-checks.
+    for key, nz, nlaps in (("i183553852", 1608, 17), ("i178249719", 1734, 17),
+                           ("i174014735", 1875, 5)):
+        row = [r for r in rows if r.key == key][0]
+        got = sum(1 for c in row.cad if c is not None and c > 0.0)
+        check(got == nz, "B8 %s: cadence non-zero on %d records, header says "
+                         "%d" % (key, got, nz))
+        check(len(row.laps) == nlaps, "B8 %s: %d lap messages, header says %d"
+              % (key, len(row.laps), nlaps))
+        check(all(c is not None for c in row.cad),
+              "B8 %s: no record is MISSING cadence, which is what lets the "
+              "fixture carry no absence marker on a CAD line" % key)
+        check(all(c == int(c) for c in row.cad),
+              "B8 %s: cadence is an INTEGER on every record, which is the "
+              "header's claim that omitting fractional_cadence loses no "
+              "resolution" % key)
+    # lap_step_type is present on the reported row and ABSENT on both
+    # hold-outs -- a different state from zero, and the reason those two rows
+    # get no work-lap figure anywhere in this harness.
+    check(all(l[1] is not None for l in rows[0].laps),
+          "B8 the reported row carries lap_step_type on all 17 laps")
+    for r in rows[1:]:
+        check(all(l[1] is None for l in r.laps),
+              "B8 %s carries lap_step_type on NO lap; it predates field 25"
+              % r.key)
 
 
 # ---------------------------------------------------------------------------
-# SECTION C -- every figure #193's PR body quotes.
+# SECTION C -- every figure #196's PR body quotes, for the rule that SHIPS
+# (2:1 band only) and for the rule ROUND 1 shipped (2:1 + 3:1). Both are
+# pinned: round 1 published from the second, and a figure that quietly stops
+# being regenerable is exactly what this harness exists to prevent.
 def section_c(rows):
     by = {r.key: r for r in rows}
 
-    # C1: the reported row, before and after, at the shipped tolerance.
+    # C1: the reported row, before and after, at the shipping band set.
     row = by["i183553852"]
-    a, b = L.series(row, None), L.series(row, L.LOCK_HARM_TOL)
-    check(L.gross(row, a) == 343, "C1 gross divergence before is 343, got %d"
+    a = L.series(row, None)
+    b = L.series(row, L.LOCK_HARM_TOL)                    # BANDS = (2.0,)
+    b1 = L.series(row, L.LOCK_HARM_TOL, L.BANDS_R1)       # (2.0, 3.0)
+    check(L.gross(row, a) == 343, "C1 gross before is 343, got %d"
           % L.gross(row, a))
-    check(L.gross(row, b) == 185, "C1 gross divergence after is 185, got %d"
+    check(L.gross(row, b) == 289, "C1 gross after (2:1 only) is 289, got %d"
           % L.gross(row, b))
+    check(L.gross(row, b1) == 185,
+          "C1 gross after ROUND 1's bands is 185, got %d" % L.gross(row, b1))
     check(L.slow_boat(row, a) == (359, 5),
           "C1 slow boat before is (359, 5 excluded), got %r"
           % (L.slow_boat(row, a),))
-    check(L.slow_boat(row, b) == (262, 5),
-          "C1 slow boat after is (262, 5 excluded), got %r"
+    check(L.slow_boat(row, b) == (328, 5),
+          "C1 slow boat after is (328, 5 excluded), got %r"
           % (L.slow_boat(row, b),))
 
-    # C2: the refusal quality and the base rate it is judged against.
+    # C2: refusal counts, and the biased secondary truth's split.
     tr = L.truth(row)
     fi = L.fires(row)
     check(len(fi) == 643, "C2 the snap fires 643 times, got %d" % len(fi))
     check(L.split(row, tr, fi) == (515, 128),
-          "C2 base rate is 515 wrong : 128 correct, got %r"
+          "C2 the SECONDARY truth's base rate is 515:128, got %r"
           % (L.split(row, tr, fi),))
     ref = L.refusals(row, a, b)
-    check(len(ref) == 242, "C2 242 snaps refused, got %d" % len(ref))
-    check(L.split(row, tr, ref) == (208, 34),
-          "C2 refusals are 208 wrong : 34 correct, got %r"
+    check(len(ref) == 138, "C2 138 snaps refused at 2:1 only, got %d"
+          % len(ref))
+    check(len(L.refusals(row, a, b1)) == 242,
+          "C2 242 snaps refused under round 1's bands, got %d"
+          % len(L.refusals(row, a, b1)))
+    check(L.split(row, tr, ref) == (118, 20),
+          "C2 the SECONDARY truth calls the 2:1 refusals 118:20, got %r"
           % (L.split(row, tr, ref),))
 
-    # C3: the reported sequence. Records 2489-2490 and 2493-2499 showed the
-    # 2.901 subharmonic and must come out at the median; 2491-2492 carried a
-    # 18.750 spm lock that never snapped and must be untouched in both epochs;
-    # 2500-2502 must STILL snap (ratio 1.632); 2503-2505 must come out at the
-    # median.
+    # C3: THE MOTIVATING SEQUENCE IS NO LONGER CHANGED AT ALL.
+    #
+    # This is the most important pin in the file and it asserts a NEGATIVE.
+    # Round 1 named this branch after records 2489-2505 and published them as
+    # the defect. The independent witness says the opposite: the window is the
+    # cool-down, the lap's own native rate is 6.49 spm, and the lock's 6.383
+    # was the better of the two candidates. Both ratios there are 3:1, so
+    # dropping the 3:1 band leaves every one of these records exactly as it
+    # shipped -- and the suite says so out loud rather than letting the
+    # sequence quietly vanish from the body.
+    for i in range(2486, 2506):
+        near(b[i], a[i], "C3 record %d must be UNCHANGED by the shipping "
+                         "rule (both ratios in this window are 3:1)" % i)
     for i in list(range(2489, 2491)) + list(range(2493, 2500)):
-        near(a[i], 6.383, "C3 record %d showed 6.383 before" % i)
-        near(b[i], 18.518518, "C3 record %d shows the median after" % i)
-    for i in (2491, 2492):
-        near(a[i], 18.518518, "C3 record %d never snapped before" % i)
-        near(b[i], 18.518518, "C3 record %d is untouched after" % i)
-    for i in range(2500, 2503):
-        near(a[i], 6.383, "C3 record %d showed 6.383 before" % i)
-        near(b[i], 6.383, "C3 record %d is a 1.632 ratio and still snaps" % i)
+        near(a[i], 6.383, "C3 record %d publishes the lock, 6.383" % i)
     for i in range(2503, 2506):
-        near(a[i], 33.333, "C3 record %d showed 33.333 before" % i)
-        near(b[i], 10.416667, "C3 record %d shows the median after" % i)
+        near(a[i], 33.333, "C3 record %d publishes the lock, 33.333" % i)
+    # And under ROUND 1's bands it WAS changed -- kept so the superseded
+    # claim stays checkable rather than becoming unverifiable history.
+    for i in list(range(2489, 2491)) + list(range(2493, 2500)):
+        near(b1[i], 18.518518,
+             "C3 record %d was changed to the median by round 1's bands" % i)
 
-    # C4: the work-lap medians do not move. This is the #149 guarantee: the
-    # guard changes outliers, not the central tendency the cue bands sit on.
+    # C4: the work-lap medians do not move. The #149 guarantee.
     laps_a = L.work_laps(row, a)
     laps_b = L.work_laps(row, b)
     check(len(laps_a) == 8 and sum(len(l) for l in laps_a) == 1443,
@@ -324,63 +387,17 @@ def section_c(rows):
                  "23.4"], "C4 lap medians before, got %r" % ma)
     check(ma == mb, "C4 the lap medians must not move; %r -> %r" % (ma, mb))
 
-    # C5: the hold-outs. The gross-divergence reduction reproduces on both,
-    # and the refusal SELECTIVITY does not -- which is the honest half of the
-    # result and is pinned so it cannot quietly disappear from the PR body.
-    for key, before, after in (("i178249719", 202, 127),
-                               ("i174014735", 94, 60)):
+    # C5: the hold-outs, at the shipping band set.
+    for key, before, after, nref in (("i178249719", 202, 166, 72),
+                                     ("i174014735", 94, 79, 32)):
         r = by[key]
         sa, sb = L.series(r, None), L.series(r, L.LOCK_HARM_TOL)
         check(L.gross(r, sa) == before and L.gross(r, sb) == after,
               "C5 %s gross %d -> %d, got %d -> %d"
               % (key, before, after, L.gross(r, sa), L.gross(r, sb)))
-    for key, base, refq in (("i178249719", (278, 78), (78, 33)),
-                            ("i174014735", (126, 49), (37, 14))):
-        r = by[key]
-        sa, sb = L.series(r, None), L.series(r, L.LOCK_HARM_TOL)
-        t = L.truth(r)
-        check(L.split(r, t, L.fires(r)) == base,
-              "C5 %s base rate %r, got %r" % (key, base,
-                                              L.split(r, t, L.fires(r))))
-        got = L.split(r, t, L.refusals(r, sa, sb))
-        check(got == refq, "C5 %s refusal split %r, got %r" % (key, refq, got))
-    # The claim the PR body makes from those numbers, asserted as the
-    # DIRECTION it actually has on each row rather than as prose. An earlier
-    # draft of this suite asserted "at or below the base rate" for both
-    # hold-outs; that was WRONG for i174014735, which sits marginally above
-    # (2.64 against 2.57). The corrected statement is per row, and the
-    # inequality is strict where the measurement is.
-    want_dir = {"i183553852": "above", "i178249719": "below",
-                "i174014735": "above"}
-    for key, r in by.items():
-        sa, sb = L.series(r, None), L.series(r, L.LOCK_HARM_TOL)
-        t = L.truth(r)
-        bw, bc = L.split(r, t, L.fires(r))
-        rw, rc = L.split(r, t, L.refusals(r, sa, sb))
-        check(rc > 0 and rw > 0,
-              "C5 %s: the guard must refuse SOME snaps of each kind at tol "
-              "%.2f -- it refused %d the truth calls wrong and %d it calls "
-              "correct, and a split with a zero in it is a different result, "
-              "not a ratio" % (key, L.LOCK_HARM_TOL, rw, rc))
-        got = "above" if ratio(rw, rc) > ratio(bw, bc) else "below"
-        check(got == want_dir[key],
-              "C5 %s: at tol %.2f the refusal quality (%.2f:1) must be %s the "
-              "base rate (%.2f:1); it is %s"
-              % (key, L.LOCK_HARM_TOL, ratio(rw, rc), want_dir[key],
-                 ratio(bw, bc), got))
-    # And the magnitudes, because "above" carries no weight on its own: the
-    # reported row's margin is 6.12 against 4.02 and hold-out B's is 2.64
-    # against 2.57, which is not the same finding.
-    for key, want in (("i183553852", (6.12, 4.02)),
-                      ("i178249719", (2.36, 3.56)),
-                      ("i174014735", (2.64, 2.57))):
-        r = by[key]
-        sa, sb = L.series(r, None), L.series(r, L.LOCK_HARM_TOL)
-        t = L.truth(r)
-        bw, bc = L.split(r, t, L.fires(r))
-        rw, rc = L.split(r, t, L.refusals(r, sa, sb))
-        near(ratio(rw, rc), want[0], "C5 %s refusal quality" % key, 0.005)
-        near(ratio(bw, bc), want[1], "C5 %s base rate" % key, 0.005)
+        check(len(L.refusals(r, sa, sb)) == nref,
+              "C5 %s refuses %d snaps, got %d"
+              % (key, nref, len(L.refusals(r, sa, sb))))
 
 
 # ---------------------------------------------------------------------------
@@ -388,30 +405,149 @@ def section_c(rows):
 # measurement; a caveat without one is an apology. These are the numbers the
 # PR body and #199 quote for what the replay cannot see.
 def section_d(rows):
-    want = {"i183553852": (242, 65, 382, 67),
-            "i178249719": (111, 27, 189, 39),
-            "i174014735": (51, 17, 77, 4)}
+    want = {"i183553852": (138, 44, 382, 67),
+            "i178249719": (72, 15, 189, 39),
+            "i174014735": (32, 17, 77, 4)}
     for row in rows:
         a, b = L.series(row, None), L.series(row, L.LOCK_HARM_TOL)
         got = L.second_order(row, a, b)
         check(got == want[row.key],
               "D1 %s second-order exposure (changed, up, no-lock, near-gate) "
               "%r, got %r" % (row.key, want[row.key], got))
-    # The direction claim: the guard is NOT systematically raising the number.
-    row = rows[0]
-    ch, up, _, _ = L.second_order(row, L.series(row, None),
-                                  L.series(row, L.LOCK_HARM_TOL))
-    check(ch - up > up,
-          "D2 the PR body says most of the guard's changes move the published "
-          "rate DOWN, not up; %d down against %d up" % (ch - up, up))
+    # The direction claim, per row, because it is NOT the same on all three:
+    # the reported row and hold-out A move the published rate down on balance,
+    # hold-out B is close to even. Round 1 stated the reported row's split as
+    # if it were a property of the guard; it is a property of that row.
+    for key, want_down in (("i183553852", True), ("i178249719", True),
+                           ("i174014735", False)):
+        r = [x for x in rows if x.key == key][0]
+        ch, up, _, _ = L.second_order(r, L.series(r, None),
+                                      L.series(r, L.LOCK_HARM_TOL))
+        check(((ch - up) > up) == want_down,
+              "D2 %s: 'most changes move the rate DOWN' must be %r; it is "
+              "%d down against %d up" % (key, want_down, ch - up, up))
+
+
+# ---------------------------------------------------------------------------
+# SECTION E -- THE INDEPENDENT WITNESS. The figures the band set is chosen
+# from, and the ones round 1 had no way to compute.
+#
+# These pin a CONCLUSION ABOUT EVIDENCE, not a behaviour: that the 2:1 and the
+# 3:1 bands are different findings. If a future edit to the witness, the
+# calibration or the decision rule makes them look alike again, this reds and
+# names which one moved.
+def section_e(rows):
+    by = {r.key: r for r in rows}
+
+    # E1: the calibration constants, from the fixture header's cross-check.
+    for key, want in (("i183553852", 1.077), ("i178249719", 1.303),
+                      ("i174014735", 0.988)):
+        near(L.witness_scale(by[key]), want, "E1 %s k" % key, 0.0005)
+
+    # E2: the pooled split, by band, under ROUND 1's band set -- which is the
+    # comparison that decides the band set. Scored at k x 1.00.
+    tot = {"all": [0, 0], "ref": [0, 0], 2: [0, 0], 3: [0, 0]}
+    for row in rows:
+        k = L.witness_scale(row)
+        a = L.series(row, None)
+        b1 = L.series(row, L.LOCK_HARM_TOL, L.BANDS_R1)
+        ref = L.refusals(row, a, b1)
+        groups = {"all": L.fires(row), "ref": ref,
+                  2: [i for i in ref if L.band_of(row, i) == 2],
+                  3: [i for i in ref if L.band_of(row, i) == 3]}
+        for g, idx in groups.items():
+            w, r, _ = L.witness_split(row, idx, k)
+            tot[g][0] += w
+            tot[g][1] += r
+    for g, want in (("all", [118, 73]), ("ref", [50, 24]), (2, [40, 8]),
+                    (3, [10, 16])):
+        check(tot[g] == want, "E2 pooled witness split for %r is %r, got %r"
+              % (g, want, tot[g]))
+
+    # E3: the split is a property of the DATA, not of the calibration. The 2:1
+    # band must keep its direction at every k in the sweep and the 3:1 band
+    # must never reach significance at any of them. This is the claim the band
+    # decision rests on, so it is asserted rather than described.
+    for mult in L.K_SWEEP:
+        b2 = [0, 0]
+        b3 = [0, 0]
+        for row in rows:
+            k = L.witness_scale(row) * mult
+            a = L.series(row, None)
+            b1 = L.series(row, L.LOCK_HARM_TOL, L.BANDS_R1)
+            ref = L.refusals(row, a, b1)
+            for n, acc in ((2, b2), (3, b3)):
+                w, r, _ = L.witness_split(
+                    row, [i for i in ref if L.band_of(row, i) == n], k)
+                acc[0] += w
+                acc[1] += r
+        check(b2[0] > b2[1] and L.binom_p(*b2) < 0.001,
+              "E3 at k x %.2f the 2:1 band must stay wrong-snap-dominant and "
+              "significant; it is %d:%d, p=%.5f"
+              % (mult, b2[0], b2[1], L.binom_p(*b2)))
+        check(L.binom_p(*b3) > 0.05,
+              "E3 at k x %.2f the 3:1 band must NOT reach significance; it is "
+              "%d:%d, p=%.5f" % (mult, b3[0], b3[1], L.binom_p(*b3)))
+
+    # E4: the shipping rule's refusals, per row, against each row's OWN base
+    # rate. Round 1's headline weakness was that two of three rows failed this
+    # under the biased truth. Under the witness all three pass it -- which is
+    # a change in the EVIDENCE, not in the rows, and is pinned so it cannot be
+    # asserted without being checked.
+    for key, want_ref, want_base in (("i183553852", (22, 2), (63, 37)),
+                                     ("i178249719", (11, 4), (43, 19)),
+                                     ("i174014735", (7, 2), (12, 17))):
+        r = by[key]
+        k = L.witness_scale(r)
+        a, b = L.series(r, None), L.series(r, L.LOCK_HARM_TOL)
+        gw, gr, _ = L.witness_split(r, L.refusals(r, a, b), k)
+        bw, br, _ = L.witness_split(r, L.fires(r), k)
+        check((gw, gr) == want_ref, "E4 %s refusal split %r, got %r"
+              % (key, want_ref, (gw, gr)))
+        check((bw, br) == want_base, "E4 %s base split %r, got %r"
+              % (key, want_base, (bw, br)))
+        check(gw / max(1, gr) > bw / max(1, br),
+              "E4 %s: the shipping rule's refusals (%d:%d) must beat that "
+              "row's own base rate (%d:%d); this is the claim round 1 could "
+              "not make on two of three rows" % (key, gw, gr, bw, br))
+
+    # E5: the work-lap answer to the 38-vs-20 question, and the cool-down
+    # finding that moved the band set.
+    row = by["i183553852"]
+    k = L.witness_scale(row)
+    a, b1 = L.series(row, None), L.series(row, L.LOCK_HARM_TOL, L.BANDS_R1)
+    ref = L.refusals(row, a, b1)
+    work = [i for i in ref if row.step[i] == 2]
+    check(len(work) == 28 and len(ref) - len(work) == 214,
+          "E5 28 of 242 round-1 refusals are on work seconds, 214 outside; "
+          "got %d and %d" % (len(work), len(ref) - len(work)))
+    w2 = [i for i in work if L.band_of(row, i) == 2]
+    check(L.witness_split(row, w2, k)[:2] == (12, 0),
+          "E5 the 2:1 band on work seconds must be 12:0 -- not one scored "
+          "work-lap 2:1 refusal was a double-count; got %r"
+          % (L.witness_split(row, w2, k)[:2],))
+    # The cool-down lap, from the fixture's LAP lines: this is what makes the
+    # motivating sequence's lock the better candidate.
+    lap16 = [l for l in row.laps if l[0] == 16][0]
+    check(lap16[1] == 5, "E5 lap 16 must be step_type 5 (cool-down), got %r"
+          % (lap16[1],))
+    near(60.0 * lap16[2] / lap16[3], 6.494,
+         "E5 lap 16's native rate (97 cycles / 896.247 s)", 0.001)
+    check(all(row.cad[i] == 0.0 for i in range(2488, 2675)),
+          "E5 native cadence must read 0 for the 187 records 2488-2674")
+    check(row.cad[2675] == 10.0,
+          "E5 the first non-zero cadence after that run is record 2675 at 10 "
+          "spm; got %r" % (row.cad[2675],))
 
 
 def main():
+
     rows = L.load()
     section_a()
     section_b(rows)
     section_c(rows)
     section_d(rows)
+    section_e(rows)
     for f in FAILS:
         print("FAIL " + f)
     if FAILS:
