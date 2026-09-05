@@ -411,8 +411,20 @@ module Lock {
 (:test) function test_lock_c0_aLockedReadingSnapsOnlyWhenItDisagrees(logger) {
     // 3.0 s period is a 20.0 spm lock; LOCK_SNAP_K = 0.30 puts the snap
     // threshold at a 6.0 spm deviation, so 25.9 is inside it and 26.1 is not.
+    //
+    // THE 38.0 ENTRY CHANGED IN THIS COMMIT, from 20.0 to 38.0, and it is a
+    // BEHAVIOUR CHANGE rather than a correction to a wrong pin: 38.0 against
+    // 20.0 is a ratio of 1.90, which is a 2:1 harmonic inside #193's band, so
+    // the guard refuses the snap and the median survives. The nextRateBase
+    // comment block at source/StrongRowView.mc quotes this exact pair as its
+    // worked example of a snapped reading, and that quotation is corrected in
+    // c3 rather than left to contradict this line.
+    //
+    // The four surviving entries are the load-bearing half of the change:
+    // 26.1 (ratio 1.305) and 13.9 (ratio 1.439) still snap, so the guard has
+    // not disabled the snap wholesale.
     var cases = [[20.0, 20.0], [25.9, 25.9], [26.1, 20.0], [14.1, 14.1],
-                 [13.9, 20.0], [38.0, 20.0]];
+                 [13.9, 20.0], [38.0, 38.0]];
     for (var i = 0; i < cases.size(); i++) {
         var p = Lock.at(cases[i][0], 3.0);
         var got = p.out();
@@ -465,42 +477,6 @@ module Lock {
     }
     return true;
 }
-// THE SNAP ACROSS A HARMONIC OR SUBHARMONIC LOCK, as shipped (#193).
-//
-// CHARACTERIZATION ONLY. Every triple below is read off recording i183553852
-// (3385 records, 2026-09-05) and is replayed by scripts/lock_snap_replay.py
-// from scripts/fixtures/lock_snap_records.txt, so the two sides of the
-// transcription assert the same vectors -- the pairing scripts/cue_replay.py
-// and source/CueZoneTest.mc already keep, for the reason stated there.
-//
-// This case asserts what `gatedRate` DOES today, not what it should do. The
-// autocorrelation of a stroke signal peaks at integer multiples and divisors of
-// the true period, so a lock can sit on a harmonic or a subharmonic; the snap
-// has no plausibility bound, so it substitutes the lock anyway and CREATES the
-// half/double read it exists to kill. #193's fix retires this case and replaces
-// it with the two c2 differentials, which is why the substitution is pinned
-// here first: without it the c2 red does not say which behaviour moved.
-(:test) function test_lock_c0_theSnapSubstitutesAHarmonicLockAtRatioTwoAndThree(logger) {
-    // [median spm, lock period s, what gatedRate returns TODAY, what it is]
-    //
-    // 9.4 s is a 6.383 spm lock against an 18.52 spm median -- a ratio of
-    // 2.901, the near-3:1 SUBHARMONIC the rower saw at records 2489-2499 while
-    // the median never moved. 1.8 s is a 33.333 spm lock against a 10.42 spm
-    // median -- a ratio of 3.200, the near-3:1 HARMONIC at records 2503-2505.
-    var cases = [[18.518518, 9.4, 60.0 / 9.4], [10.416667, 1.8, 60.0 / 1.8],
-                 [39.0, 3.0, 20.0], [10.0, 3.0, 20.0]];
-    for (var i = 0; i < cases.size(); i++) {
-        var p = Lock.at(cases[i][0], cases[i][1]);
-        if (!Lock.near(p.out(), cases[i][2])) {
-            logger.error("as shipped, a median of " + cases[i][0] +
-                         " spm against a " + cases[i][1] + " s lock (" +
-                         (60.0 / cases[i][1]) + " spm) must come out as " +
-                         cases[i][2] + "; got " + p.out());
-            return false;
-        }
-    }
-    return true;
-}
 
 // A DISAGREEMENT THAT IS NOT A HARMONIC STILL SNAPS -- green in EVERY epoch.
 //
@@ -525,6 +501,101 @@ module Lock {
                          $.LOCK_SNAP_K + " of the lock at a ratio that is " +
                          "NOT near 2:1 or 3:1, so it must snap to " +
                          cases[i][2] + " in every epoch; got " + p.out());
+            return false;
+        }
+    }
+    return true;
+}
+// -- c2: the #193 differentials -- RED against c1, by design -----------------
+//
+// Each case below asserts what gatedRate must do AFTER the harmonic guard
+// lands in c3, and each is RED in this commit. They replace
+// test_lock_c0_theSnapSubstitutesAHarmonicLockAtRatioTwoAndThree, which pinned
+// the same triples returning the LOCK and is retired here: a characterization
+// pin and its differential cannot both be green, and keeping the old one
+// renamed would leave the suite asserting two answers to one question.
+//
+// Every case reads its answer back through the SHIPPING outputRate() via
+// Lock.at(...).out(). Nothing here re-implements the decision -- the trap this
+// file already carries the receipt for twice (see the seam case below).
+//
+// The same vectors are asserted against the PYTHON transcription by
+// scripts/test_lock_snap_replay.py section A5 and A7, so editing one side alone
+// reds the other suite.
+
+// A SUBHARMONIC LOCK IS REFUSED AND THE MEDIAN SURVIVES.
+//
+// Recording i183553852, records 2489-2499: the detector's median sat at
+// 18.518518 spm for eleven seconds while the lock dropped to a 9.4 s period --
+// 6.383 spm, a ratio of 2.901 -- and the snap published 6.383. The rower saw
+// 18.5 -> 6.4 -> 18.5 -> 6.4 in ten seconds while the median never moved.
+//
+// 19.2 spm is the recorded rate_base at those records. It is passed because the
+// case should fail if the guard were ever wired into the NO-LOCK arm, where the
+// baseline is what fastGate reads; with a lock up it must not be consulted.
+(:test) function test_lock_c2_aSubharmonicLockIsRefusedAndTheMedianSurvives(logger) {
+    var p = new Lock.Probe();
+    p.setDetector(18.518518, 9.4);
+    p.setRateBase(19.2);
+    if (!Lock.near(p.out(), 18.518518)) {
+        logger.error("an 18.518518 spm median against a 9.4 s lock is a " +
+                     "ratio of 2.901 -- a SUBHARMONIC, not a disagreement " +
+                     "about the same cadence -- so the snap must be refused " +
+                     "and the median must survive. Expected 18.518518, got " +
+                     p.out() + " (the lock is " + (60.0 / 9.4) + " spm)");
+        return false;
+    }
+    return true;
+}
+
+// A HARMONIC LOCK IS REFUSED AND THE MEDIAN SURVIVES.
+//
+// The same recording, records 2503-2505: a 10.416667 spm median against a 1.8 s
+// lock -- 33.333 spm, a ratio of 3.200 -- published 33.333 while the boat was
+// doing 0.0 m/s. The mirror of the case above, and it is a separate (:test) so
+// the red run names which DIRECTION moved: a guard that handled only raw > lock
+// would leave one of these two green.
+(:test) function test_lock_c2_aHarmonicLockIsRefusedAndTheMedianSurvives(logger) {
+    var p = new Lock.Probe();
+    p.setDetector(10.416667, 1.8);
+    p.setRateBase(19.2);
+    if (!Lock.near(p.out(), 10.416667)) {
+        logger.error("a 10.416667 spm median against a 1.8 s lock is a ratio " +
+                     "of 3.200 -- a HARMONIC -- so the snap must be refused " +
+                     "and the median must survive. Expected 10.416667, got " +
+                     p.out() + " (the lock is " + (60.0 / 1.8) + " spm)");
+        return false;
+    }
+    return true;
+}
+
+// THE REFUSAL BANDS ARE WHERE THEY WERE MEASURED TO BE, AND NO WIDER.
+//
+// LOCK_HARM_TOL is 0.10, so against a 3.0 s (20.0 spm) lock the bands are
+// [1.80, 2.20] and [2.70, 3.30] in the ratio. This case pins both edges of the
+// 2 band and both of the 3 band, INSIDE and OUTSIDE.
+//
+// PINNED WITH MARGIN, NEVER AT THE EDGE, and that is deliberate rather than
+// timid: 1.8 and 0.2 are both inexact in binary, the watch computes in float32
+// and this suite's tolerance is 0.0005, so a case sitting exactly on
+// `d <= tol * 2.0` would be pinning the rounding rather than the rule. 1.825
+// and 1.700 are 0.025 and 0.100 clear of the edge; 3.100 and 3.450 are 0.100
+// and 0.150 clear of theirs.
+//
+// The OUTSIDE cases are the ones that keep the guard from being "delete the
+// snap": a 1.700 and a 3.450 ratio are still resolved in the lock's favour.
+(:test) function test_lock_c2_theRefusalBandEdgesAreWhereTheyAreMeasuredToBe(logger) {
+    // [median spm, expected out, the ratio, inside or outside]
+    var cases = [[36.5, 36.5, 1.825], [34.0, 20.0, 1.700],
+                 [20.0 / 3.10, 20.0 / 3.10, 3.100], [20.0 / 3.45, 20.0, 3.450]];
+    for (var i = 0; i < cases.size(); i++) {
+        var p = Lock.at(cases[i][0], 3.0);
+        if (!Lock.near(p.out(), cases[i][1])) {
+            logger.error("against a 20.0 spm lock (period 3.0 s), a median of " +
+                         cases[i][0] + " spm is a ratio of " + cases[i][2] +
+                         ", so gatedRate must return " + cases[i][1] +
+                         "; got " + p.out() + ". The bands at LOCK_HARM_TOL " +
+                         "0.10 are [1.80, 2.20] and [2.70, 3.30]");
             return false;
         }
     }
