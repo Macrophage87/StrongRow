@@ -502,8 +502,14 @@ def edge_lag(laps, lo, hi, strategy):
     # slow ones -- which raises its own mean. So two edge-lag means taken at
     # different tunings are over DIFFERENT POPULATIONS and are not directly
     # comparable; comparing them without the denominator is this repository's
-    # "wrong pair" defect. Callers that need a like-for-like number must
-    # intersect the followed sets themselves.
+    # "wrong pair" defect.
+    #
+    # THERE IS NO LIKE-FOR-LIKE NUMBER AVAILABLE FROM THIS FUNCTION, and an
+    # earlier revision of this comment told the caller to "intersect the
+    # followed sets themselves" while returning no per-crossing identity to
+    # intersect. Either compare the MAXIMUM, which is a property of one machine
+    # at a time, or add that identity here first. Do not publish a difference of
+    # two means taken from this function.
     return {
         "crossings": len(lags) + unfollowed,
         "followed": len(lags),
@@ -512,6 +518,48 @@ def edge_lag(laps, lo, hi, strategy):
         "median_s": statistics.median(lags) if lags else float("nan"),
         "max_s": max(lags) if lags else float("nan"),
     }
+
+
+# ---------------------------------------------------------------------------
+# HOW OFTEN THE DISPLAY JUMPS STRAIGHT ACROSS THE BAND, and how close together.
+#
+# The sign-reversal fast path is the one branch of cueStep with NO window, so
+# "does it oscillate" is a fair question to ask of it. This answers it FROM THE
+# MACHINE'S OUTPUT rather than from a copy of the branch's guard: a firing is a
+# frame where the DISPLAYED zone goes from one out-of-band side to the other.
+# Nothing here re-implements the condition -- if the guard changed this would
+# follow it, which a transcribed `if` would not.
+#
+# It is a differential and not decoration: with the fast path OFF the same
+# counts drop -- 5 / 2 / 5 rather than 9 / 2 / 14 -- and the minimum gap doubles
+# from one out-of-band window to two, because a crossing then has to outlast the
+# latch instead of pre-empting it.
+def band_crossings(laps, lo, hi, out_ms=None, in_ms=None, reversal=True,
+                   tick_ms=TICK_MS):
+    out_ms = CUE_PERSIST_OUT_MS if out_ms is None else out_ms
+    in_ms = CUE_PERSIST_IN_MS if in_ms is None else in_ms
+    per_sec = max(1, 1000 // tick_ms)
+    fired, gaps, consecutive = 0, [], 0
+    for series in laps:
+        zone, cand, since = CUEZ_NONE, CUEZ_NONE, 0
+        last = None
+        for i, v in enumerate(series):
+            for k in range(per_sec):
+                now = i * 1000 + k * tick_ms
+                prev = zone
+                zone, cand, since = cue_step_tuned(v, lo, hi, zone, cand,
+                                                   since, now, out_ms, in_ms,
+                                                   reversal)
+                if (prev, zone) in OPPOSITE_PAIRS:
+                    fired += 1
+                    if last is not None:
+                        gaps.append(now - last)
+                        if now - last <= tick_ms:
+                            consecutive += 1
+                    last = now
+    return {"fired": fired,
+            "min_gap_ms": min(gaps) if gaps else None,
+            "consecutive": consecutive}
 
 
 def adopt_lag(laps, lo, hi, out_ms, in_ms, reversal, tick_ms=TICK_MS):
@@ -806,6 +854,12 @@ def main(argv):
         print("    edge lag  median %.0f s, max %.0f s after; adopt lag mean "
               "%.2f s, max %.2f s"
               % (e["median_s"], e["max_s"], a2["mean_s"], a2["max_s"]))
+        bc = band_crossings(laps, lo, hi)
+        print("    the display jumps straight across the band %d time(s); "
+              "closest pair %s ms apart, %d on consecutive ticks"
+              % (bc["fired"],
+                 "n/a" if bc["min_gap_ms"] is None else bc["min_gap_ms"],
+                 bc["consecutive"]))
         # Cross-check, printed rather than asserted: the windows are wall-clock,
         # so driving the same series at a DIFFERENT tick must give the same
         # answer as the 250 ms one. A difference means the transcription has

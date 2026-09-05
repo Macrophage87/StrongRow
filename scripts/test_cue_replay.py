@@ -581,10 +581,19 @@ def _():
     # The faster machine follows MORE of them -- calm 127 -> 138 of 165,
     # reversal 45 -> 53 of 60 -- and the ones it newly follows are the SLOW
     # ones, which raises its own mean. So "6.93 -> 6.34" is not a like-for-like
-    # comparison and must never be quoted as one; on the 127 calm crossings
-    # BOTH machines follow, the same change is 6.93 -> 5.53. Pinning the
-    # denominators is what stops the bare pair being read as a measurement of
-    # improvement -- this repository's "wrong pair" class.
+    # comparison and must never be quoted as one. Pinning the denominators is
+    # what stops the bare pair being read as a measurement of improvement --
+    # this repository's "wrong pair" class.
+    #
+    # THE LIKE-FOR-LIKE FIGURE IS NOT AVAILABLE AND IS NOT QUOTED. An earlier
+    # revision of this comment gave the two means recomputed over only the
+    # crossings both machines follow. That number was true when measured and
+    # NOTHING COMMITTED CAN PRODUCE IT: edge_lag() returns aggregates and no
+    # per-crossing identity, so the two followed sets cannot be intersected.
+    # It is deleted from here and from the CUE_* block rather than hedged, and
+    # its digits are not restated, because a retraction that repeats the number
+    # leaves the unregenerable figure in the tree. Add the per-crossing key to
+    # edge_lag() and pin it before quoting such a comparison again.
     before, after = [], []
     for _k, lo, hi, _l, laps in R.load_all():
         b = R.adopt_lag(laps, lo, hi, *R.SHIPPED_BEFORE)
@@ -693,6 +702,29 @@ def _():
         out.append((a_scored - b_scored, opp_before,
                     a_scored - b_scored == opp_before))
     return out, [(22, 22, True), (8, 8, True), (20, 20, True)]
+
+
+@case("D13 the fast path's firing rate, which a shipped comment quotes")
+def _():
+    # N1. source/StrongRowView.mc's fast-path comment states "the branch fires
+    # 9 / 2 / 14 times, never on consecutive ticks, minimum gap 2000 ms" as the
+    # anti-oscillation evidence for the one branch of cueStep with no window.
+    # It was measured for that comment and pinned by nothing -- a new figure in
+    # exactly the class this round was convened to remove, added by the round.
+    #
+    # A DIFFERENTIAL, not decoration: with the fast path OFF the same counts are
+    # 5 / 2 / 5 and the minimum gap doubles to 4000 ms, because a crossing then
+    # has to outlast the latch instead of pre-empting it. Both halves are
+    # asserted, so a machine that stopped crossing at all would red too.
+    on, off = [], []
+    for _k, lo, hi, _l, laps in R.load_all():
+        a = R.band_crossings(laps, lo, hi)
+        b = R.band_crossings(laps, lo, hi, reversal=False)
+        on.append((a["fired"], a["min_gap_ms"], a["consecutive"]))
+        off.append((b["fired"], b["min_gap_ms"], b["consecutive"]))
+    return [on, off], \
+           [[(9, 2000, 0), (2, None, 0), (14, 2000, 0)],
+            [(5, 4000, 0), (2, None, 0), (5, 4000, 0)]]
 
 
 def main():
