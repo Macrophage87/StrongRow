@@ -138,6 +138,71 @@ const MAX_RATE = 40.0;            // hard ceiling on anything that reaches the f
 const LOCK_SNAP_K = 0.30;         // a locked rate deviating more snaps to the lock
 const FAST_NEEDS_LOCK = 30.0;     // the ABSOLUTE no-lock gate, in spm
 
+// ---- the harmonic bound on the snap (#193) --------------------------------
+// THE DEFECT. LOCK_SNAP_K above has no plausibility bound: whatever the lock
+// says, a median that disagrees with it by more than 30% is discarded and the
+// lock is published. But the autocorrelation of a stroke signal peaks at
+// integer MULTIPLES and DIVISORS of the true period, so the lock can sit on a
+// harmonic or a subharmonic of the cadence being rowed -- and at those ratios
+// the snap does not kill a half/double reading, it CREATES one, over a median
+// that was right.
+//
+// Measured on recording i183553852 (3385 records; regenerate any of this with
+// `python3 scripts/lock_snap_replay.py`): the published rate differed from the
+// detector's own median on 645 of the records that published anything, and 642
+// of those equalled the lock exactly. On 343 the two differed by more than a
+// FACTOR OF TWO. Records 2489-2505 read 18.5 -> 6.4 -> 18.5 -> 6.4 -> 33.3 spm
+// in ten seconds while the median never moved off 18.52; the lock was walking
+// between the fundamental, a 2.901 subharmonic and a 3.200 harmonic.
+//
+// LOCK_HARM_TOL IS THE BAND HALF-WIDTH AS A FRACTION OF THE RATIO it is
+// applied to, so at 0.10 the refusal bands are [1.80, 2.20] and [2.70, 3.30].
+// A ratio inside either one is a harmonic lock and the median survives;
+// everything else snaps exactly as it did before. At 0.10 the snap still fires
+// on 401 of 643, 245 of 356 and 124 of 175 disagreements of the three recorded
+// rows -- this NARROWS the snap, it does not delete it.
+//
+// A MODULE-SCOPE CONST, like the four above and for the same measured reason
+// they were moved here: a module-scope const costs no member of `globals`
+// because it is inlined (the ceiling note at scripts/list_tests.py:78-87,
+// probed by bisection on the fenix6 family, SDK 9.2.0). An earlier revision of
+// this branch asserted the opposite and was retracted in c2c.
+//
+// THE VALUE IS MEASURED AND IT IS A SINGLE-ROW FIT. Both halves of that
+// sentence are load-bearing:
+//
+//   the floor       the two reported records sit at ratios 2.901 and 3.200,
+//                   which need 0.033 and 0.067. Under 0.067 the reported
+//                   sequence is not fixed at all.
+//   the ceiling     the two bands must stay disjoint, which needs under 0.20.
+//   the plateau     on the reported row, of the snaps the guard refuses, the
+//                   ratio of ones a 31 s centred median of the median series
+//                   calls WRONG to ones it calls CORRECT is flat at 6.0-6.4:1
+//                   across 0.08-0.12, against a 4.02:1 base rate over all 643
+//                   snaps. Its argmax is 0.11.
+//   why 0.10        two hold-out recordings do NOT corroborate that peak. On
+//                   i178249719 the guard's refusals run at 2.36:1 against that
+//                   row's own 3.56:1 base rate -- WORSE than refusing at
+//                   random -- and on i174014735 at 2.64:1 against 2.57:1,
+//                   which is too close to call. Fitting a third digit to one
+//                   recording is not a measurement, so the round number in the
+//                   plateau is taken instead of the row's argmax.
+//   what does hold  the DIRECTION reproduces on all three rows: the count of
+//                   records whose published rate differs from the median by
+//                   more than 2x falls at every tolerance swept, by 46%, 37%
+//                   and 36% at this one.
+//
+// WHAT THIS IS NOT. It is not #149's defect, which is the median and the lock
+// AGREEING and both being wrong; nothing here touches that. It is not #10's,
+// whose worked example is a 28 spm median against a 20 spm lock -- a ratio of
+// 1.40, outside both bands, so a legitimate surge is still pinned to the
+// lagging lock exactly as it is today. No confidence threshold is used, and
+// deliberately: lock_confidence is unnormalised (#189, 179 records of the
+// reported row exceed 1.0, to a maximum of 13.11), and measured on that row a
+// conf >= 0.3 gate keeps 71% of the impossible samples while conf >= 0.5
+// discards 16-18% of clean work seconds.
+const LOCK_HARM_TOL = 0.10;       // harmonic band half-width, as a fraction
+
 // ---- the RELATIVE no-lock gate (#149) ------------------------------------
 // THE DEFECT, as measured on the two decoded rows and recorded in #149:
 // FAST_NEEDS_LOCK is an absolute threshold guarding an error -- a doubled
@@ -5606,6 +5671,47 @@ class StrongRowView extends Ui.View {
         return g;
     }
 
+    // Pure: is the lock a HARMONIC or SUBHARMONIC of the median rather than a
+    // second opinion about the same cadence? See the LOCK_HARM_TOL note at the
+    // top of this file for the defect, the measurement and what the tolerance
+    // does and does not rest on.
+    //
+    // `q` IS max/min, so a harmonic (the median is the double) and a
+    // subharmonic (the lock is) are ONE comparison against ONE tolerance
+    // rather than four cases with four chances to be asymmetric. That
+    // asymmetry is a real failure mode and not a hypothetical one: a version
+    // handling only `raw > ac` passes half the differentials, which is why
+    // test_lock_c2_aSubharmonicLockIsRefusedAndTheMedianSurvives and
+    // test_lock_c2_aHarmonicLockIsRefusedAndTheMedianSurvives are two cases
+    // and not one.
+    //
+    // The tolerance is RELATIVE TO THE RATIO -- `tol * 2.0` and `tol * 3.0`,
+    // not one absolute width -- so the 3:1 band is proportionally as wide as
+    // the 2:1 band. A single absolute width would make the 3:1 band tighter in
+    // relative terms exactly where the median is noisiest, because a ratio of
+    // three is reached at the long-period end where one stroke of jitter moves
+    // the ratio furthest.
+    //
+    // Null and non-positive inputs answer FALSE rather than throwing: an
+    // absent value must not be arithmetic, the rule every other predicate in
+    // this file follows. gatedRate has already established both are positive
+    // before it calls this, so those clauses are defensive rather than
+    // reachable -- they are here so the contract is a property of THIS
+    // function and not of its one caller, the same reason lockConf clamps at
+    // zero.
+    static function harmonicOfLock(raw, ac) {
+        if (raw == null || ac == null || raw <= 0.0 || ac <= 0.0) {
+            return false;
+        }
+        var q = (raw > ac) ? raw / ac : ac / raw;
+        var d = q - 2.0;
+        if (d < 0.0) { d = -d; }
+        if (d <= $.LOCK_HARM_TOL * 2.0) { return true; }
+        d = q - 3.0;
+        if (d < 0.0) { d = -d; }
+        return d <= $.LOCK_HARM_TOL * 3.0;
+    }
+
     // Pure: the whole output-stage decision, as a function of the three inputs
     // it actually has.
     //
@@ -5625,7 +5731,13 @@ class StrongRowView extends Ui.View {
             if (r > 0.0) {
                 var dev = r - ac;
                 if (dev < 0.0) { dev = -dev; }
-                if (dev > $.LOCK_SNAP_K * ac) { r = ac; }
+                if (dev > $.LOCK_SNAP_K * ac) {
+                    // #193: a disagreement by a near-integer factor of two or
+                    // three is the lock reading the wrong autocorrelation
+                    // peak, not a verdict on the median. Refuse it and keep
+                    // the median; every other disagreement snaps as before.
+                    if (!harmonicOfLock(r, ac)) { r = ac; }
+                }
             }
         } else if (r > fastGate(base)) {
             r = 0.0;
@@ -5650,17 +5762,31 @@ class StrongRowView extends Ui.View {
     //   ZEROED           guarded == 0.0. No lock corroborated a reading above
     //                    fastGate(base), so nothing was published.
     //   CORRECTED        guarded > 0.0 AND guarded != raw -- the lock SNAP
-    //                    (gatedRate, the LOCK_SNAP_K branch), and the MAX_RATE
+    //                    (gatedRate, the LOCK_SNAP_K branch, where
+    //                    harmonicOfLock did not refuse it), and the MAX_RATE
     //                    clamp. The output stage has just declared `raw` wrong
     //                    and substituted its own answer.
     //
     // The earlier revision tested only `guarded > 0.0` and then folded in `raw`,
     // so a CORRECTED reading counted as corroboration and the discarded median
-    // set the bar. Measured, on this tree: a first-stroke median of 38.0 spm
-    // against a 20.0 spm lock snapped to 20.0 and still established a baseline
-    // of 38.0, which fastGate maps to FAST_NEEDS_LOCK exactly -- the relative
-    // gate collapsing to the absolute constant it exists to replace, disarmed
-    // by the very readings the snap flagged as errors.
+    // set the bar. The worked example was a first-stroke median of 38.0 spm
+    // against a 20.0 spm lock, which snapped to 20.0 and still established a
+    // baseline of 38.0 -- the relative gate collapsing to the absolute
+    // constant it exists to replace, disarmed by the very readings the snap
+    // flagged as errors.
+    //
+    // THAT EXAMPLE NO LONGER REACHES THIS FUNCTION and is replaced rather than
+    // left standing (#193, c3). 38.0 against 20.0 is a ratio of 1.90, inside
+    // the 2:1 refusal band, so gatedRate now returns 38.0 and the reading is
+    // PASSED THROUGH rather than CORRECTED --
+    // test_lock_c0_aLockedReadingSnapsOnlyWhenItDisagrees carries that pair
+    // and its expectation changed with the fix. The failure mode is unchanged,
+    // so a still-reachable pair takes its place: a first-stroke median of 26.1
+    // spm against the same 20.0 spm lock is a ratio of 1.305, outside both
+    // bands, so it still snaps to 20.0 -- and folding in `raw` would establish
+    // a baseline of 26.1, which fastGate maps to FAST_NEEDS_LOCK exactly,
+    // since it clamps LOCK_REL_K * base at that constant for any base at or
+    // above 20.0 spm. The 26.1 pair is pinned by the same case.
     //
     // THE FIRST PUBLISHED READING ESTABLISHES THE BASELINE OUTRIGHT rather than
     // easing a zero toward it, because an EMA started from 0.0 would spend its
@@ -5695,7 +5821,10 @@ class StrongRowView extends Ui.View {
     // final cleaned rate for display and FIT: fast readings need the
     // autocorrelation lock to agree (kills phantom bursts from non-rowing
     // hand motion), and a locked reading that disagrees with the lock by
-    // more than 30% snaps to it (kills residual half/double readings)
+    // more than 30% snaps to it (kills residual half/double readings) --
+    // UNLESS the disagreement is by a near-integer factor of two or three, in
+    // which case the lock is on a harmonic and the median is kept (#193; see
+    // harmonicOfLock and the LOCK_HARM_TOL note at the top of this file)
     hidden function outputRate() {
         return gatedRate(mRate, mAcPeriod, mRateBase);
     }
