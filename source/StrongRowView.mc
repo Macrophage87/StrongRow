@@ -4037,22 +4037,14 @@ class StrongRowView extends Ui.View {
     // System.getTimer() counts from DEVICE start, not app start, and it is a
     // 32-bit millisecond counter, so it WRAPS.
     //
-    // A THIRD CORRECTION, and this one RETRACTS the example that stood here.
-    // The line read "Around a wrap `nowMs - lastMs` goes large-negative and
-    // `< threshMs` reads as fresh -- measured, hrHave(true, 2147483000,
-    // -2147483000, 5000) is true." The observation is right and the conclusion
-    // drawn from it is wrong: under two's-complement wrapping that subtraction
-    // is 1296, which IS the true age of that pair, so `true` is the CORRECT
-    // answer and the example demonstrates nothing about the hazard. It is
-    // withdrawn as evidence rather than reworded.
-    //
-    // POINTING THE OTHER WAY, and recorded because it is the only thing in this
-    // tree that bears on subtraction at the seam at all: IF that line's own
-    // "measured" was a real observation, then its `true` is itself evidence
-    // that `-` wraps -- without wrapping the subtraction is 4294966000, which
-    // is not `< 5000`, and hrHave would have returned false. The provenance of
-    // that "measured" is unknown, so this is a hypothesis and not a
-    // measurement, and the withdrawal above stands either way.
+    // A THIRD CORRECTION, AND THEN A DELETION. A worked example about the
+    // seam stood here and was withdrawn; a replacement argument about what
+    // the seam does was then written beside it, and it was wrong too. Three
+    // consecutive review rounds found a defect in this paragraph's account of
+    // the seam, so under FIX_ROUND.md section 6 the account is DELETED rather
+    // than written a fourth time. Neither the example nor the arithmetic is
+    // reproduced here; reproducing a withdrawn claim is how it survives its
+    // own retraction. What is left is the state of knowledge, below.
     //
     // THE WRAP CROSSING IS STILL NOT FIXED HERE, and **#70** still owns it.
     // rrIsFresh above is the same shape and the pair must not diverge about a
@@ -4071,16 +4063,16 @@ class StrongRowView extends Ui.View {
     // rrIsFresh, rrGapExceeded and CoreTempSensor.ctIsFresh took in the same
     // commit, because a sign test is not a presence test.
     //
-    // WHAT THAT DOES NOT BUY. Sign-agnostic is not rollover-safe: this function
-    // is UNSPECIFIED for a stamp and a `now` on opposite sides of the seam, and
-    // that is #70's other direction. Do not read a mechanism into that word --
-    // two revisions of this paragraph have now described the crossing wrongly
-    // (v0.9's "goes large-negative and reads as fresh", and a round-1 revision
-    // that named an order comparison this function does not make), so the third
-    // description is deliberately absent rather than reworded. Only Monkey C's
-    // `+` has been measured at the seam
-    // (test_rr_c0_stampArithmeticOnANegativeClock); `-` is the operation this
-    // line performs and it is measured nowhere.
+    // WHAT THAT DOES NOT BUY, as three facts and no mechanism.
+    //   1. Monkey C's Number ADDITION was measured to wrap two's-complement in
+    //      the simulator -- logged, not asserted, by
+    //      test_rr_c0_stampArithmeticOnANegativeClock.
+    //   2. SUBTRACTION across the seam is measured nowhere in this tree, and
+    //      subtraction is what this line performs.
+    //   3. The seam crossing is therefore OUT OF SCOPE here and #70 stays open
+    //      for it.
+    // No fourth sentence describing what happens across the seam. Every
+    // attempt at one so far has been wrong.
     //
     // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
     // freshness is about R-R batch arrival and this is about a bpm read. Two
@@ -4673,29 +4665,24 @@ class StrongRowView extends Ui.View {
     // (a real dropout read as no gap). Both now test `!= 0`, so a stamp of 0
     // still means never-seen and the sign carries no meaning at all.
     //
-    // THE WRAP CROSSING IS NOT FIXED and #70 stays open for it: a stamp and a
-    // `now` on opposite sides of the seam still compare in the WRONG
-    // ORDER -- a post-seam stamp is a large negative and loses `>` to a
-    // pre-seam large positive that is EARLIER in real time.
-    // What the DIFFERENCE term does there depends on whether Monkey C's `-` wraps
-    // two's-complement the way its `+` was measured to; only `+` has been measured
-    // (test_rr_c0_stampArithmeticOnANegativeClock), so treat the crossing as
-    // UNSPECIFIED rather than as a known false-fresh. #70's other direction.
-    // Adding a consumer of rrIsFresh still adds a field to that exposure,
-    // which is said here rather than left to be discovered.
+    // THE WRAP CROSSING IS NOT FIXED and #70 stays open for it. No mechanism is
+    // stated: three review rounds found a defect in this branch's account of
+    // what happens across the seam, so under FIX_ROUND.md section 6 the account
+    // is deleted rather than written again. Adding a consumer of rrIsFresh
+    // still adds a field to that exposure, which is said here rather than left
+    // to be discovered.
     //
     // Monkey C's Number ADDITION wraps two's-complement rather than promoting
     // or throwing -- measured in the CI container (SDK 9.2.0, fr965):
     // 2147483647 + 1 evaluates to -2147483648. That is logged, not asserted,
-    // by test_rr_c0_stampArithmeticOnANegativeClock, and it is what makes the
-    // crossing an arithmetic question rather than a crash.
+    // by test_rr_c0_stampArithmeticOnANegativeClock.
     //
     // ONLY `+` WAS MEASURED. An earlier revision of this paragraph generalised
     // it to "Number arithmetic", which over-reaches from one observation:
     // SUBTRACTION across the seam is measured nowhere in this tree, and it is
     // the operation the freshness helpers actually perform. Settling it is a
     // one-line addition to the c0 logging case and therefore a new c0 commit,
-    // not this one.
+    // not this one. Until it is settled, nothing here says what the seam does.
     // -------------------------------------------------------------------------
 
     // Pure: how does the R-R range gate classify ONE raw interval element?
