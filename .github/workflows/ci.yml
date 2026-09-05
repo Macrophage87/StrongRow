@@ -144,6 +144,25 @@ jobs:
         # refusal to publish anything when the rate and speed fixtures have
         # drifted out of alignment. Pure Python: no container, no SDK.
         run: python3 scripts/test_speed_witness.py
+      - name: Lock-snap replay self-test (runner-free RED/GREEN)
+        # scripts/lock_snap_replay.py is a PYTHON TRANSCRIPTION of the
+        # output-stage decision (fastGate / gatedRate / harmonicOfLock) and
+        # every figure #193 quotes for the harmonic-lock guard comes out of
+        # it. Same trap as the two suites above, one level further in: the
+        # tolerance in the shipping code is a MEASURED value, so a
+        # transcription that drifts from the Monkey C would be arguing a
+        # constant from a machine that never ran. This suite re-asserts the
+        # same numeric vectors source/LockGuardTest.mc asserts against the
+        # real Monkey C, re-derives the cross-checks the THREE fixture headers
+        # quote, and re-derives every published before/after figure from
+        # scripts/fixtures/lock_snap_records.txt and its context and witness
+        # companions. Section E pins the band-set decision itself against the
+        # independent counter, including that the 2:1 and 3:1 splits stay
+        # different findings at every calibration in the sweep. It pins EVERY
+        # epoch of the rule, so it is green on every commit of the branch and
+        # never has to be edited in the commit that lands a fix. Pure Python:
+        # no container, no SDK.
+        run: python3 scripts/test_lock_snap_replay.py
       - name: Ceiling-note checker self-test (runner-free RED/GREEN)
         # Hermetic scratch trees only, same shape as the two suites above.
         run: python3 scripts/test_check_ceiling_notes.py

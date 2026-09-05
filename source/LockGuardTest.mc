@@ -411,8 +411,20 @@ module Lock {
 (:test) function test_lock_c0_aLockedReadingSnapsOnlyWhenItDisagrees(logger) {
     // 3.0 s period is a 20.0 spm lock; LOCK_SNAP_K = 0.30 puts the snap
     // threshold at a 6.0 spm deviation, so 25.9 is inside it and 26.1 is not.
+    //
+    // THE 38.0 ENTRY CHANGED IN THIS COMMIT, from 20.0 to 38.0, and it is a
+    // BEHAVIOUR CHANGE rather than a correction to a wrong pin: 38.0 against
+    // 20.0 is a ratio of 1.90, which is a 2:1 harmonic inside #193's band, so
+    // the guard refuses the snap and the median survives. The nextRateBase
+    // comment block at source/StrongRowView.mc quotes this exact pair as its
+    // worked example of a snapped reading, and that quotation is corrected in
+    // c3 rather than left to contradict this line.
+    //
+    // The four surviving entries are the load-bearing half of the change:
+    // 26.1 (ratio 1.305) and 13.9 (ratio 1.439) still snap, so the guard has
+    // not disabled the snap wholesale.
     var cases = [[20.0, 20.0], [25.9, 25.9], [26.1, 20.0], [14.1, 14.1],
-                 [13.9, 20.0], [38.0, 20.0]];
+                 [13.9, 20.0], [38.0, 38.0]];
     for (var i = 0; i < cases.size(); i++) {
         var p = Lock.at(cases[i][0], 3.0);
         var got = p.out();
@@ -462,6 +474,165 @@ module Lock {
         logger.error("39.0 spm is under MAX_RATE and must pass through " +
                      "unchanged; got " + q.out());
         return false;
+    }
+    return true;
+}
+
+// A DISAGREEMENT THAT IS NOT A HARMONIC STILL SNAPS -- green in EVERY epoch.
+//
+// The guard #193 adds refuses the snap ONLY at a near-2:1 ratio (round 1 of
+// #196 also refused near-3:1; that band was deleted in r2-c3).
+// This case is the other half of that statement and it is the one that keeps
+// the fix from being "delete the snap": each pair below is a disagreement the
+// snap must still resolve in the lock's favour, before and after.
+//
+// The 28.0-against-20.0 pair is #10's worked example (a legitimate surge the
+// snap wrongly pins to the lagging lock). Its ratio is 1.40, outside the
+// band, so #193 leaves #10 exactly where it is rather than half-fixing it --
+// pinned here so that claim is checked rather than asserted in prose.
+(:test) function test_lock_c0_aNonHarmonicDisagreementSnapsInEveryEpoch(logger) {
+    // [median spm, lock period s, expected out, ratio for the message]
+    var cases = [[28.0, 3.0, 20.0], [26.1, 3.0, 20.0], [13.9, 3.0, 20.0],
+                 [34.0, 3.0, 20.0], [10.416667, 9.4, 60.0 / 9.4]];
+    for (var i = 0; i < cases.size(); i++) {
+        var p = Lock.at(cases[i][0], cases[i][1]);
+        if (!Lock.near(p.out(), cases[i][2])) {
+            logger.error("a median of " + cases[i][0] + " spm against a " +
+                         cases[i][1] + " s lock disagrees by more than " +
+                         $.LOCK_SNAP_K + " of the lock at a ratio that is " +
+                         "NOT near 2:1, so it must snap to " +
+                         cases[i][2] + " in every epoch; got " + p.out());
+            return false;
+        }
+    }
+    return true;
+}
+// -- c2: the #193 differentials -- RED against c1, by design -----------------
+//
+// Each case below asserts what gatedRate must do AFTER the harmonic guard
+// lands in c3, and each is RED in this commit. They replace the c0
+// characterization that pinned the same triples returning the LOCK, which is
+// RETIRED in this commit: a characterization pin and its differential cannot
+// both be green, and keeping the old one under a new name would leave the
+// suite asserting two answers to one question. The retired case is named in
+// c2's commit message and its behaviour survives in
+// scripts/test_lock_snap_replay.py section A4, which pins the SHIPPED answer
+// for the same triples against the Python transcription and stays green
+// through c3. It is NOT named here: scripts/check_source_refs.py requires
+// every (:test) named in a source/ comment to exist, and a comment naming a
+// deleted guard is exactly the claim-stronger-than-its-evidence that check was
+// written for. It caught this one -- run 33972805039, test-tooling.
+//
+// Every case reads its answer back through the SHIPPING outputRate() via
+// Lock.at(...).out(). Nothing here re-implements the decision -- the trap this
+// file already carries the receipt for twice (see the seam case below).
+//
+// The same vectors are asserted against the PYTHON transcription by
+// scripts/test_lock_snap_replay.py section A5 and A7, so editing one side alone
+// reds the other suite.
+
+// A 3:1 SUBHARMONIC LOCK STILL SNAPS -- THE GUARD DOES NOT REACH IT.
+//
+// THIS CASE ASSERTED THE OPPOSITE UNTIL ROUND 2, AND THE REVERSAL IS THE POINT.
+// Recording i183553852, records 2489-2499: the median sat at 18.518518 spm
+// while the lock read a 9.4 s period -- 6.383 spm, a ratio of 2.901 -- and the
+// snap published 6.383. #193 was filed on that sequence and round 1 of this
+// branch refused the snap there, publishing 18.52 instead.
+//
+// The round-1 review scored it against a witness the branch had not used: the
+// FIT native `cadence` counter, a second detector. Records 2489-3383 are
+// step_type 5, the COOL-DOWN; over that lap the watch's own counter recorded
+// 97 cycles in 896.247 s = 6.49 spm, and it read ZERO for the 187 consecutive
+// records from 2488 while enhanced_speed decayed 2.04 -> 1.26 m/s. So the
+// LOCK's 6.383 was the better of the two candidates here and the median was
+// stale -- the opposite of what this case used to assert. Pooled over three
+// rows the 3:1 band scores 10 wrong-snaps to 16 right (p=0.33) against the
+// 2:1 band's 40:8 (p=0.0000033), so the 3:1 band is dropped and this ratio
+// is
+// left to the snap. Regenerate both with
+// `python3 scripts/lock_snap_replay.py witness`.
+//
+// 19.2 spm is the recorded rate_base at those records. It is passed because the
+// case should fail if the guard were ever wired into the NO-LOCK arm, where the
+// baseline is what fastGate reads; with a lock up it must not be consulted.
+(:test) function test_lock_c2_aThreeToOneSubharmonicLockStillSnaps(logger) {
+    var p = new Lock.Probe();
+    p.setDetector(18.518518, 9.4);
+    p.setRateBase(19.2);
+    if (!Lock.near(p.out(), 60.0 / 9.4)) {
+        logger.error("an 18.518518 spm median against a 9.4 s lock is a " +
+                     "ratio of 2.901, which is a 3:1 SUBHARMONIC and NOT in " +
+                     "the guard's band set -- the independent counter says " +
+                     "the lock was right in this window -- so it must still " +
+                     "snap. Expected " + (60.0 / 9.4) + ", got " + p.out());
+        return false;
+    }
+    return true;
+}
+
+// A 3:1 HARMONIC LOCK STILL SNAPS -- the mirror of the case above.
+//
+// The same recording, records 2503-2505: a 10.416667 spm median against a 1.8 s
+// lock -- 33.333 spm, a ratio of 3.200 -- in the same cool-down lap. A SEPARATE
+// (:test) from its subharmonic mirror on purpose, so a red run names which
+// DIRECTION moved: a guard that handled only raw > ac would leave exactly one
+// of the two green, and that asymmetry is a real failure mode rather than a
+// hypothetical one.
+//
+// Note what this case does NOT say. It does not say the 33.333 reading was
+// right; the boat was doing 0.0 m/s at record 2503 and 33 spm is not credible
+// there. It says the guard #193 adds is not the thing that fixes it, because
+// the evidence that would justify refusing this snap does not exist -- the
+// native counter reads zero across the whole window and cannot adjudicate it.
+// A rate that is implausible against BOAT SPEED is a different guard, and it is
+// not in this branch.
+(:test) function test_lock_c2_aThreeToOneHarmonicLockStillSnaps(logger) {
+    var p = new Lock.Probe();
+    p.setDetector(10.416667, 1.8);
+    p.setRateBase(19.2);
+    if (!Lock.near(p.out(), 60.0 / 1.8)) {
+        logger.error("a 10.416667 spm median against a 1.8 s lock is a ratio " +
+                     "of 3.200, which is a 3:1 HARMONIC and NOT in the " +
+                     "guard's band set, so it must still snap. Expected " +
+                     (60.0 / 1.8) + ", got " + p.out());
+        return false;
+    }
+    return true;
+}
+
+// THE REFUSAL BAND IS WHERE IT WAS MEASURED TO BE, AND THERE IS ONLY ONE.
+//
+// LOCK_HARM_TOL is 0.10, so against a 3.0 s (20.0 spm) lock the single band is
+// [1.80, 2.20] in the ratio. This case pins both of its edges, INSIDE and
+// OUTSIDE, and pins that the 3:1 region is NOT a band at all -- including at
+// an EXACT ratio of 3.000, so a reader can tell "the band was deleted" from
+// "the band was narrowed".
+//
+// PINNED WITH MARGIN, NEVER AT THE EDGE, and that is deliberate rather than
+// timid: 1.8 and 0.2 are both inexact in binary, the watch computes in float32
+// and this suite's tolerance is 0.0005, so a case sitting exactly on
+// `d <= tol * 2.0` would be pinning the rounding rather than the rule. 1.825
+// and 1.700 are 0.025 and 0.100 clear of the edge; 3.100 and 3.450 are 0.100
+// and 0.150 clear of theirs.
+//
+// The OUTSIDE cases are the ones that keep the guard from being "delete the
+// snap": a 1.700 and a 3.450 ratio are still resolved in the lock's favour.
+(:test) function test_lock_c2_theRefusalBandEdgesAreWhereTheyAreMeasuredToBe(logger) {
+    // [median spm, expected out, the ratio]
+    var cases = [[36.5, 36.5, 1.825], [34.0, 20.0, 1.700],
+                 [20.0 / 3.00, 20.0, 3.000], [20.0 / 3.10, 20.0, 3.100],
+                 [20.0 / 3.45, 20.0, 3.450]];
+    for (var i = 0; i < cases.size(); i++) {
+        var p = Lock.at(cases[i][0], 3.0);
+        if (!Lock.near(p.out(), cases[i][1])) {
+            logger.error("against a 20.0 spm lock (period 3.0 s), a median of " +
+                         cases[i][0] + " spm is a ratio of " + cases[i][2] +
+                         ", so gatedRate must return " + cases[i][1] +
+                         "; got " + p.out() + ". The ONLY band at " +
+                         "LOCK_HARM_TOL 0.10 is [1.80, 2.20]; a 3:1 ratio " +
+                         "snaps like any other disagreement");
+            return false;
+        }
     }
     return true;
 }
