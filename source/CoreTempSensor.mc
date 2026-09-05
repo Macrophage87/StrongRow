@@ -567,9 +567,30 @@ class CoreTempSensor {
     // parameter, not System.getTimer(), so freshness tests are deterministic.
 
     // Is a timestamp `tsMs` fresh at `nowMs` within `threshMs`? Strict `<`; a
-    // never-seen stamp (0 or negative) is not fresh. Mirrors rrIsFresh exactly.
+    // never-seen stamp (0) is not fresh. Mirrors rrIsFresh exactly.
+    //
+    // #70: THE PRESENCE TEST IS `!= 0`, AND THE OLD COMMENT HERE WAS WRONG.
+    // It said "a never-seen stamp (0 or negative)", which stated the defect as
+    // if it were the contract. System.getTimer() is a SIGNED 32-bit count from
+    // DEVICE start, so from 24.855 days of uptime to 49.71 days EVERY stamp
+    // this class takes is negative and a negative stamp is an ordinary live
+    // reading. coreFreshAt / skinFreshAt / hsiFreshAt all route through this
+    // one predicate and coreTempAt / skinTempAt answer 0.0 when it says stale,
+    // so the sign test suppressed the CORE fields for the whole of any row
+    // inside that band. Measured on activity i183553852: ct_diag CORE_OK = 33
+    // -- 33 valid core frames decoded -- and no core_temperature,
+    // skin_temperature, heat_strain_index or max_core_temperature anywhere in
+    // the file.
+    //
+    // 0 still means never-seen, and on a negative clock the guard is the only
+    // thing that can produce that answer: `now - 0` is hugely negative and
+    // passes every threshold. All four stamps here initialise to 0.
+    //
+    // NOT ROLLOVER-SAFE. A stamp and a `now` on OPPOSITE sides of the wrap
+    // still subtract to a large negative difference and still read fresh --
+    // #70's other direction, still open.
     static function ctIsFresh(nowMs, tsMs, threshMs) {
-        return tsMs > 0 && (nowMs - tsMs) < threshMs;
+        return tsMs != 0 && (nowMs - tsMs) < threshMs;
     }
 
     // Assemble the 12-bit skin-temperature field from its two source bytes:

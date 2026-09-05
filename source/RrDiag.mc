@@ -66,7 +66,14 @@ module RrDiag {
 
 // The value stored in slot I_VERSION. Bump it for ANY change to the slot
 // numbering, the slot count, or what a slot counts.
-const VERSION = 1;
+//
+// 1 -> 2 (#70): slot 20 gained the F_CLOCK_NEG bit. No index moved and SLOTS
+// is unchanged, but the flags slot's KEY did, and a reader holding version 1's
+// key would read bit 2 as reserved-zero. Bumping is what tells it otherwise.
+// Pinned to the literal by RrHrv.test_rr_c2_theClockSignReachesTheDiagFlags --
+// the shape pin one function over compares slot 0 against this constant, which
+// tracks any bump silently and cannot notice a forgotten one.
+const VERSION = 2;
 
 // The number of slots, and the ONE constant both this module's snapshot builder
 // and the createField `:count` in StrongRowView read. Do not substitute a
