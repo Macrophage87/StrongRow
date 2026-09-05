@@ -553,6 +553,68 @@ def _():
            [(2000, 500), (2000, 500)]
 
 
+@case("D7 the reversal row's own table, which the CUE_* block now quotes")
+def _():
+    # c3's comment block quotes this row beside calm and choppy. Pinned here
+    # for the reason section C exists at all: a figure in a comment that
+    # nothing regenerates is the defect this whole harness was written to stop,
+    # and it does not stop being that defect because the row is new.
+    _k, lo, hi, _l, laps = R.load_fixture(R.REVERSAL_FIXTURE)[0]
+    return [tab(R.score(laps, lo, hi, R.zones_raw)),
+            tab(R.score(laps, lo, hi, R.zones_cue))], \
+           [("9.8", "10.3", "4.6", "2.66", "0"),
+            ("3.3", "3.3", "8.0", "1.86", "2")]
+
+
+@case("D8 the two lags the CUE_* block quotes, before and after")
+def _():
+    # ADOPT LAG is the latch alone; EDGE LAG is the number crossing a band edge
+    # to the colour following it, deadband included. The comment's point is that
+    # the change moves the first and barely moves the second, and that the
+    # second's MAXIMUM does not move at all -- so the pin has to cover both or
+    # the interesting half is unguarded.
+    before, after = [], []
+    for _k, lo, hi, _l, laps in R.load_all():
+        b = R.adopt_lag(laps, lo, hi, 4000, 1000, False)
+        a = R.adopt_lag(laps, lo, hi, R.CUE_PERSIST_OUT_MS,
+                        R.CUE_PERSIST_IN_MS, R.CUE_REVERSAL_FAST)
+        eb = R.edge_lag(laps, lo, hi, R.tuned(4000, 1000, False))
+        ea = R.edge_lag(laps, lo, hi, R.zones_cue)
+        before.append(("%.2f" % b["mean_s"], "%.2f" % b["max_s"],
+                       "%.2f" % eb["mean_s"], "%.0f" % eb["max_s"]))
+        after.append(("%.2f" % a["mean_s"], "%.2f" % a["max_s"],
+                      "%.2f" % ea["mean_s"], "%.0f" % ea["max_s"]))
+    # and the edge-lag maximum on calm with NO latch at all, which is what
+    # shows the residue is the deadband rather than the windows
+    _k, lo, hi, _l, calm = R.load_fixture()[0]
+    nolatch = "%.0f" % R.edge_lag(calm, lo, hi, R.tuned(0, 0, True))["max_s"]
+    return [before, after, nolatch], \
+           [[("2.01", "4.00", "6.93", "84"),
+             ("1.86", "4.00", "10.16", "84"),
+             ("1.29", "4.00", "4.36", "56")],
+            [("0.91", "2.00", "6.34", "85"),
+             ("0.85", "2.00", "7.73", "82"),
+             ("0.52", "2.00", "2.91", "54")],
+            "89"]
+
+
+@case("D9 most of the reversal row's extra flicker is the FAST PATH, not the "
+      "retune")
+def _():
+    # The comment says "0.59 of the 0.68". Both halves pinned, because a
+    # sentence that attributes a cost to the right cause is exactly the kind of
+    # claim this repository has got wrong before by not checking the split.
+    _k, lo, hi, _l, laps = R.load_fixture(R.REVERSAL_FIXTURE)[0]
+    def flips(o, i, rev):
+        return R.score(laps, lo, hi, R.tuned(o, i, rev))["flips_per_min"]
+    shipped = flips(4000, 1000, False)
+    fast_only = flips(4000, 1000, True)
+    now = flips(R.CUE_PERSIST_OUT_MS, R.CUE_PERSIST_IN_MS, R.CUE_REVERSAL_FAST)
+    return ["%.2f" % shipped, "%.2f" % fast_only, "%.2f" % now,
+            "%.2f" % (fast_only - shipped), "%.2f" % (now - shipped)], \
+           ["1.18", "1.77", "1.86", "0.59", "0.68"]
+
+
 def main():
     failures = 0
     for name, fn in CASES:
