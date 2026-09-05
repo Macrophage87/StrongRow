@@ -389,11 +389,12 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**385** `(:test)` functions under `source/`, matching
+**397** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/hrv-correctness` branch: "OK: 385 (:test) function(s) under
+run on the `claude/clock-sign-70` branch: "OK: 397 (:test) function(s) under
 source/ match scripts/expected_tests.txt exactly."). It was **362** at
-`211f106`; epic #59 adds cases in `source/RrHrvTest.mc`.
+`211f106` and **385** at `d2cd8a6` (v0.9, epic #59's merge); #70 adds cases in
+`source/RrHrvTest.mc`.
 
 Any `(:test)` addition, removal or rename edits `scripts/expected_tests.txt`
 **in the same commit**. The check closes drift, not coordinated shrink:
@@ -545,7 +546,7 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
     AGENTFACT manifest-devices 12
-    AGENTFACT pinned-tests 385
+    AGENTFACT pinned-tests 397
     AGENTFACT ceiling hrv-correctness 249 253 4
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke

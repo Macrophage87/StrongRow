@@ -211,6 +211,112 @@ function arrEq(got, exp, logger, what) {
     return ok;
 }
 
+// ---------------------------------------------------------------------------
+// #70, the NEGATIVE-CLOCK half. c0 pins: green before the fix and after it.
+// ---------------------------------------------------------------------------
+// System.getTimer() is a SIGNED 32-bit millisecond count from device start, so
+// between 24.855 and 49.71 days of uptime every stamp this app takes is
+// NEGATIVE. Activity i183553852 (recorded on v0.9) was rowed inside that band.
+//
+// The fix makes "has this ever been stamped?" sign-agnostic -- `!= 0` instead
+// of `> 0`. The two cases below pin the two premises that fix rests on, and
+// both must hold in EVERY epoch of the change:
+//
+//   * 0 must keep meaning never-seen, INCLUDING on a negative clock, where the
+//     age term alone would say "fresh" (this case);
+//   * the age term `now - stamp` must be exact for two stamps in the same half
+//     of the signed cycle (the case after it).
+//
+// A ZERO STAMP IS STILL ABSENT, and on a negative clock the presence guard is
+// the ONLY thing that can produce that answer. With now = -2,000,000,000 the
+// age of a never-seen stamp is `now - 0` = -2,000,000,000, which is less than
+// any threshold, so deleting the guard makes an unstamped field read FRESH
+// forever. That is the failure this fix must not introduce while removing the
+// sign test -- #54 recorded the positive-clock version of the same trap one
+// file over (source/RrRecordTest.mc, test_rr_isFresh_states).
+//
+// Calls the SHIPPING helpers, all four of them, so it cannot pass against a
+// private copy of the comparison.
+(:test) function test_rr_c0_neverSeenIsStillNeverSeenOnANegativeClock(logger) {
+    var ok = true;
+    var neg = -2000000000;
+    if (StrongRowView.rrIsFresh(neg, 0, 5000) != false) {
+        logger.error("rrIsFresh: a never-seen stamp read FRESH on a negative " +
+                     "clock -- now - 0 is hugely negative and passes < thresh");
+        ok = false;
+    }
+    if (StrongRowView.hrHave(true, 0, neg, 5000) != false) {
+        logger.error("hrHave: a never-seen stamp read PRESENT on a negative clock");
+        ok = false;
+    }
+    if (CoreTempSensor.ctIsFresh(neg, 0, 5000) != false) {
+        logger.error("ctIsFresh: a never-seen stamp read FRESH on a negative clock");
+        ok = false;
+    }
+    // rrGapExceeded's comparison is `>`, so a zero stamp pushes the result the
+    // same way the guard does and the guard is NOT load-bearing here. Asserted
+    // anyway, and the asymmetry is named rather than left to be rediscovered --
+    // it is the exact shape #54 found in test_rr_isFresh_states.
+    if (StrongRowView.rrGapExceeded(neg, 0, 2500) != false) {
+        logger.error("rrGapExceeded: a never-seen stamp read as a GAP");
+        ok = false;
+    }
+    return ok;
+}
+
+// PLATFORM CHARACTERIZATION, not a logic pin, and it is labelled as one because
+// this repository's dominant defect is a claim stronger than its evidence.
+//
+// The fix's correctness argument is "within either half of the signed cycle,
+// `now - stamp` is exact, so only the presence term was wrong". Nothing in this
+// repository had ever measured Monkey C's Number arithmetic near the 32-bit
+// bounds, so that sentence rested on the language reference alone. The first
+// block measures it.
+//
+// The overflow question is DELIBERATELY LOGGED AND NOT ASSERTED. Whether
+// 2147483647 + 1 wraps to -2147483648, promotes to a Long, or throws decides
+// what happens at the ONE-MINUTE-IN-49.7-DAYS crossing, which is #70's other
+// direction and is NOT fixed by this change. Asserting a value here would pin a
+// guess; logging it puts the measurement in the run log where the next reader
+// can take it. The operands come out of an array
+// so the compiler is not handed a literal to fold. Measured on fr965: it folds
+// an `if` whose condition is a compile-time constant and says so ("Statement is
+// not reachable"), and it emits no such diagnostic for the plain-literal
+// comparison at the top of this function -- so it leaves literal integer
+// arithmetic to the runtime here either way.
+(:test) function test_rr_c0_stampArithmeticOnANegativeClock(logger) {
+    var ok = true;
+    // 100 ms apart, both deep in the negative half.
+    if ((-1999999900) - (-2000000000) != 100) {
+        logger.error("subtracting two negative stamps 100 ms apart did not give " +
+                     "100 -- the whole 'only the presence term was wrong' " +
+                     "argument depends on this being exact");
+        ok = false;
+    }
+    // The same subtraction with the operands behind an array read.
+    var st = [-2000000000, -1999999900];
+    if (st[1] - st[0] != 100) {
+        logger.error("the same subtraction through variables gave " + (st[1] - st[0]));
+        ok = false;
+    }
+    // And the premise that makes `!= 0` a different test from `> 0`.
+    if (st[0] == 0 || st[0] > 0) {
+        logger.error("a large negative literal did not compare as negative");
+        ok = false;
+    }
+    // MEASURED, NOT ASSERTED -- see the note above. In a try/catch because
+    // "it throws" is one of the three candidate answers, and a case that ERRORS
+    // while measuring an open question would be indistinguishable from a real
+    // regression in the run this file's red evidence comes from.
+    var ov = [2147483647, 1];
+    try {
+        logger.debug("MEASURE #70-wrap: 2147483647 + 1 evaluates to " + (ov[0] + ov[1]));
+    } catch (e) {
+        logger.debug("MEASURE #70-wrap: 2147483647 + 1 THREW");
+    }
+    return ok;
+}
+
 }
 
 module RrHrv {
@@ -481,8 +587,12 @@ class RrProbe extends StrongRowView {
 // The gap slots are the cheap way in: handleRrAt writes them as raw whole
 // seconds, unclamped, so a 70,000 s silence puts a value past MAXV in front of
 // a UINT16 setData and ONLY the readout clamp brings it back. Both slots are
-// driven by one batch because both are written from it -- prevBeatMs > 0 and
-// mLastBeatMs == now both hold on the second feed.
+// driven by one batch because both are written from it -- the "a beat has ever
+// been range-accepted" guard and `mLastBeatMs == now` both hold on the second
+// feed. (That guard was spelled `prevBeatMs > 0` when this paragraph was
+// written; #70 respells it `!= 0` because on a negative System.getTimer() the
+// sign test rejects every live stamp. Named by role here rather than by
+// spelling, so the paragraph cannot go stale a second time.)
 (:test) function test_rr_c1_snapshotClampsAGapPastMaxv(logger) {
     var ok = true;
     var p = new RrProbe();
@@ -584,6 +694,70 @@ class RrProbe extends StrongRowView {
     }
     return arrEq(f.last(), [850, 860, $.RR_INVALID, $.RR_INVALID], logger,
                  "the last rr_interval write after an all-rejected batch");
+}
+
+// #70's new symbol. laterStamp(a, b) is "the later of two stamps on one clock,
+// where 0 means never-seen", and it exists because the two rr_diag gap-baseline
+// sites each wrote that as a bare `>` -- correct only while the clock is
+// positive, where the 0 sentinel loses every comparison by luck.
+//
+// Green from the commit that introduces it. Wiring the call sites is the fix;
+// test_rr_c2_theGapSlotsPopulateOnANegativeClock is the differential that
+// proves the wiring, and its SECOND half -- an unset baseline against a real
+// negative stamp -- is the half a fixed outer guard alone does not close.
+//
+// The THIRD row of each half is the one that matters and is why this symbol
+// exists at all: with a negative stamp and an unset (0) baseline, `>` picks 0.
+(:test) function test_rr_c1_laterStampTreatsZeroAsNeverSeen(logger) {
+    var ok = true;
+    // Positive clock: ordinary max, and the sentinel loses either way round.
+    if (StrongRowView.laterStamp(1000, 2000) != 2000) { logger.error("later(1000,2000)"); ok = false; }
+    if (StrongRowView.laterStamp(2000, 1000) != 2000) { logger.error("later(2000,1000)"); ok = false; }
+    if (StrongRowView.laterStamp(1000, 0)    != 1000) { logger.error("later(1000,0) must ignore the sentinel"); ok = false; }
+    if (StrongRowView.laterStamp(0, 1000)    != 1000) { logger.error("later(0,1000) must ignore the sentinel"); ok = false; }
+    // Negative clock: ordering still holds, and -1 is LATER than -2000000000.
+    if (StrongRowView.laterStamp(-2000000000, -1999000000) != -1999000000) { logger.error("later(-2e9,-1.999e9)"); ok = false; }
+    if (StrongRowView.laterStamp(-1999000000, -2000000000) != -1999000000) { logger.error("later(-1.999e9,-2e9)"); ok = false; }
+    // THE CASE `>` GETS WRONG: an unset baseline must not displace a real stamp.
+    if (StrongRowView.laterStamp(-2000000000, 0) != -2000000000) {
+        logger.error("later(-2e9, 0) returned " + StrongRowView.laterStamp(-2000000000, 0) +
+                     " -- an UNSET baseline displaced a real negative stamp, which " +
+                     "is exactly what the bare `>` did");
+        ok = false;
+    }
+    if (StrongRowView.laterStamp(0, -2000000000) != -2000000000) { logger.error("later(0,-2e9)"); ok = false; }
+    // Both never-seen stays never-seen, so the caller's own `!= 0` gate still
+    // sees a sentinel rather than a time.
+    if (StrongRowView.laterStamp(0, 0) != 0) { logger.error("later(0,0) must stay 0"); ok = false; }
+    return ok;
+}
+
+// #70's new flag bit. F_CLOCK_NEG must be a distinct power of two, or ORing the
+// three bits into slot 20 is lossy and every recorded file's flags byte is
+// re-keyed. Setting the bit is the fix;
+// test_rr_c2_theClockSignReachesTheDiagFlags is the differential for it, and
+// it also carries the ABSOLUTE version pin that nothing here had before.
+(:test) function test_rr_c1_theClockSignFlagBitIsDistinct(logger) {
+    var ok = true;
+    if ($.RrDiag.F_CLOCK_NEG != 4) {
+        logger.error("F_CLOCK_NEG is " + $.RrDiag.F_CLOCK_NEG + ", not 4 -- moving " +
+                     "a flag bit re-keys the flags slot of every recorded file");
+        ok = false;
+    }
+    if (($.RrDiag.F_CLOCK_NEG & $.RrDiag.F_RR_REGISTERED) != 0
+            || ($.RrDiag.F_CLOCK_NEG & $.RrDiag.F_SENSOR_OK) != 0) {
+        logger.error("the rr_diag flag bits overlap, so the OR into slot 20 is lossy");
+        ok = false;
+    }
+    // It fits the UINT16 slot with the other two set, which is the only size
+    // question a flags slot has.
+    var all = $.RrDiag.F_RR_REGISTERED | $.RrDiag.F_SENSOR_OK | $.RrDiag.F_CLOCK_NEG;
+    if (all != 7 || $.RrDiag.clamp(all) != all) {
+        logger.error("all three flags together read " + all + " and clamp to " +
+                     $.RrDiag.clamp(all));
+        ok = false;
+    }
+    return ok;
 }
 
 }
@@ -1029,6 +1203,319 @@ module RrHrv {
     if (p.diagAt($.RrDiag.I_MAXGAP_BEAT) != 10) {
         logger.error("the beat-gap slot must restart at the SECOND row too, got " +
                      p.diagAt($.RrDiag.I_MAXGAP_BEAT));
+        ok = false;
+    }
+    return ok;
+}
+
+// ===========================================================================
+// #70 -- the NEGATIVE-CLOCK differentials. All RED before c3.
+// ===========================================================================
+// System.getTimer() is a SIGNED 32-bit millisecond count from device start, so
+// from 24.855 days of uptime to 49.71 days every stamp is negative. Every
+// presence guard in the app asked "has this ever been stamped?" by testing the
+// SIGN of such a value, so on a device inside that band a live signal read as
+// never-seen and stayed that way for the whole row.
+//
+// NOT A THOUGHT EXPERIMENT. Activity i183553852, 56 minutes, recorded on v0.9
+// with the device's uptime inside the band: rr_diag REC_STAGED = 0 and
+// REC_INVALID = 13335 while BEAT_ACCEPT = 1597, avg_rmssd absent from the
+// session despite DIFF_ACCEPT = 1596, core_temperature / skin / HSI /
+// max_core never written while ct_diag CORE_OK = 33, and the HR arc on its
+// no-data track for the whole row while Garmin logged 118.6 bpm average.
+//
+// THE CONSTANTS. -2,000,000,000 ms is about 23.1 days before the signed
+// counter's wrap, i.e. an ordinary reading inside the negative half; the
+// second stamp is 100 ms later, which is one R-R batch period at the
+// :period => 1 registration. Nothing here crosses the wrap -- that is #70's
+// OTHER direction and is explicitly not fixed by this change.
+//
+// EVERY CASE CALLS THE SHIPPING CODE. The four pure ones call the shipping
+// statics directly; the three end-to-end ones drive handleRrAt / onTick /
+// rrDiagSessionReset through RrProbe, which overrides nowMs() and adds no
+// logic of its own.
+
+// rrIsFresh: a stamp 100 ms old on a negative clock is FRESH.
+//
+// RED before the fix: `tsMs > 0` is false for every stamp in the negative half,
+// so the helper answered "never seen" for a reading taken 100 ms ago. This is
+// the gate on rr_interval (RR_REC_FRESH_MS), on rmssd/avg_rmssd
+// (RR_LOG_FRESH_MS) and on the display pip (RR_DISPLAY_FRESH_MS).
+(:test) function test_rr_c2_rrIsFreshOnANegativeClock(logger) {
+    var ok = true;
+    if (StrongRowView.rrIsFresh(-1999999900, -2000000000, 5000) != true) {
+        logger.error("a 100 ms old stamp on a negative clock read STALE -- " +
+                     "the presence guard is testing the sign, not the presence");
+        ok = false;
+    }
+    // The age term still decides, so a genuinely stale negative stamp stays
+    // stale. Without this the fix could be "return true whenever ts != 0".
+    if (StrongRowView.rrIsFresh(-1999990000, -2000000000, 5000) != false) {
+        logger.error("a 10 s old stamp on a negative clock read FRESH");
+        ok = false;
+    }
+    // and the boundary keeps its strict `<` on this side of zero too
+    if (StrongRowView.rrIsFresh(-1999995000, -2000000000, 5000) != false) {
+        logger.error("age == thresh must be stale (strict <) on a negative clock");
+        ok = false;
+    }
+    return ok;
+}
+
+// rrGapExceeded: a 3 s silence on a negative clock IS a gap.
+//
+// RED before the fix, and it fails the OTHER way from rrIsFresh -- the guard is
+// `>` here, so a suppressed presence term makes a real gap invisible. The
+// consequence is #16's adjacency reset never firing, so the first beat after a
+// dropout is diffed against a pre-dropout beat and that difference is fed to
+// rMSSD as though the two were consecutive.
+(:test) function test_rr_c2_rrGapExceededOnANegativeClock(logger) {
+    var ok = true;
+    if (StrongRowView.rrGapExceeded(-1999997000, -2000000000, 2500) != true) {
+        logger.error("a 3 s silence on a negative clock was not seen as a gap -- " +
+                     "the adjacency reset never fires and rMSSD diffs across the dropout");
+        ok = false;
+    }
+    if (StrongRowView.rrGapExceeded(-1999999000, -2000000000, 2500) != false) {
+        logger.error("a 1 s silence on a negative clock was reported as a gap");
+        ok = false;
+    }
+    if (StrongRowView.rrGapExceeded(-1999997500, -2000000000, 2500) != false) {
+        logger.error("gap == thresh must not be a gap (strict >) on a negative clock");
+        ok = false;
+    }
+    return ok;
+}
+
+// hrHave: a heart rate read 100 ms ago on a negative clock is PRESENT.
+//
+// RED before the fix. This is the HR arc's whole presence decision, and it is
+// what put the arc on its no-data track for all 56 minutes of i183553852 while
+// Garmin's own heart_rate field averaged 118.6 bpm over the same row.
+(:test) function test_rr_c2_hrHaveOnANegativeClock(logger) {
+    var ok = true;
+    if (StrongRowView.hrHave(true, -2000000000, -1999999900, 5000) != true) {
+        logger.error("a 100 ms old HR reading on a negative clock read ABSENT -- " +
+                     "the arc renders its no-data track for the whole row");
+        ok = false;
+    }
+    // The EVER flag is still independent and still dominant: #110's two
+    // conditions stay two conditions.
+    if (StrongRowView.hrHave(false, -2000000000, -1999999900, 5000) != false) {
+        logger.error("hrHave ignored the ever-seen flag on a negative clock");
+        ok = false;
+    }
+    if (StrongRowView.hrHave(true, -2000000000, -1999990000, 5000) != false) {
+        logger.error("a 10 s old HR reading on a negative clock read PRESENT");
+        ok = false;
+    }
+    return ok;
+}
+
+// ctIsFresh: the same defect in CoreTempSensor, and the same fix.
+//
+// RED before the fix. coreFreshAt / skinFreshAt / hsiFreshAt all route through
+// this one predicate, and coreTempAt / skinTempAt return 0.0 when it says
+// stale -- which is why i183553852 has ct_diag CORE_OK = 33 (33 valid core
+// frames decoded) and no core_temperature, skin_temperature, heat_strain_index
+// or max_core_temperature anywhere in the file.
+//
+// Lives in this file rather than beside its siblings in CoreTempSensorTest.mc
+// for one reason: `module RrHrv` costs no fenix6 `globals` member, and a new
+// file-scope (:test) in CoreTempSensorTest.mc costs one out of the four free
+// (FACTS.md 5.1). CoreTempSensor.ctIsFresh is a public static, so the case
+// calls exactly the shipping predicate the CORE getters call.
+(:test) function test_rr_c2_ctIsFreshOnANegativeClock(logger) {
+    var ok = true;
+    if (CoreTempSensor.ctIsFresh(-1999999900, -2000000000, 5000) != true) {
+        logger.error("a 100 ms old CORE stamp on a negative clock read STALE -- " +
+                     "coreTemp()/skinTemp() then return 0.0 and the fields are never written");
+        ok = false;
+    }
+    if (CoreTempSensor.ctIsFresh(-1999990000, -2000000000, 5000) != false) {
+        logger.error("a 10 s old CORE stamp on a negative clock read FRESH");
+        ok = false;
+    }
+    // At the SHIPPING window rather than a synthetic one, so the case also
+    // says the real 30 s gate behaves on this side of zero.
+    if (CoreTempSensor.ctIsFresh(-1999980000, -2000000000, $.CT_FRESH_MS) != true) {
+        logger.error("a 20 s old CORE stamp is inside CT_FRESH_MS and read STALE");
+        ok = false;
+    }
+    return ok;
+}
+
+// END TO END, through the shipping receive path and the shipping onTick: a
+// clean batch on a negative clock is STAGED, not sentinelled.
+//
+// RED before the fix. This is the exact shape of i183553852's rr_diag:
+// REC_STAGED = 0 with REC_INVALID = 13335 while BEAT_ACCEPT = 1597 -- beats
+// were accepted and staged on every tick and the record wrote the 0xFFFF
+// sentinel anyway, because the staleness gate could not see the stamp
+// handleRrAt had just written.
+(:test) function test_rr_c2_theRecordStagesOnANegativeClock(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.armRr();
+    p.feed(-2000000000, [850, 860]);
+    if (p.lastBeatMs() != -2000000000) {
+        logger.error("setup failed: the beat stamp should be the injected clock, got " +
+                     p.lastBeatMs());
+        return false;
+    }
+    p.tickAt(-1999999900);
+    if (p.diagAt($.RrDiag.I_REC_STAGED) != 1) {
+        logger.error("REC_STAGED = " + p.diagAt($.RrDiag.I_REC_STAGED) +
+                     ", expected 1 -- a batch accepted 100 ms ago was recorded as absent");
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_REC_INVALID) != 0) {
+        logger.error("REC_INVALID = " + p.diagAt($.RrDiag.I_REC_INVALID) +
+                     ", expected 0 -- the sentinel was written over live beats");
+        ok = false;
+    }
+    if (!arrEq(p.rrField().last(), [850, 860, $.RR_INVALID, $.RR_INVALID], logger,
+               "the record written 100 ms after a clean batch, on a negative clock")) {
+        ok = false;
+    }
+    return ok;
+}
+
+// The same seam one gate over: the rMSSD / avg_rmssd log gate.
+//
+// RED before the fix. i183553852 has DIFF_ACCEPT = 1596 -- 1,596 artifact-
+// accepted successive differences -- and no avg_rmssd in the session at all,
+// because the gate at onTick keys on mLastDiffMs through the same helper.
+(:test) function test_rr_c2_theRmssdGateOpensOnANegativeClock(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    p.armRmssd();
+    p.feed(-2000000000, [800, 810, 800, 810, 800, 810, 800]);
+    if (p.diffCount() < 5 || !(p.rmssd() > 0.0)) {
+        logger.error("setup failed: ring=" + p.diffCount() + " rmssd=" + p.rmssd());
+        return false;
+    }
+    p.tickAt(-1999999900);
+    if (p.rmssdField().count() != 1) {
+        logger.error("the rmssd trace was written " + p.rmssdField().count() +
+                     " times, expected 1 -- the log gate read a 100 ms old " +
+                     "difference as stale");
+        ok = false;
+    }
+    if (p.rmssdN() != 1) {
+        logger.error("the avg_rmssd accumulator did not advance (n=" + p.rmssdN() +
+                     ") -- this is the session field going missing entirely");
+        ok = false;
+    }
+    return ok;
+}
+
+// The two rr_diag gap slots populate on a negative clock. THE laterStamp
+// DIFFERENTIAL: `!= 0` on the outer guard alone is not enough here.
+//
+// RED before the fix, in BOTH halves and for two different reasons:
+//
+//   * first half -- a row with a baseline. `bBase = mLastRrMs` then
+//     `if (mRrGapBaseMs > bBase)`: both stamps are negative and the max is
+//     right, but the outer `bBase > 0` is false, so neither slot is written.
+//   * second half -- a probe that never started a session, so mRrGapBaseMs is
+//     still 0. Now `0 > -2000360000` is TRUE, the unset sentinel displaces a
+//     real stamp, and even a fixed outer guard measures from nothing. That is
+//     the half `!= 0` alone does not fix and StrongRowView.laterStamp does.
+//
+// Mirrors test_rr_c2_theGapSlotsAreMeasuredFromSessionStart above, on the
+// negative side of zero, and is driven through the SHIPPING
+// rrDiagSessionReset (via RrProbe.beginRowAt) for the same reason that case
+// gives: no (:test) can reach startSession itself.
+(:test) function test_rr_c2_theGapSlotsPopulateOnANegativeClock(logger) {
+    var ok = true;
+    var p = new RrProbe();
+    // On the dock, 360 s before START: the strap streams, then goes quiet.
+    p.feed(-2000360000, [850]);
+    p.beginRowAt(-2000000000);
+    if (p.gapBaseMs() != -2000000000) {
+        logger.error("setup failed: the gap baseline is " + p.gapBaseMs());
+        return false;
+    }
+    // The strap reconnects 30 s into the row.
+    p.feed(-1999970000, [850]);
+    if (p.diagAt($.RrDiag.I_MAXGAP_BATCH) != 30) {
+        logger.error("MAXGAP_BATCH = " + p.diagAt($.RrDiag.I_MAXGAP_BATCH) +
+                     ", expected 30 -- the batch-gap slot is blind on a negative clock");
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_MAXGAP_BEAT) != 30) {
+        logger.error("MAXGAP_BEAT = " + p.diagAt($.RrDiag.I_MAXGAP_BEAT) +
+                     ", expected 30 -- the beat-gap slot is blind on a negative clock");
+        ok = false;
+    }
+    // NO SESSION EVER STARTED, so the baseline is the 0 sentinel and the whole
+    // 390 s silence is the measurement. This is the half that needs laterStamp:
+    // with a bare `>` the sentinel wins and the slot reads 0.
+    var q = new RrProbe();
+    q.feed(-2000360000, [850]);
+    q.feed(-1999970000, [850]);
+    if (q.gapBaseMs() != 0) {
+        logger.error("setup failed: this probe must never have started a row, base=" +
+                     q.gapBaseMs());
+        return false;
+    }
+    if (q.diagAt($.RrDiag.I_MAXGAP_BATCH) != 390) {
+        logger.error("MAXGAP_BATCH = " + q.diagAt($.RrDiag.I_MAXGAP_BATCH) +
+                     ", expected 390 -- an UNSET baseline displaced a real negative " +
+                     "stamp, so the slot measured from the sentinel instead");
+        ok = false;
+    }
+    if (q.diagAt($.RrDiag.I_MAXGAP_BEAT) != 390) {
+        logger.error("MAXGAP_BEAT = " + q.diagAt($.RrDiag.I_MAXGAP_BEAT) + ", expected 390");
+        ok = false;
+    }
+    return ok;
+}
+
+// The clock's sign reaches the file, and the layout version says the file
+// changed shape.
+//
+// RED before the fix on three counts: VERSION is still 1, the bit is never
+// set, and slot 0 therefore still carries 1.
+//
+// WHY THE VERSION BUMP IS PINNED ABSOLUTELY HERE. test_rr_c1_diagSnapshotShape
+// compares slot 0 against $.RrDiag.VERSION, which is a RELATIVE check: it
+// tracks any bump silently and cannot notice one that was forgotten. Nothing
+// in this repository pinned the rr_diag version to a literal before this case,
+// so adding a flag bit without bumping -- which silently re-keys the flags slot
+// of every file already recorded -- would have passed the whole suite.
+(:test) function test_rr_c2_theClockSignReachesTheDiagFlags(logger) {
+    var ok = true;
+    if ($.RrDiag.VERSION != 2) {
+        logger.error("RrDiag.VERSION is " + $.RrDiag.VERSION + ", expected 2 -- " +
+                     "the flags slot gained a bit and every recorded file's key moved");
+        ok = false;
+    }
+    var p = new RrProbe();
+    p.beginRowAt(-2000000000);
+    if ((p.diagAt($.RrDiag.I_FLAGS) & $.RrDiag.F_CLOCK_NEG) == 0) {
+        logger.error("F_CLOCK_NEG is clear after a session start on a negative " +
+                     "clock; flags = " + p.diagAt($.RrDiag.I_FLAGS));
+        ok = false;
+    }
+    if (p.diagAt($.RrDiag.I_VERSION) != 2) {
+        logger.error("slot 0 carries " + p.diagAt($.RrDiag.I_VERSION) + ", not 2");
+        ok = false;
+    }
+    // A positive clock leaves it clear, so the bit is a MEASUREMENT and not a
+    // constant. Without this half the fix could be "always set the bit".
+    var q = new RrProbe();
+    q.beginRowAt(1000);
+    if ((q.diagAt($.RrDiag.I_FLAGS) & $.RrDiag.F_CLOCK_NEG) != 0) {
+        logger.error("F_CLOCK_NEG is set after a session start on a POSITIVE clock");
+        ok = false;
+    }
+    // A probe that never started a row has never measured the clock, so the
+    // bit must be clear rather than null-derived garbage.
+    var r = new RrProbe();
+    if ((r.diagAt($.RrDiag.I_FLAGS) & $.RrDiag.F_CLOCK_NEG) != 0) {
+        logger.error("F_CLOCK_NEG is set on a probe that never started a row");
         ok = false;
     }
     return ok;

@@ -1515,6 +1515,19 @@ class StrongRowView extends Ui.View {
     // row. Init 0, which is why a probe with no session behaves exactly as
     // before. Round-2 review finding 2.
     hidden var mRrGapBaseMs;
+    // #70. Was System.getTimer() NEGATIVE when START was pressed? Read into
+    // rr_diag's flags slot as F_CLOCK_NEG.
+    //
+    // LATCHED HERE rather than read at readout, which is the opposite of the
+    // other two flag bits and is forced rather than stylistic: those two are
+    // set once in startSensor and never move, while the clock does. Reading
+    // the sign at stopAndSave would answer "what is the sign now", and a row
+    // that started at -30 s of counter and ended at +25 s would then report
+    // the wrong half. Written by rrDiagSessionReset and by nothing else.
+    //
+    // Init false, so a probe that never started a row reports "not negative"
+    // rather than an unset value reaching setData.
+    hidden var mRrClockNeg;
 
     // ================= app / workout state ==================================
     hidden var mSensorOk;
@@ -1676,6 +1689,7 @@ class StrongRowView extends Ui.View {
         mRrInvalidRec = packRr([]);
         mRrDiag       = $.RrDiag.newCounters();
         mRrGapBaseMs  = 0;
+        mRrClockNeg   = false;   // #70; measured at START, not here
         mStartMs    = 0;
         mStarted    = false;
         mRecFailed  = false;
@@ -2748,15 +2762,84 @@ class StrongRowView extends Ui.View {
     // Pure: is a timestamp `tsMs` fresh at `nowMs` within `threshMs`? Strict `<`
     // so it is behavior-preserving for the display indicator's old `< 5000` test.
     // A never-seen stamp (0) is not fresh.
+    //
+    // THE PRESENCE TEST IS `!= 0`, NOT `> 0`, and that is #70's negative half.
+    // System.getTimer() is a SIGNED 32-bit millisecond count from DEVICE start,
+    // so from 24.855 days of uptime to 49.71 days every stamp this app takes is
+    // negative. A sign test therefore answered "never seen" for a reading taken
+    // 100 ms ago, for the whole of that band. Measured on activity i183553852
+    // (v0.9, 56 minutes, uptime inside the band): rr_diag REC_STAGED = 0 with
+    // REC_INVALID = 13335 while BEAT_ACCEPT = 1597 -- clean beats staged on
+    // every tick and the 0xFFFF sentinel written over them regardless.
+    //
+    // 0 STILL MEANS NEVER-SEEN, and on a negative clock the guard is the ONLY
+    // thing that can say so: `now - 0` is then hugely negative and passes every
+    // "younger than X" test. Every stamp field initialises to 0 and every reset
+    // returns it to 0, so the sentinel is exactly as reliable as before.
+    // test_rr_c0_neverSeenIsStillNeverSeenOnANegativeClock pins that side.
+    //
+    // THE AGE TERM WAS ALREADY CORRECT and is untouched: two stamps in the same
+    // half of the signed cycle subtract exactly. What is NOT closed here is the
+    // WRAP CROSSING itself -- a stamp and a `now` on opposite sides of the seam
+    // -- which is #70's other direction and remains open. Do not read this
+    // function as rollover-safe.
     static function rrIsFresh(nowMs, tsMs, threshMs) {
-        return tsMs > 0 && (nowMs - tsMs) < threshMs;
+        return tsMs != 0 && (nowMs - tsMs) < threshMs;
     }
 
     // Pure: has the gap since the last RANGE-accepted beat exceeded `threshMs`, so
     // the next beat cannot be its consecutive successor? Strict `>` (gap == thresh is
     // not a gap). A never-seen stamp (0) is not a gap -- the first beat just seeds.
+    //
+    // `!= 0` for the reason rrIsFresh gives above, and the FAILURE IT FIXES IS
+    // THE OPPOSITE ONE. rrIsFresh's sign test failed closed (a live signal read
+    // as absent); this one's failed OPEN -- a real dropout read as no gap, so
+    // #16's adjacency reset never fired and the first beat after the dropout
+    // was diffed against a pre-dropout beat and fed to rMSSD as though the two
+    // were consecutive. The pair genuinely did not fail alike, which is what
+    // the caveat block above handleRrAt used to say and what #70 was filed on.
     static function rrGapExceeded(nowMs, lastBeatMs, threshMs) {
-        return lastBeatMs > 0 && (nowMs - lastBeatMs) > threshMs;
+        return lastBeatMs != 0 && (nowMs - lastBeatMs) > threshMs;
+    }
+
+    // Pure: the LATER of two stamps on one clock, where 0 means NEVER-SEEN and
+    // is therefore not a time at all.
+    //
+    // #70. The two rr_diag gap slots baseline their measurement at "the later
+    // of the previous arrival and the start of this row", and both sites wrote
+    // that as a bare `>` against a field that is 0 until it is first stamped.
+    // On a POSITIVE clock 0 loses every comparison, so the sentinel behaved
+    // like "no baseline" by accident. On a negative clock -- System.getTimer()
+    // between 24.855 and 49.71 days of uptime -- 0 WINS every comparison, so an
+    // unset baseline displaces a real stamp and the slot then measures nothing
+    // at all. Hoisted into one function so the two sites cannot disagree about
+    // what an unstamped baseline means, which is the shape #37 established for
+    // the range gate one screen up.
+    //
+    // ORDERING IS PLAIN `>`, NOT A DIFFERENCE, and that choice is about the
+    // NEVER-SEEN sentinel rather than about overflow: 0 has to be excluded
+    // before either form means anything, which is what the two early returns
+    // do. Two stamps in the same half of the signed cycle compare correctly
+    // with `>`. ACROSS the seam they do NOT -- a post-seam stamp is a large
+    // negative and loses to a pre-seam large positive that is EARLIER in real
+    // time, so this function returns the wrong one of the two. That is #70's
+    // other direction and stays out of scope; the cost here is bounded and
+    // diagnostic-only -- one gap slot baselined from the wrong end, on one
+    // batch, once every 49.71 days.
+    //
+    // ONE MILLISECOND IN 49.71 DAYS BEHAVES DIFFERENTLY, and it is not a
+    // regression: a session started at the instant System.getTimer() returns
+    // exactly 0 latches mRrGapBaseMs = 0, which this function then reads as
+    // never-seen for the whole row, silently reverting the two gap slots to
+    // their pre-#59 baseline. Every OTHER 0-sentinel collision self-heals on
+    // the next arrival; this one does not, because the baseline is stamped
+    // once. `0 > positive` was already false on v0.9, so d2cd8a6 behaves
+    // identically -- recorded here rather than fixed, because the alternative
+    // is a second sentinel and one gap slot is not worth it.
+    static function laterStamp(a, b) {
+        if (a == 0) { return b; }
+        if (b == 0) { return a; }
+        return (b > a) ? b : a;
     }
 
     // Pure: should startSession() declare the three CORE developer fields?
@@ -3195,14 +3278,17 @@ class StrongRowView extends Ui.View {
         // stalling. Compared directly rather than through the difference, so no
         // subtraction can overflow on the way to the test.
         //
-        // SCOPE, stated because the neighbouring hazard is an open question here:
-        // System.getTimer() is a 32-bit millisecond counter and WRAPS, but
-        // whether a wrap presents as a backwards step or as correct two's
-        // -complement arithmetic depends on Monkey C's overflow semantics, which
-        // nothing in this repository measures -- #70 owns that for the
-        // pre-existing rrIsFresh / hrHave pair and this does not add to it. The
-        // guard is written so either answer is safe: worst case one window's
-        // delay, once every 24.85 days.
+        // SCOPE, stated because the neighbouring hazard was an open question
+        // when this was written and is no longer one. System.getTimer() is a
+        // SIGNED 32-bit millisecond counter and WRAPS, and Monkey C's
+        // ADDITION at that seam is measured, not assumed:
+        // test_rr_c0_stampArithmeticOnANegativeClock logs it on every CI run --
+        // 2147483647 + 1 evaluates to -2147483648 -- so the wrap presents as a
+        // large BACKWARDS step and this guard sees it. #70 still owns the
+        // crossing itself for the rrIsFresh / hrHave pair and this does not add
+        // to it. Worst case one window's delay, once every 49.71 days: the
+        // counter has exactly one backwards step per cycle, at 2147483647 ->
+        // -2147483648, and the -1 -> 0 transition is forwards.
         if (now < since) { return [cur, want, now]; }
 
         var need = (want == $.CUEZ_IN) ? $.CUE_PERSIST_IN_MS
@@ -3944,34 +4030,49 @@ class StrongRowView extends Ui.View {
     //
     // TWO independent conditions, and #110 requires both: an EXPLICIT
     // "have we ever had a reading" flag, AND freshness. Never `bpm > 0`.
-    // `lastMs > 0` is a third, cheap consistency check on the stamp itself --
-    // it is not the presence test, it backs one up.
+    // The `lastMs != 0` term is a third, cheap consistency check on the stamp
+    // itself -- it is not the presence test, it backs one up.
     //
     // Two corrections to an earlier revision of this comment, both mine:
     // System.getTimer() counts from DEVICE start, not app start, and it is a
-    // 32-bit millisecond counter, so it WRAPS. Around a wrap `nowMs - lastMs`
-    // goes large-negative and `< threshMs` reads as fresh -- measured,
-    // hrHave(true, 2147483000, -2147483000, 5000) is true.
+    // 32-bit millisecond counter, so it WRAPS.
     //
-    // NOT FIXED HERE, deliberately. rrIsFresh above is byte-for-byte the same
-    // shape and predates this change, so this is an existing repository-wide
-    // pattern rather than something #110 introduces, and **#70** owns it.
-    // Fixing it in one of the two would leave the pair disagreeing about a
-    // shared hazard, which is worse than a consistent one that is tracked. If
-    // #70 is taken, a `(nowMs - lastMs) >= 0` term closes it in both.
+    // A THIRD CORRECTION, AND THEN A DELETION. A worked example about the
+    // seam stood here and was withdrawn; a replacement argument about what
+    // the seam does was then written beside it, and it was wrong too. Three
+    // consecutive review rounds found a defect in this paragraph's account of
+    // the seam, so under FIX_ROUND.md section 6 the account is DELETED rather
+    // than written a fourth time. Neither the example nor the arithmetic is
+    // reproduced here; reproducing a withdrawn claim is how it survives its
+    // own retraction. What is left is the state of knowledge, below.
     //
-    // SECOND WRAP DIRECTION, and #70's stated scope does NOT close it. The
-    // `lastMs > 0` term reads a LIVE heart rate as absent across the whole
-    // negative half of the counter's cycle: on the same premise used above,
-    // mLastHrMs = System.getTimer() is itself negative there, so the term is
-    // false however fresh the reading is, and hrHave returns false on every
-    // subsequent frame. A `>= 0` difference term does not help -- the guard
-    // that fails is the timestamp's own sign.
+    // THE WRAP CROSSING IS STILL NOT FIXED HERE, and **#70** still owns it.
+    // rrIsFresh above is the same shape and the pair must not diverge about a
+    // shared hazard, so if it is taken it is taken in both together. A
+    // `(nowMs - lastMs) >= 0` term is the candidate.
     //
-    // Left as-is on purpose. It fails to NO-DATA, which is the correct
-    // direction to fail and is visually distinct; the opposite error would
-    // render a stale reading as live. Recorded here so #70 sees both
-    // directions rather than only the one it was filed for.
+    // THE NEGATIVE HALF IS FIXED, and this paragraph is the retraction of the
+    // one that stood here on v0.9. It read "Left as-is on purpose. It fails to
+    // NO-DATA, which is the correct direction to fail" -- and that judgement
+    // was wrong twice over. It priced a 24.9-day window as theoretical when
+    // System.getTimer() spends HALF of every 49.71-day cycle negative, and it
+    // called a whole row of blank heart rate an acceptable failure. Activity
+    // i183553852 settled it: 56 minutes with the arc on its no-data track from
+    // the first frame to the last while Garmin's own heart_rate field averaged
+    // 118.6 bpm over the same row. The guard is `!= 0` now -- the same respell
+    // rrIsFresh, rrGapExceeded and CoreTempSensor.ctIsFresh took in the same
+    // commit, because a sign test is not a presence test.
+    //
+    // WHAT THAT DOES NOT BUY, as three facts and no mechanism.
+    //   1. Monkey C's Number ADDITION was measured to wrap two's-complement in
+    //      the simulator -- logged, not asserted, by
+    //      test_rr_c0_stampArithmeticOnANegativeClock.
+    //   2. SUBTRACTION across the seam is measured nowhere in this tree, and
+    //      subtraction is what this line performs.
+    //   3. The seam crossing is therefore OUT OF SCOPE here and #70 stays open
+    //      for it.
+    // No fourth sentence describing what happens across the seam. Every
+    // attempt at one so far has been wrong.
     //
     // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
     // freshness is about R-R batch arrival and this is about a bpm read. Two
@@ -4211,7 +4312,7 @@ class StrongRowView extends Ui.View {
     }
 
     static function hrHave(ever, lastMs, nowMs, threshMs) {
-        return ever && lastMs > 0 && (nowMs - lastMs) < threshMs;
+        return ever && lastMs != 0 && (nowMs - lastMs) < threshMs;
     }
 
     // The freshness clock, as one overridable call.
@@ -4552,13 +4653,36 @@ class StrongRowView extends Ui.View {
     // downward. An adjacency test based on range membership cannot see this
     // class; only a model of the beat train could, and none is proposed here.
     //
-    // Clock caveat: NEITHER freshness helper has been analysed across a
-    // System.getTimer() rollover (~24.9 days IF the counter is signed 32-bit
-    // -- itself unmeasured), and by inspection the two would NOT fail alike
-    // (the tsMs > 0 guards cut opposite ways); treat rollover behaviour as
-    // unspecified -- #70. Adding a third consumer of rrIsFresh does not change
-    // that and does not make it worse; it does make #70 apply to one more
-    // field, which is said here rather than left to be discovered.
+    // Clock caveat, in two halves that have different answers now.
+    //
+    // THE NEGATIVE HALF IS FIXED. System.getTimer() IS a signed 32-bit count
+    // from device start -- no longer "IF", it is what activity i183553852
+    // recorded -- so it is negative from 24.855 days of uptime to 49.71 days.
+    // Both helpers used to test the SIGN of a stamp to decide whether it had
+    // ever been set, and by inspection they did NOT fail alike: rrIsFresh
+    // failed closed (a live batch read as absent, so rr_interval wrote the
+    // sentinel over 13,335 records of that row) and rrGapExceeded failed open
+    // (a real dropout read as no gap). Both now test `!= 0`, so a stamp of 0
+    // still means never-seen and the sign carries no meaning at all.
+    //
+    // THE WRAP CROSSING IS NOT FIXED and #70 stays open for it. No mechanism is
+    // stated: three review rounds found a defect in this branch's account of
+    // what happens across the seam, so under FIX_ROUND.md section 6 the account
+    // is deleted rather than written again. Adding a consumer of rrIsFresh
+    // still adds a field to that exposure, which is said here rather than left
+    // to be discovered.
+    //
+    // Monkey C's Number ADDITION wraps two's-complement rather than promoting
+    // or throwing -- measured in the CI container (SDK 9.2.0, fr965):
+    // 2147483647 + 1 evaluates to -2147483648. That is logged, not asserted,
+    // by test_rr_c0_stampArithmeticOnANegativeClock.
+    //
+    // ONLY `+` WAS MEASURED. An earlier revision of this paragraph generalised
+    // it to "Number arithmetic", which over-reaches from one observation:
+    // SUBTRACTION across the seam is measured nowhere in this tree, and it is
+    // the operation the freshness helpers actually perform. Settling it is a
+    // one-line addition to the c0 logging case and therefore a new c0 commit,
+    // not this one. Until it is settled, nothing here says what the seam does.
     // -------------------------------------------------------------------------
 
     // Pure: how does the R-R range gate classify ONE raw interval element?
@@ -4622,9 +4746,17 @@ class StrongRowView extends Ui.View {
         // here -- and the running max makes it stick for the row. mRrGapBaseMs
         // is 0 until a session has started, so before START, and in any probe
         // that never starts one, this is exactly the old measurement.
-        var bBase = mLastRrMs;
-        if (mRrGapBaseMs > bBase) { bBase = mRrGapBaseMs; }
-        if (bBase > 0) {
+        //
+        // #70: THE "LATER OF" IS laterStamp, NOT `>`, and the outer guard is
+        // `!= 0`. Both terms were sign-dependent and both were wrong on a
+        // negative System.getTimer(), in DIFFERENT ways: the outer `> 0`
+        // suppressed the slot entirely, and the bare `>` let the 0 sentinel
+        // WIN the comparison, so an unset baseline displaced a real stamp and
+        // the slot would have measured from nothing even with the outer guard
+        // fixed. laterStamp holds "0 means never-seen" in one place for both
+        // this site and the beat slot below.
+        var bBase = laterStamp(mLastRrMs, mRrGapBaseMs);
+        if (bBase != 0) {
             var bg = (now - bBase) / 1000;
             if (bg > mRrDiag[$.RrDiag.I_MAXGAP_BATCH]) {
                 mRrDiag[$.RrDiag.I_MAXGAP_BATCH] = bg;
@@ -4729,13 +4861,17 @@ class StrongRowView extends Ui.View {
         // least one beat"; it is exactly the assignment above.
         //
         // Baselined at the start of this row, for the same reason and by the
-        // same rule as the batch slot above. `prevBeatMs > 0` stays as the
+        // same rule as the batch slot above. `prevBeatMs != 0` stays as the
         // "has a beat EVER been range-accepted?" test -- that question is
         // about the stamp, not about the measurement window -- and only the
         // subtrahend moves.
-        var pBase = prevBeatMs;
-        if (mRrGapBaseMs > pBase) { pBase = mRrGapBaseMs; }
-        if (prevBeatMs > 0 && mLastBeatMs == now) {
+        //
+        // #70: respelled from `prevBeatMs > 0`, and the "later of" is
+        // laterStamp rather than `>`, for the reasons given at the batch slot
+        // above. Both sites are wrong in the same two ways on a negative
+        // clock, so both take the same two corrections.
+        var pBase = laterStamp(prevBeatMs, mRrGapBaseMs);
+        if (prevBeatMs != 0 && mLastBeatMs == now) {
             var pg = (now - pBase) / 1000;
             if (pg > mRrDiag[$.RrDiag.I_MAXGAP_BEAT]) {
                 mRrDiag[$.RrDiag.I_MAXGAP_BEAT] = pg;
@@ -4775,13 +4911,21 @@ class StrongRowView extends Ui.View {
     // $.RrDiag.SLOTS; neither may substitute a literal.
     // test_rr_c1_diagSnapshotShape pins this side.
     //
-    // FLAGS ARE READ HERE, NOT LATCHED, because both bits are set synchronously
-    // in startSensor -- whose sole caller is onLayout -- and never change
-    // afterwards. That is the opposite of ct_diag's flags, which have to be
-    // latched at close() because the ANT channel is torn down first.
-    // The SESSION-SCOPE reset of the receive-path diagnostic: the counters and
-    // the gap baseline, together, because they are one fact ("this row starts
-    // here") and separating them is exactly the defect round 2 found.
+    // TWO OF THE THREE FLAGS ARE READ HERE, NOT LATCHED, because F_RR_REGISTERED
+    // and F_SENSOR_OK are set synchronously in startSensor -- whose sole caller
+    // is onLayout -- and never change afterwards. That is the opposite of
+    // ct_diag's flags, which have to be latched at close() because the ANT
+    // channel is torn down first.
+    //
+    // #70's F_CLOCK_NEG IS THE EXCEPTION and is LATCHED, in
+    // rrDiagSessionReset, because it is a property of ONE instant and the
+    // clock moves. Reading the sign here would answer "what is the sign at
+    // save time", and a row that started at -30 s of counter and ended at
+    // +25 s would then report the wrong half of the cycle.
+    // The SESSION-SCOPE reset of the receive-path diagnostic: the counters,
+    // the gap baseline and the clock-sign latch, together, because they are
+    // one fact ("this row starts here") and separating them is exactly the
+    // defect round 2 found.
     //
     // A FUNCTION RATHER THAN TWO LINES IN startSession, for a reason that is
     // about testability and is stated so nobody inlines it back. No (:test) in
@@ -4795,6 +4939,10 @@ class StrongRowView extends Ui.View {
     hidden function rrDiagSessionReset(now) {
         mRrDiag      = $.RrDiag.newCounters();
         mRrGapBaseMs = now;
+        // #70. The sign of System.getTimer() AT START, latched here because
+        // this is the one place that sees that instant. 0 counts as
+        // not-negative: it is a legitimate reading at device boot.
+        mRrClockNeg  = (now < 0);
     }
 
     hidden function rrDiagSnapshot() {
@@ -4804,8 +4952,9 @@ class StrongRowView extends Ui.View {
         }
         a[$.RrDiag.I_VERSION] = $.RrDiag.VERSION;
         var f = 0;
-        if (mRrOk)     { f |= $.RrDiag.F_RR_REGISTERED; }
-        if (mSensorOk) { f |= $.RrDiag.F_SENSOR_OK; }
+        if (mRrOk)      { f |= $.RrDiag.F_RR_REGISTERED; }
+        if (mSensorOk)  { f |= $.RrDiag.F_SENSOR_OK; }
+        if (mRrClockNeg) { f |= $.RrDiag.F_CLOCK_NEG; }   // #70, latched at START
         a[$.RrDiag.I_FLAGS] = f;
         return a;
     }
