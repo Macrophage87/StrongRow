@@ -211,6 +211,109 @@ function arrEq(got, exp, logger, what) {
     return ok;
 }
 
+// ---------------------------------------------------------------------------
+// #70, the NEGATIVE-CLOCK half. c0 pins: green before the fix and after it.
+// ---------------------------------------------------------------------------
+// System.getTimer() is a SIGNED 32-bit millisecond count from device start, so
+// between 24.855 and 49.71 days of uptime every stamp this app takes is
+// NEGATIVE. Activity i183553852 (recorded on v0.9) was rowed inside that band.
+//
+// The fix makes "has this ever been stamped?" sign-agnostic -- `!= 0` instead
+// of `> 0`. The two cases below pin the two premises that fix rests on, and
+// both must hold in EVERY epoch of the change:
+//
+//   * 0 must keep meaning never-seen, INCLUDING on a negative clock, where the
+//     age term alone would say "fresh" (this case);
+//   * the age term `now - stamp` must be exact for two stamps in the same half
+//     of the signed cycle (the case after it).
+//
+// A ZERO STAMP IS STILL ABSENT, and on a negative clock the presence guard is
+// the ONLY thing that can produce that answer. With now = -2,000,000,000 the
+// age of a never-seen stamp is `now - 0` = -2,000,000,000, which is less than
+// any threshold, so deleting the guard makes an unstamped field read FRESH
+// forever. That is the failure this fix must not introduce while removing the
+// sign test -- #54 recorded the positive-clock version of the same trap one
+// file over (source/RrRecordTest.mc, test_rr_isFresh_states).
+//
+// Calls the SHIPPING helpers, all four of them, so it cannot pass against a
+// private copy of the comparison.
+(:test) function test_rr_c0_neverSeenIsStillNeverSeenOnANegativeClock(logger) {
+    var ok = true;
+    var neg = -2000000000;
+    if (StrongRowView.rrIsFresh(neg, 0, 5000) != false) {
+        logger.error("rrIsFresh: a never-seen stamp read FRESH on a negative " +
+                     "clock -- now - 0 is hugely negative and passes < thresh");
+        ok = false;
+    }
+    if (StrongRowView.hrHave(true, 0, neg, 5000) != false) {
+        logger.error("hrHave: a never-seen stamp read PRESENT on a negative clock");
+        ok = false;
+    }
+    if (CoreTempSensor.ctIsFresh(neg, 0, 5000) != false) {
+        logger.error("ctIsFresh: a never-seen stamp read FRESH on a negative clock");
+        ok = false;
+    }
+    // rrGapExceeded's comparison is `>`, so a zero stamp pushes the result the
+    // same way the guard does and the guard is NOT load-bearing here. Asserted
+    // anyway, and the asymmetry is named rather than left to be rediscovered --
+    // it is the exact shape #54 found in test_rr_isFresh_states.
+    if (StrongRowView.rrGapExceeded(neg, 0, 2500) != false) {
+        logger.error("rrGapExceeded: a never-seen stamp read as a GAP");
+        ok = false;
+    }
+    return ok;
+}
+
+// PLATFORM CHARACTERIZATION, not a logic pin, and it is labelled as one because
+// this repository's dominant defect is a claim stronger than its evidence.
+//
+// The fix's correctness argument is "within either half of the signed cycle,
+// `now - stamp` is exact, so only the presence term was wrong". Nothing in this
+// repository had ever measured Monkey C's Number arithmetic near the 32-bit
+// bounds, so that sentence rested on the language reference alone. The first
+// block measures it.
+//
+// The overflow question is DELIBERATELY LOGGED AND NOT ASSERTED. Whether
+// 2147483647 + 1 wraps to -2147483648, promotes to a Long, or throws decides
+// what happens at the ONE-MINUTE-IN-49.7-DAYS crossing, which is #70's other
+// direction and is NOT fixed by this change. Asserting a value here would pin a
+// guess; logging it puts the measurement in the run log where the next reader
+// can take it. The operands come out of an array so the compiler cannot
+// constant-fold the expression into a literal and turn this into a pin on the
+// compiler rather than on the runtime.
+(:test) function test_rr_c0_stampArithmeticOnANegativeClock(logger) {
+    var ok = true;
+    // 100 ms apart, both deep in the negative half.
+    if ((-1999999900) - (-2000000000) != 100) {
+        logger.error("subtracting two negative stamps 100 ms apart did not give " +
+                     "100 -- the whole 'only the presence term was wrong' " +
+                     "argument depends on this being exact");
+        ok = false;
+    }
+    // The same subtraction with the operands hidden from constant folding.
+    var st = [-2000000000, -1999999900];
+    if (st[1] - st[0] != 100) {
+        logger.error("the same subtraction through variables gave " + (st[1] - st[0]));
+        ok = false;
+    }
+    // And the premise that makes `!= 0` a different test from `> 0`.
+    if (st[0] == 0 || st[0] > 0) {
+        logger.error("a large negative literal did not compare as negative");
+        ok = false;
+    }
+    // MEASURED, NOT ASSERTED -- see the note above. In a try/catch because
+    // "it throws" is one of the three candidate answers, and a case that ERRORS
+    // while measuring an open question would be indistinguishable from a real
+    // regression in the run this file's red evidence comes from.
+    var ov = [2147483647, 1];
+    try {
+        logger.debug("MEASURE #70-wrap: 2147483647 + 1 evaluates to " + (ov[0] + ov[1]));
+    } catch (e) {
+        logger.debug("MEASURE #70-wrap: 2147483647 + 1 THREW");
+    }
+    return ok;
+}
+
 }
 
 module RrHrv {
