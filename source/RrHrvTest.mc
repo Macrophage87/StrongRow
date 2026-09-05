@@ -278,9 +278,12 @@ function arrEq(got, exp, logger, what) {
 // what happens at the ONE-MINUTE-IN-49.7-DAYS crossing, which is #70's other
 // direction and is NOT fixed by this change. Asserting a value here would pin a
 // guess; logging it puts the measurement in the run log where the next reader
-// can take it. The operands come out of an array so the compiler cannot
-// constant-fold the expression into a literal and turn this into a pin on the
-// compiler rather than on the runtime.
+// can take it. The operands come out of an array
+// so the compiler is not handed a literal to fold. Measured on fr965: it folds
+// an `if` whose condition is a compile-time constant and says so ("Statement is
+// not reachable"), and it emits no such diagnostic for the plain-literal
+// comparison at the top of this function -- so it leaves literal integer
+// arithmetic to the runtime here either way.
 (:test) function test_rr_c0_stampArithmeticOnANegativeClock(logger) {
     var ok = true;
     // 100 ms apart, both deep in the negative half.

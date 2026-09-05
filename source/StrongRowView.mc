@@ -2816,12 +2816,26 @@ class StrongRowView extends Ui.View {
     // what an unstamped baseline means, which is the shape #37 established for
     // the range gate one screen up.
     //
-    // ORDERING IS PLAIN `>`, NOT A DIFFERENCE. Two stamps in the same half of
-    // the signed cycle compare correctly with `>`, and a difference form would
-    // be relying on two's-complement wraparound that nothing here has measured
-    // (see test_rr_c0_stampArithmeticOnANegativeClock, which LOGS that question
-    // rather than answering it). The wrap crossing itself stays out of scope --
-    // #70's other direction.
+    // ORDERING IS PLAIN `>`, NOT A DIFFERENCE, and that choice is about the
+    // NEVER-SEEN sentinel rather than about overflow: 0 has to be excluded
+    // before either form means anything, which is what the two early returns
+    // do. Two stamps in the same half of the signed cycle compare correctly
+    // with `>`. ACROSS the seam they do NOT -- a post-seam stamp is a large
+    // negative and loses to a pre-seam large positive that is EARLIER in real
+    // time, so this function returns the wrong one of the two. That is #70's
+    // other direction and stays out of scope; the cost here is bounded and
+    // diagnostic-only -- one gap slot baselined from the wrong end, on one
+    // batch, once every 49.71 days.
+    //
+    // ONE MILLISECOND IN 49.71 DAYS BEHAVES DIFFERENTLY, and it is not a
+    // regression: a session started at the instant System.getTimer() returns
+    // exactly 0 latches mRrGapBaseMs = 0, which this function then reads as
+    // never-seen for the whole row, silently reverting the two gap slots to
+    // their pre-#59 baseline. Every OTHER 0-sentinel collision self-heals on
+    // the next arrival; this one does not, because the baseline is stamped
+    // once. `0 > positive` was already false on v0.9, so d2cd8a6 behaves
+    // identically -- recorded here rather than fixed, because the alternative
+    // is a second sentinel and one gap slot is not worth it.
     static function laterStamp(a, b) {
         if (a == 0) { return b; }
         if (b == 0) { return a; }
@@ -3264,14 +3278,17 @@ class StrongRowView extends Ui.View {
         // stalling. Compared directly rather than through the difference, so no
         // subtraction can overflow on the way to the test.
         //
-        // SCOPE, stated because the neighbouring hazard is an open question here:
-        // System.getTimer() is a 32-bit millisecond counter and WRAPS, but
-        // whether a wrap presents as a backwards step or as correct two's
-        // -complement arithmetic depends on Monkey C's overflow semantics, which
-        // nothing in this repository measures -- #70 owns that for the
-        // pre-existing rrIsFresh / hrHave pair and this does not add to it. The
-        // guard is written so either answer is safe: worst case one window's
-        // delay, once every 24.85 days.
+        // SCOPE, stated because the neighbouring hazard was an open question
+        // when this was written and is no longer one. System.getTimer() is a
+        // SIGNED 32-bit millisecond counter and WRAPS, and Monkey C's
+        // ADDITION at that seam is measured, not assumed:
+        // test_rr_c0_stampArithmeticOnANegativeClock logs it on every CI run --
+        // 2147483647 + 1 evaluates to -2147483648 -- so the wrap presents as a
+        // large BACKWARDS step and this guard sees it. #70 still owns the
+        // crossing itself for the rrIsFresh / hrHave pair and this does not add
+        // to it. Worst case one window's delay, once every 49.71 days: the
+        // counter has exactly one backwards step per cycle, at 2147483647 ->
+        // -2147483648, and the -1 -> 0 transition is forwards.
         if (now < since) { return [cur, want, now]; }
 
         var need = (want == $.CUEZ_IN) ? $.CUE_PERSIST_IN_MS
@@ -4018,9 +4035,17 @@ class StrongRowView extends Ui.View {
     //
     // Two corrections to an earlier revision of this comment, both mine:
     // System.getTimer() counts from DEVICE start, not app start, and it is a
-    // 32-bit millisecond counter, so it WRAPS. Around a wrap `nowMs - lastMs`
-    // goes large-negative and `< threshMs` reads as fresh -- measured,
-    // hrHave(true, 2147483000, -2147483000, 5000) is true.
+    // 32-bit millisecond counter, so it WRAPS.
+    //
+    // A THIRD CORRECTION, and this one RETRACTS the example that stood here.
+    // The line read "Around a wrap `nowMs - lastMs` goes large-negative and
+    // `< threshMs` reads as fresh -- measured, hrHave(true, 2147483000,
+    // -2147483000, 5000) is true." The observation is right and the conclusion
+    // drawn from it is wrong: under two's-complement wrapping that subtraction
+    // is 1296, which IS the true age of that pair, so `true` is the CORRECT
+    // answer and the example demonstrates nothing about the hazard. It is
+    // withdrawn as evidence rather than reworded. What actually breaks across
+    // the seam is stated below.
     //
     // THE WRAP CROSSING IS STILL NOT FIXED HERE, and **#70** still owns it.
     // rrIsFresh above is the same shape and the pair must not diverge about a
@@ -4040,8 +4065,13 @@ class StrongRowView extends Ui.View {
     // commit, because a sign test is not a presence test.
     //
     // WHAT THAT DOES NOT BUY. Sign-agnostic is not rollover-safe: a stamp and
-    // a `now` on OPPOSITE sides of the seam still subtract to a large negative
-    // difference and still read fresh. One minute in 49.71 days, and #70's.
+    // a `now` on OPPOSITE sides of the seam still compare in the WRONG
+    // ORDER -- a post-seam stamp is a large negative and loses `>` to a
+    // pre-seam large positive that is EARLIER in real time.
+    // What the DIFFERENCE term does there depends on whether Monkey C's `-` wraps
+    // two's-complement the way its `+` was measured to; only `+` has been measured
+    // (test_rr_c0_stampArithmeticOnANegativeClock), so treat the crossing as
+    // UNSPECIFIED rather than as a known false-fresh. #70's other direction.
     //
     // Shaped like rrIsFresh above, deliberately not calling it: the RR pip's
     // freshness is about R-R batch arrival and this is about a bpm read. Two
@@ -4635,16 +4665,28 @@ class StrongRowView extends Ui.View {
     // still means never-seen and the sign carries no meaning at all.
     //
     // THE WRAP CROSSING IS NOT FIXED and #70 stays open for it: a stamp and a
-    // `now` on opposite sides of the seam subtract to a large negative
-    // difference, and `< threshMs` reads that as fresh. One minute in 49.71
-    // days. Adding a consumer of rrIsFresh still adds a field to that
-    // exposure, which is said here rather than left to be discovered.
+    // `now` on opposite sides of the seam still compare in the WRONG
+    // ORDER -- a post-seam stamp is a large negative and loses `>` to a
+    // pre-seam large positive that is EARLIER in real time.
+    // What the DIFFERENCE term does there depends on whether Monkey C's `-` wraps
+    // two's-complement the way its `+` was measured to; only `+` has been measured
+    // (test_rr_c0_stampArithmeticOnANegativeClock), so treat the crossing as
+    // UNSPECIFIED rather than as a known false-fresh. #70's other direction.
+    // Adding a consumer of rrIsFresh still adds a field to that exposure,
+    // which is said here rather than left to be discovered.
     //
-    // Monkey C's Number arithmetic wraps two's-complement rather than
-    // promoting or throwing -- measured in the CI container (SDK 9.2.0,
-    // fr965): 2147483647 + 1 evaluates to -2147483648. That is logged, not
-    // asserted, by test_rr_c0_stampArithmeticOnANegativeClock, and it is what
-    // makes the crossing an arithmetic question rather than a crash.
+    // Monkey C's Number ADDITION wraps two's-complement rather than promoting
+    // or throwing -- measured in the CI container (SDK 9.2.0, fr965):
+    // 2147483647 + 1 evaluates to -2147483648. That is logged, not asserted,
+    // by test_rr_c0_stampArithmeticOnANegativeClock, and it is what makes the
+    // crossing an arithmetic question rather than a crash.
+    //
+    // ONLY `+` WAS MEASURED. An earlier revision of this paragraph generalised
+    // it to "Number arithmetic", which over-reaches from one observation:
+    // SUBTRACTION across the seam is measured nowhere in this tree, and it is
+    // the operation the freshness helpers actually perform. Settling it is a
+    // one-line addition to the c0 logging case and therefore a new c0 commit,
+    // not this one.
     // -------------------------------------------------------------------------
 
     // Pure: how does the R-R range gate classify ONE raw interval element?

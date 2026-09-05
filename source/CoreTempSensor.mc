@@ -587,8 +587,12 @@ class CoreTempSensor {
     // passes every threshold. All four stamps here initialise to 0.
     //
     // NOT ROLLOVER-SAFE. A stamp and a `now` on OPPOSITE sides of the wrap
-    // still subtract to a large negative difference and still read fresh --
-    // #70's other direction, still open.
+    // still compare in the WRONG ORDER -- a post-seam stamp is a large negative
+    // and loses `>` to a pre-seam large positive that is EARLIER in real time.
+    // What the DIFFERENCE term does there depends on whether Monkey C's `-` wraps
+    // two's-complement the way its `+` was measured to; only `+` has been measured
+    // (test_rr_c0_stampArithmeticOnANegativeClock), so treat the crossing as
+    // UNSPECIFIED rather than as a known false-fresh. #70's other direction.
     static function ctIsFresh(nowMs, tsMs, threshMs) {
         return tsMs != 0 && (nowMs - tsMs) < threshMs;
     }
