@@ -127,4 +127,4 @@ suite measurement (`GATE_PROTOCOL.md` §4) — they are per-mutation by nature.
 * **Never kill a shared simulator** (`FACTS.md` §4.5).
 * **Never write a developer key into the workspace** (`FACTS.md` §4.4).
 * **`set -o pipefail`** for anything whose result you quote (`FACTS.md` §2.6).
-* **Device target**: `fr965` for the suite; the release build compiles all 12.
+* **Device target**: `fr965` for the suite; the release build compiles all 19.

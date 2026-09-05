@@ -106,7 +106,7 @@ parse** in `manifest-lint`, so the two can't silently diverge.
 ### `run-tests` — the suites are actually executed
 
 Landed for #42. `compile-unit-test` proves the `(:test)` suites *compile* on all
-12 devices; `run-tests` proves they *pass*. What that buys, precisely: a test
+19 devices; `run-tests` proves they *pass*. What that buys, precisely: a test
 that fails, errors, is renamed, or is added unpinned now reds CI, where before
 it stayed green forever. A test that *disappears* reds CI **only if its pin
 line survives** — delete both together and everything passes (the
@@ -122,7 +122,7 @@ assertions are *meaningful* — see "What this does and does not buy" below.
 2. `export HOME=/root` — the runner starts container jobs with
    `HOME=/github/home`, but that devices path is hard-coded in the SDK;
 3. throwaway `openssl` key, then compile **one** device `--unit-test` (the tests
-   are device-independent; `compile-unit-test` already covers all 12);
+   are device-independent; `compile-unit-test` already covers all 19);
 4. `Xvfb :99 -screen 0 1280x1024x24` — the explicit 24-bit depth is required;
    with no `-screen` spec Xvfb defaults to depth 8 and the GTK/WebKit simulator
    dies instantly. Wait for the X socket, **aborting** on timeout;

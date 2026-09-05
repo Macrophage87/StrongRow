@@ -52,7 +52,7 @@ phrase has four concrete meanings here, all verified in `FACTS.md` §3.2:
 | | Here |
 |---|---|
 | **0** | a `(:test)` already covers the seam, or one of the runner-free checkers derives it (`check_ceiling_notes`, `check_pip_geometry`, `check_step_fields`, `check_mc_literals`, `check_source_refs`, `check_agent_facts`) |
-| **1** | a `(:test)` **could** cover it and this change adds one; compile-only coverage across the twelve devices |
+| **1** | a `(:test)` **could** cover it and this change adds one; compile-only coverage across the nineteen devices |
 | **2** | only a static check can see it — anything that needs a `Session`, because **no `(:test)` can obtain one**, so `createField` is unreachable from the suite |
 | **3** | **no `(:test)` can obtain a graphics `Dc`**, so real font metrics, clipping and rendering are invisible; **a comment cannot be red by any test**, because comments are stripped from the build; **nothing here decodes a file this app actually wrote**; and anything needing a real pod, a real erg or on-water conditions is **field-only** and belongs in a `[Local]` issue |
 

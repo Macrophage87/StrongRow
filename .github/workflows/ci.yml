@@ -329,7 +329,7 @@ jobs:
   #    rc is collected; the job fails if any single device fails to compile.
   compile-unit-test:
     runs-on: ubuntu-latest
-    # Generous multiple of the observed run time (image pull + 12 device
+    # Generous multiple of the observed run time (image pull + 19 device
     # compiles); the point is that a hang fails instead of holding the merge
     # gate for the 360-minute default.
     timeout-minutes: 30
@@ -635,7 +635,7 @@ jobs:
         # artifact publication is withheld for forks.
         if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         # Same reasoning as run-tests' log upload: this job is required, so a
-        # blob-storage flake must not red a build whose 12 devices all
+        # blob-storage flake must not red a build whose 19 devices all
         # compiled — an availability dependency on the merge gate that buys
         # nothing. The guard stands on that principle alone: no upload failure
         # has actually been observed (an earlier claim here citing run
