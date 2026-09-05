@@ -28,9 +28,10 @@ WHAT IT IS NOT. This is a PYTHON TRANSCRIPTION of the Monkey C, not the Monkey
 C itself; an offline replay cannot call into a .prg. The drift is closed from
 both ends, the same way cue_replay.py closes it:
 
-  * the four functions in THE TRANSCRIPTION below are transcribed line for line
-    with the Monkey C they mirror quoted beside them (source/StrongRowView.mc,
-    fastGate / gatedRate / harmonicOfLock / lockHarmTol);
+  * the three functions in THE TRANSCRIPTION below are transcribed line for
+    line with the Monkey C they mirror quoted beside them
+    (source/StrongRowView.mc, fastGate / gatedRate / harmonicOfLock), and the
+    tunable beside them carries the value of the const it mirrors;
   * scripts/test_lock_snap_replay.py re-asserts, against THIS transcription,
     the same numeric vectors source/LockGuardTest.mc asserts against the
     shipping Monkey C. Editing either side alone reds one of the two suites.
@@ -71,9 +72,19 @@ FAST_NEEDS_LOCK = 30.0
 LOCK_REL_K = 1.5
 LOCK_GATE_FLOOR = 20.0
 
-# StrongRowView.lockHarmTol(). A static function and not a const on either
-# side: on the Monkey C side a file-scope const costs a fenix6 `globals`
-# member, and the headroom is four. The value is argued in THE SWEEP below.
+# Mirrors the module-scope const $.LOCK_HARM_TOL. The value is argued in THE
+# SWEEP below, and is MEASURED rather than chosen.
+#
+# RETRACTION, this branch, c2c. An earlier revision of this line said the
+# Monkey C side had to be a class static because "a file-scope const costs a
+# fenix6 `globals` member, and the headroom is four". That is FALSE, and the
+# refutation was already in the tree when it was written: the measured ceiling
+# note at scripts/list_tests.py:78-87 states "Every file-scope (:test), helper
+# function and test class costs one member; A MODULE-SCOPE CONST COSTS NONE
+# (it is inlined)", and source/StrongRowView.mc:119-138 moved four consts to
+# module scope for exactly that reason. So the shipping side is a plain const
+# beside MIN_RATE / MAX_RATE / LOCK_SNAP_K / FAST_NEEDS_LOCK, as this file's
+# other tunables are.
 LOCK_HARM_TOL = 0.10
 
 

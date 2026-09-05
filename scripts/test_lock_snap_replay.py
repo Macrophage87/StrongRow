@@ -4,7 +4,7 @@
 THREE JOBS, and the first is the one that matters.
 
 1. THE TRANSCRIPTION IS PINNED AGAINST THE SHIPPING MONKEY C. lock_snap_replay
-   is a Python rewrite of StrongRowView.fastGate / gatedRate / harmonicOfLock,
+   is a Python rewrite of StrongRowView.fastGate / gatedRate / harmonicOfLock
    and a rewrite that drifts from its original proves nothing about the
    original. So every vector in section A is a vector source/LockGuardTest.mc
    ALREADY ASSERTS against the real Monkey C -- the same medians, the same lock
