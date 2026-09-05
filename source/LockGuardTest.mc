@@ -480,14 +480,15 @@ module Lock {
 
 // A DISAGREEMENT THAT IS NOT A HARMONIC STILL SNAPS -- green in EVERY epoch.
 //
-// The guard #193 adds refuses the snap only at a near-2:1 or near-3:1 ratio.
+// The guard #193 adds refuses the snap ONLY at a near-2:1 ratio (round 1 of
+// #196 also refused near-3:1; that band was deleted in r2-c3).
 // This case is the other half of that statement and it is the one that keeps
 // the fix from being "delete the snap": each pair below is a disagreement the
 // snap must still resolve in the lock's favour, before and after.
 //
 // The 28.0-against-20.0 pair is #10's worked example (a legitimate surge the
-// snap wrongly pins to the lagging lock). Its ratio is 1.40, outside both
-// bands, so #193 leaves #10 exactly where it is rather than half-fixing it --
+// snap wrongly pins to the lagging lock). Its ratio is 1.40, outside the
+// band, so #193 leaves #10 exactly where it is rather than half-fixing it --
 // pinned here so that claim is checked rather than asserted in prose.
 (:test) function test_lock_c0_aNonHarmonicDisagreementSnapsInEveryEpoch(logger) {
     // [median spm, lock period s, expected out, ratio for the message]
@@ -499,7 +500,7 @@ module Lock {
             logger.error("a median of " + cases[i][0] + " spm against a " +
                          cases[i][1] + " s lock disagrees by more than " +
                          $.LOCK_SNAP_K + " of the lock at a ratio that is " +
-                         "NOT near 2:1 or 3:1, so it must snap to " +
+                         "NOT near 2:1, so it must snap to " +
                          cases[i][2] + " in every epoch; got " + p.out());
             return false;
         }
@@ -546,7 +547,8 @@ module Lock {
 // LOCK's 6.383 was the better of the two candidates here and the median was
 // stale -- the opposite of what this case used to assert. Pooled over three
 // rows the 3:1 band scores 10 wrong-snaps to 16 right (p=0.33) against the
-// 2:1 band's 40:8 (p=0.00003), so the 3:1 band is dropped and this ratio is
+// 2:1 band's 40:8 (p=0.0000033), so the 3:1 band is dropped and this ratio
+// is
 // left to the snap. Regenerate both with
 // `python3 scripts/lock_snap_replay.py witness`.
 //

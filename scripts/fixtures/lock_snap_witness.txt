@@ -9,9 +9,10 @@
 # was "the strongest [truth] available". It was not, and the stronger one was
 # in these same three recordings all along: the FIT NATIVE `cadence` field is
 # produced by a SECOND DETECTOR. StrongRow is a watch-app (manifest.xml) that
-# READS ai.currentCadence (source/StrongRowView.mc:5445-5449) and writes no
-# native record field, so this series is independent of BOTH candidates the
-# snap chooses between -- the median-of-periods and the autocorrelation lock.
+# READS ai.currentCadence -- in the `nativeCadence()` method of
+# source/StrongRowView.mc -- and writes no native record field, so this
+# series is independent of BOTH candidates the snap chooses between: the
+# median-of-periods and the autocorrelation lock.
 # A truth derived from `rate_raw` cannot referee a dispute in which `rate_raw`
 # is one of the two parties; this one can.
 #
@@ -55,10 +56,10 @@
 #
 # WHAT THIS WITNESS IS NOT. It is not unbiased in LEVEL. This repository has
 # already measured that the native counter counts BLADE MOVEMENTS, not drives
-# -- "89-109 blade movements against 66-68 drives"
-# (source/StrongRowView.mc:710-712), which is the measurement correctiveRate()
-# is built on. So it is used as a RATIO-SCALE witness: one scalar per row,
-# k = median(cadence / rate_raw) over the records where the snap does not fire,
+# -- "89-109 blade movements against 66-68 drives", the note in
+# source/StrongRowView.mc that `correctiveRate()` is built on. So it is used
+# as a RATIO-SCALE witness: one scalar per row, k = median(cadence /
+# rate_raw) over the records where the snap does not fire,
 # and every conclusion is swept over k +-25%. A level error cannot flip a
 # comparison between two candidates a factor of two or three apart unless it
 # moves the witness across their GEOMETRIC MEAN, which is why the comparison

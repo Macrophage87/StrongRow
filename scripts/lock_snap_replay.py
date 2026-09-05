@@ -3,7 +3,8 @@
 without #193's harmonic guard.
 
 WHY THIS FILE EXISTS. #193 changes a decision that only field data can settle:
-whether refusing to snap to a lock that stands in a near-2:1 or near-3:1 ratio
+whether refusing to snap to a lock that stands in a near-2:1 ratio (and, in
+round 1, a near-3:1 ratio)
 to the detector's median removes more bad readings than it creates. Every
 figure #193 and its pull request quote comes out of this file, from fixtures in
 the repository, so a reader can regenerate the lot in one command instead of
@@ -113,7 +114,8 @@ LOCK_HARM_TOL = 0.10
 
 # WHICH INTEGER RATIOS THE GUARD REFUSES. Round 1 of #196 shipped both 2 and 3;
 # the round-1 review scored them separately against the independent witness
-# below and found 40:8 for the 2:1 band (p=0.00003, robust across the whole
+# below and found 40:8 for the 2:1 band (p=0.0000033, robust across the
+# whole
 # +-25% calibration sweep) against 10:16 for the 3:1 band (p=0.33, adverse
 # point estimate). BANDS is the rule that ships; BANDS_R1 is kept so the
 # superseded epoch stays replayable and every figure this branch has published
@@ -371,8 +373,10 @@ def series(row, tol, bands=BANDS):
 #   k                 one scalar per row, median(cadence / rate_raw) over the
 #                     records where the snap does NOT fire and both are
 #                     non-zero. The native counter counts BLADE MOVEMENTS, not
-#                     drives (source/StrongRowView.mc:710-712), so it is right
-#                     in RATIO and wrong in LEVEL; k removes the level.
+#                     drives -- the "89-109 blade movements against
+#                     66-68 drives" note in source/StrongRowView.mc --
+#                     so it is right in RATIO and wrong in LEVEL; k
+#                     removes the level.
 #   the decision      made in RATIO SPACE: the snap was RIGHT when the lock is
 #                     nearer cadence/k than `raw` is, measured as
 #                     |log(candidate / witness)|. Absolute spm is the WRONG
@@ -749,7 +753,7 @@ def cmd_witness(rows, args):
                      (2, "  ... of those, the 2:1 band"),
                      (3, "  ... of those, the 3:1 band")):
         w, r, sk = keep[key]
-        print("   %-32s %3d : %-3d  %5.2f:1  p=%.5f  (%d unscored, cadence 0)"
+        print("   %-32s %3d : %-3d  %5.2f:1  p=%-9.3g  (%d unscored, cadence 0)"
               % (lab, w, r, w / max(1, r), binom_p(w, r), sk))
     print()
     print("PER ROW, at k x 1.00:")
@@ -832,8 +836,9 @@ def cmd_sweep(rows, args):
     print("  THE BAND SET, decided by the independent witness. Round 1 "
           "refused both a near-2:1 and a near-3:1 ratio. Scored against the "
           "watch's own counter the two are not the same finding: the 2:1 band "
-          "is 40 wrong-snaps to 8 right (p=0.00003) and holds its direction "
-          "at every k in the +-25%% sweep; the 3:1 band is 10 to 16 (p=0.33) "
+          "is 40 wrong-snaps to 8 right (p=0.0000033) and holds its "
+          "direction "
+          "at every k in the +-25% sweep; the 3:1 band is 10 to 16 (p=0.33) "
           "and reaches significance at none of them. The 3:1 band is dropped. "
           "Run `witness` for the table.")
     print("  LOWER BOUND on the tolerance, measured. At 0.10 the 2:1 band is "
@@ -847,9 +852,12 @@ def cmd_sweep(rows, args):
           "0.20 no longer binds, and the tolerance is NOT re-widened to take "
           "advantage: nothing measured supports a wider one.")
     print("  WHY NOT NARROWER. Round 1 asked whether 0.05 was safer. It is "
-          "not: pooled against the witness, tol 0.05 scores 23:15 (p=0.26) "
-          "against 50:24 at 0.10, and on hold-out B every scored change is "
-          "wrong. Narrowing made it worse, measured.")
+          "not, on the band set that SHIPS: pooled against the witness, tol "
+          "0.05 scores 15 wrong-snaps to 5 right (p=0.041) against 40:8 at "
+          "0.10, and hold-out B refuses no record carrying a witness at all "
+          "at 0.05 -- it scores 0:0 there, on 18 refusals. Round 1 measured "
+          "the same question on its own 2:1+3:1 set and got 23:15 against "
+          "50:24: same direction, weaker margin, a DIFFERENT RULE.")
     print("  WHAT IS STILL A SINGLE-ROW FIT. The third digit. 0.10 is a round "
           "number, not an argmax, and no attempt is made to defend 0.10 over "
           "0.09 or 0.11 -- the witness has 48 scored records in this band "

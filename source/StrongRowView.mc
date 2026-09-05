@@ -150,7 +150,7 @@ const FAST_NEEDS_LOCK = 30.0;     // the ABSOLUTE no-lock gate, in spm
 // median that was right.
 //
 // Measured on recording i183553852 (3385 records; regenerate any of this with
-// `python3 scripts/lock_snap_replay.py`): the shipped rule, replayed from the
+// `python3 scripts/lock_snap_replay.py`): the PRE-#193 rule, replayed from the
 // recorded inputs, substitutes the lock on 643 of the records that published
 // anything -- every one of them differing from the detector's own median. On
 // 343 the two differ by more than a FACTOR OF TWO. Both figures come from the
@@ -188,7 +188,7 @@ const FAST_NEEDS_LOCK = 30.0;     // the ABSOLUTE no-lock gate, in spm
 // Scored against it, pooled over three rows -- wrong-snaps : right-snaps:
 //
 //     all snaps, the base rate      118 : 73    1.62:1   p=0.0014
-//     what the 2:1 band refuses      40 : 8     5.00:1   p=0.00003
+//     what the 2:1 band refuses      40 : 8     5.00:1   p=0.0000033
 //     what a 3:1 band would refuse   10 : 16    0.62:1   p=0.33
 //
 // The 2:1 band keeps its direction and its significance at EVERY calibration
@@ -219,8 +219,12 @@ const FAST_NEEDS_LOCK = 30.0;     // the ABSOLUTE no-lock gate, in spm
 // resolve a third digit. It must be at least 0.05 wide to cover the
 // 38-against-20 pair at ratio 1.90, and its lower edge at 0.10 (1.80) stays
 // half a ratio clear of the snap's own threshold at 1.30. Narrowing it was
-// tried and measured WORSE: at 0.05 the pooled split is 23:15 (p=0.26) against
-// 50:24 at 0.10, and on one hold-out row every scored change is wrong.
+// tried and measured WORSE, on the band set that SHIPS: at 0.05 the pooled
+// witness split is 15 wrong-snaps to 5 right (p=0.041) against 40:8 at 0.10,
+// and hold-out B scores NOTHING at 0.05 -- the narrower band refuses no record
+// on that row that carries a witness at all (0:0, on 18 refusals). Round 1
+// measured the same question on its own 2:1+3:1 set and got 23:15 against
+// 50:24: same direction, weaker margin, a DIFFERENT RULE.
 //
 // WHAT THIS IS NOT. It is not #149's defect, which is the median and the lock
 // AGREEING and both being wrong; nothing here touches that. It is not #10's,
@@ -5723,7 +5727,8 @@ class StrongRowView extends Ui.View {
     // spm width -- so the band is a proportion of the ratio it guards and does
     // not have to be re-tuned if another integer ratio is ever added. Only 2.0
     // is checked: a 3:1 band was measured against an independent detector and
-    // had no support (10:16, p=0.33, against the 2:1 band's 40:8, p=0.00003),
+    // had no support (10:16, p=0.33, against the 2:1 band's 40:8,
+    // p=0.0000033),
     // and it is not here rather than being here and narrow.
     //
     // Null and non-positive inputs answer FALSE rather than throwing: an

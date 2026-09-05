@@ -395,7 +395,10 @@ run on the `claude/lock-snap-guard` branch, REBASED onto the merge of #192 and
 #195: "OK: 412 (:test) function(s) under source/ match
 scripts/expected_tests.txt exactly."). It was **362** at `211f106`, **385** at
 `d2cd8a6` (v0.9, epic #59's merge), **397** at `367929a` (#70's merge) and
-**408** at `db4ffcc` (#195's merge); #193 adds five in `source/LockGuardTest.mc` and retires one -- a **net** `+4 / -0` on `scripts/expected_tests.txt`, which is the diff to check, not the arithmetic on five added and one retired.
+**408** at `db4ffcc` (#195's merge); #193 adds five in
+`source/LockGuardTest.mc` and retires one — a **net** `+4 / -0` on
+`scripts/expected_tests.txt`, which is the diff to check, not the
+arithmetic on five added and one retired.
 
 **THE COUNT WAS RE-DERIVED ON THE REBASED TREE, never added up.** Two branches
 in flight both moved this number, and 385 + 11 + 4 was carried in a review
