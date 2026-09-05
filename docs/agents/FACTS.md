@@ -389,12 +389,62 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**397** `(:test)` functions under `source/`, matching
+**408** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/clock-sign-70` branch: "OK: 397 (:test) function(s) under
-source/ match scripts/expected_tests.txt exactly."). It was **362** at
-`211f106` and **385** at `d2cd8a6` (v0.9, epic #59's merge); #70 adds cases in
-`source/RrHrvTest.mc`.
+run on the `claude/cue-reversal-and-start-base` branch, REBASED onto the merge
+of #192: "OK: 408 (:test) function(s) under source/ match
+scripts/expected_tests.txt exactly."). It was **362** at `211f106`, **385** at
+`d2cd8a6` (v0.9, epic #59's merge) and **397** at `367929a` (#70's merge, which
+added cases in `source/RrHrvTest.mc`); this branch adds the cases listed in the
+commits below it.
+
+**THE COUNT WAS RE-DERIVED ON THE REBASED TREE, never added up.** Two branches
+in flight both moved this number, and 385 + 11 + 4 was carried in a review
+thread as the expected total for a different pair of branches. A pinned count
+is measured with `scripts/list_tests.py` on the tree it describes;
+arithmetic across two diffs is how a stale-but-plausible figure survives.
+
+**Inside existing modules, so the ceiling in §5.1 does not move.** A file-scope
+`(:test)` costs one `globals` member; a `(:test)` inside a `module` block costs
+none, which is why `source/CueZoneTest.mc` and `source/LockGuardTest.mc` put
+everything -- fixtures and cases alike -- inside `module CueFix` and
+`module Lock`.
+
+**THE COUNT WAS RE-DERIVED ON THE REBASED TREE, never added up.** Two branches
+in flight both moved this number, and 385 + 11 + 4 was carried in a review
+thread as the expected total for a different pair of branches. A pinned count
+is measured with `scripts/list_tests.py` on the tree it describes;
+arithmetic across two diffs is how a stale-but-plausible figure survives.
+
+**Inside existing modules, so the ceiling in §5.1 does not move.** A file-scope
+`(:test)` costs one `globals` member; a `(:test)` inside a `module` block costs
+none, which is why `source/CueZoneTest.mc` and `source/LockGuardTest.mc` put
+everything -- fixtures and cases alike -- inside `module CueFix` and
+`module Lock`.
+
+**THE COUNT WAS RE-DERIVED ON THE REBASED TREE, never added up.** Two branches
+in flight both moved this number, and 385 + 11 + 4 was carried in a review
+thread as the expected total for a different pair of branches. A pinned count
+is measured with `scripts/list_tests.py` on the tree it describes;
+arithmetic across two diffs is how a stale-but-plausible figure survives.
+
+**Inside existing modules, so the ceiling in §5.1 does not move.** A file-scope
+`(:test)` costs one `globals` member; a `(:test)` inside a `module` block costs
+none, which is why `source/CueZoneTest.mc` and `source/LockGuardTest.mc` put
+everything -- fixtures and cases alike -- inside `module CueFix` and
+`module Lock`.
+
+**THE COUNT WAS RE-DERIVED ON THE REBASED TREE, never added up.** Two branches
+in flight both moved this number, and 385 + 11 + 4 was carried in a review
+thread as the expected total for a different pair of branches. A pinned count
+is measured with `scripts/list_tests.py` on the tree it describes;
+arithmetic across two diffs is how a stale-but-plausible figure survives.
+
+**Inside existing modules, so the ceiling in §5.1 does not move.** A file-scope
+`(:test)` costs one `globals` member; a `(:test)` inside a `module` block costs
+none, which is why `source/CueZoneTest.mc` and `source/LockGuardTest.mc` put
+everything -- fixtures and cases alike -- inside `module CueFix` and
+`module Lock`.
 
 Any `(:test)` addition, removal or rename edits `scripts/expected_tests.txt`
 **in the same commit**. The check closes drift, not coordinated shrink:
@@ -546,7 +596,7 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
     AGENTFACT manifest-devices 12
-    AGENTFACT pinned-tests 397
+    AGENTFACT pinned-tests 408
     AGENTFACT ceiling hrv-correctness 249 253 4
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke

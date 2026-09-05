@@ -117,6 +117,21 @@ jobs:
         # against the Monkey C, and re-derives every published figure from
         # scripts/fixtures/cue_work_laps.txt. Pure Python: no container, no SDK.
         run: python3 scripts/test_cue_replay.py
+      - name: Start-witness self-test (runner-free RED/GREEN)
+        # scripts/start_witness.py re-derives every figure the START-BASELINE
+        # change (D3) is argued from -- the 29.5716 baseline and the 28.8461 spm
+        # displayed on the first record of a session with the boat stationary,
+        # and what the gate was doing across the first work interval. Until it
+        # landed NOTHING COMMITTED COULD REGENERATE ANY OF THEM: the one fixture
+        # from that recording carries row_stroke_rate for the WORK intervals
+        # only and structurally cannot show a pre-work second or a rate_base.
+        # That is the same trap cue_replay.py and speed_witness.py were each
+        # added after the fact to close, and building this one immediately
+        # falsified a published figure ("rate_base never fell below 22.68"; the
+        # minimum is 15.2863). Section A pins the fastGate/gatedRate
+        # transcription against the same vectors source/LockGuardTest.mc asserts
+        # against the Monkey C. Pure Python: no container, no SDK.
+        run: python3 scripts/test_start_witness.py
       - name: Speed-witness self-test (runner-free RED/GREEN)
         # scripts/speed_witness.py re-derives the INDEPENDENT-WITNESS figure the
         # output-stage comment block rests its recorded-value change on -- the
