@@ -272,8 +272,9 @@ const LOCK_LOW_MAX   = 65534;
 //
 // THESE TWO INVENT NOTHING. mRate and mRateBase hold a value at every tick, and
 // in the "nothing" state that value IS 0.0 -- assigned by recomputeRate when
-// the period ring is empty, by the stroke-ring timeout in onSensorData, and by
-// resetDetector. So the question is not "which marker do we choose" but "is the
+// the period ring is empty, by the stroke-ring timeout in onSensorData, by
+// resetDetector at app launch, and by resetStrokeBaseline at every recording
+// start. So the question is not "which marker do we choose" but "is the
 // variable's own 0.0 ambiguous", and the discriminating test is the one
 // lock_confidence FAILS:
 //
@@ -1699,6 +1700,14 @@ class StrongRowView extends Ui.View {
     // real reason it does not live there is that that function owns the
     // INTERVAL-scope accumulators, and a session-scope reset in it would blur
     // the boundary the two lifetimes depend on.
+    //
+    // D3 ADDED A THIRD LIFETIME TO THAT FUNCTION and did not weaken this
+    // argument, which is why it is noted here rather than left to be
+    // discovered: beginSessionAccum now also calls resetStrokeBaseline(). The
+    // boundary survives because the call is a single DELEGATION -- eight
+    // estimator assignments inlined there would have been exactly the blurring
+    // this paragraph warns about, and the reasoning for the placement lives at
+    // beginSessionAccum's own comment.
     hidden var mErgSessJ;
     hidden var mErgSessN;
     hidden var mMaxCore;
@@ -1923,9 +1932,9 @@ class StrongRowView extends Ui.View {
 
     // #9 / D3: EVERY RECORDING START JUDGES ITSELF AGAINST NOTHING INHERITED.
     //
-    // NOT CALLED YET at the commit that introduces it -- the wiring is its own
-    // commit, so the differential that proves the wiring can be shown red
-    // first. Called from beginSessionAccum().
+    // CALLED FROM beginSessionAccum(), and from nowhere else -- which is every
+    // recording-start path and only after a start that succeeded. The reasons
+    // that call site was chosen over startSession() are at the call site.
     //
     // WHY IT EXISTS. onLayout() calls startSensor(), which registers the
     // accelerometer listener at APP LAUNCH; registerStroke() has no mStarted
@@ -2783,6 +2792,13 @@ class StrongRowView extends Ui.View {
             // before -- instead of against a baseline describing a piece that
             // has ended. Keeping it would carry a warm-up cadence into a work
             // interval, or a rest paddle into a sprint.
+            //
+            // D3: the same pair is cleared at every recording start, by
+            // resetStrokeBaseline. This timeout is the QUIET path and covers
+            // only a gap long enough to expire (mLastPeriod * 2.2, clamped to
+            // 4-12 s); an athlete who paddles continuously to the start and
+            // presses START never reaches it, which is how a stationary boat's
+            // 28.8 spm reached the first record of i183553852.
             mRateBase = 0.0;
         }
     }
@@ -5358,27 +5374,53 @@ class StrongRowView extends Ui.View {
     //                       return more than what shipped, so no reading that
     //                       used to be zeroed can now pass.
     //
-    //   base <= 0.0         is "nothing established yet" -- APP LAUNCH, or
-    //                       after the stroke ring timed out. NOT session start,
-    //                       and the difference is reachable rather than
-    //                       pedantic: mRateBase is zeroed in exactly two places,
+    //   base <= 0.0         is "nothing established yet" -- APP LAUNCH, EVERY
+    //                       RECORDING START, or after the stroke ring timed
+    //                       out. mRateBase is zeroed in exactly three places:
     //                       resetDetector (whose ONLY caller is initialize --
-    //                       the file states that at resetDetector itself) and
-    //                       the ring timeout. onLayout registers the
-    //                       accelerometer listener, registerStroke has no
-    //                       mStarted gate, and neither startSession nor
-    //                       beginSessionAccum touches detector state -- so a
-    //                       warm-up or a paddle to the start ESTABLISHES the
-    //                       baseline before START is pressed, and a session
-    //                       reaches this state only if the ring has timed out
-    //                       first (mLastPeriod * 2.2, clamped to 4-12 s, of
-    //                       quiet). That is deliberate, not a defect: the note
-    //                       at the ring timeout argues it, and the outer min
-    //                       keeps the gate never looser than what shipped
-    //                       either way. It is NOT "no guard": it falls back to
-    //                       exactly the rule that shipped. Null is handled for
-    //                       the same reason every other predicate in this file
+    //                       the file states that at resetDetector itself), the
+    //                       ring timeout, and resetStrokeBaseline, which
+    //                       beginSessionAccum calls. Null is handled for the
+    //                       same reason every other predicate in this file
     //                       handles it: an absent value must not be arithmetic.
+    //
+    //                       RETRACTION, kept rather than edited away because
+    //                       this paragraph argued for the behaviour that was
+    //                       then reported as a defect. It used to read "NOT
+    //                       session start, and the difference is reachable
+    //                       rather than pedantic ... so a warm-up or a paddle
+    //                       to the start ESTABLISHES the baseline before START
+    //                       is pressed ... That is deliberate, not a defect."
+    //                       Its premise was that pre-START motion is rowing.
+    //                       Measured on i183553852 (2026-09-05, v0.9), it is
+    //                       not: the FIRST record of the session, with
+    //                       enhanced_speed 0.00 and native cadence 0 -- a
+    //                       stationary boat -- carries rate_base 29.57 and
+    //                       row_stroke_rate 28.85. The boat was being handled,
+    //                       not rowed, and the app displayed 28.8 spm for it.
+    //                       The old text was also right that the outer min
+    //                       keeps the gate never LOOSER than what shipped; what
+    //                       it missed is that the carry-over reaches the screen
+    //                       and the file through mRate, not only the gate
+    //                       through mRateBase.
+    //
+    //                       WHAT THE RESET IS AND IS NOT FOR, because the two
+    //                       halves have different evidence.
+    //                       THE RING is what published the 28.8, and that is
+    //                       measured on the file above.
+    //                       THE BASELINE is a MECHANISM argument and is
+    //                       labelled as one: on that file it changes no gate
+    //                       decision, because LOCK_REL_K * 20.0 is exactly
+    //                       FAST_NEEDS_LOCK, so fastGate(b) == fastGate(0) for
+    //                       every b at or above 20.0 and that row's rate_base
+    //                       never fell below 22.68 in its first work interval
+    //                       (pinned by
+    //                       Lock.test_lock_c0_theGateSaturatesForAnyBaselineFromTwentyUp).
+    //                       The case it guards is the one that file does NOT
+    //                       show: a slow pre-START handling cadence
+    //                       establishing a base below 20.0, where the gate does
+    //                       bind and would zero genuine rowing at the top of
+    //                       the row.
     //
     // WHAT THIS IS NOT. It is not validated on the water. What is established is
     // that the over-reads are real detector errors -- the hull sits at 0.814x /
@@ -6571,9 +6613,32 @@ class StrongRowView extends Ui.View {
 
     // ---- #109 accumulator lifecycle --------------------------------------
 
-    // A new RECORDING begins. Clears the session-scoped stroke count (#126) and
-    // discards any latched interval from a previous row.
+    // A new RECORDING begins. Clears the session-scoped stroke count (#126),
+    // discards any latched interval from a previous row, and -- D3 -- drops the
+    // rate estimator's pre-START carry-over.
+    //
+    // WHY THE DETECTOR RESET IS DELEGATED AND NOT INLINED HERE. The note at
+    // mErgSessJ argues that this function "owns the INTERVAL-scope
+    // accumulators" and that a reset of a different lifetime in it "would blur
+    // the boundary the two lifetimes depend on". That argument is right and is
+    // why the line below is a single call into resetStrokeBaseline() rather
+    // than eight assignments: what this function owns stays readable from its
+    // own body, and the estimator's reset is stated, named and commented where
+    // the estimator lives.
+    //
+    // WHY HERE AND NOT IN startSession(). This is the function every
+    // recording-start path calls -- onPrimary's free-row arm, startWorkout, and
+    // initialize where it is a no-op because resetDetector has just run -- and
+    // it is called ONLY AFTER A START THAT SUCCEEDED, because both callers
+    // return early when startSession() reports failure. A failed START
+    // therefore does not blank the detector. It is also the only one of the two
+    // that a (:test) can reach: startSession() calls Rec.createSession and
+    // cannot run in process (source/CoreFieldGateTest.mc:10), so a reset placed
+    // inside it would be stubbed out by any probe able to drive the start path
+    // and would be pinned by nothing.
     hidden function beginSessionAccum() {
+        // D3: nothing measured before START shapes the first work interval.
+        resetStrokeBaseline();
         mStrokeCount   = 0;
         // #125: cleared WITH the session total, never separately. Two stroke
         // counters that reset on different events would let the footer report a
