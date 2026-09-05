@@ -51,8 +51,11 @@ monkeyc -e -f monkey.jungle -o "bin/StrongRow-v<X.Y>.iq" -y <account-key>.der -w
 ```
 
 **26 of 26 device parts across the 12 manifest products** at `211f106`
-(`FACTS.md` §5.5). **Re-read that number from this export's own output; do not
-copy it forward from the previous release body.** Nothing in this repository
+(`FACTS.md` §5.5). **That pair is stale**: the manifest carries **19** products
+since the fenix 9 family was added, and the part count for 19 products is
+UNMEASURED — no release has exported it yet, and it is not the 26 above plus
+anything. **Re-read the number from this export's own output; do not copy it
+forward from the previous release body and do not derive it.** Nothing in this repository
 derives it — the `.iq` is not a zip archive and cannot be enumerated with
 ordinary tooling — so a copied figure is a figure nothing can regenerate, which
 is the defect class that put two harnesses in `scripts/`.

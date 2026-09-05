@@ -7,6 +7,13 @@
                     name="@Strings.AppName"
                     type="watch-app">
         <iq:products>
+            <iq:product id="fenix943mm"/>
+            <iq:product id="fenix947mm"/>
+            <iq:product id="fenix9pro43mm"/>
+            <iq:product id="fenix9pro47mm"/>
+            <iq:product id="fenix9pro51mm"/>
+            <iq:product id="fenix9prosolar47mm"/>
+            <iq:product id="fenix9prosolar51mm"/>
             <iq:product id="fr970"/>
             <iq:product id="fr965"/>
             <iq:product id="fenix847mm"/>

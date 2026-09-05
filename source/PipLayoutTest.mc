@@ -26,12 +26,25 @@ module Hsi {
 // the clearances that measurement established.
 //
 // THE MEASUREMENT. dc.getTextDimensions and dc.getFontHeight, called from a
-// throwaway app under SDK 9.2.0, once per device, on all twelve devices in
+// throwaway app under SDK 9.2.0, once per device, on all NINETEEN devices in
 // manifest.xml. Every device reports SCREEN_SHAPE_ROUND with w == h. The method
 // reproduces a figure already recorded in StrongRowView.mc from earlier work
 // ("-:--/500m  12.5m/str" at 277 px on the 454 px devices) to the pixel, which
 // is the cross-check that it measures the same thing that work did. The results
 // are the table below and are restated in the pull request.
+//
+// THE SEVEN fenix 9 ROWS WERE RE-MEASURED THE SAME WAY, and the same run
+// re-measured the twelve that were already here: all twelve reproduced their
+// committed values exactly, which is what makes the seven new rows comparable
+// to them rather than to a differently-instrumented probe.
+//
+// AND THE PARAGRAPH BELOW ABOUT SIZE-MATES IS NO LONGER HYPOTHETICAL. The two
+// fenix 9 Pro Solar devices share their WIDTH with devices already in this
+// table and DO NOT share their font metrics: fenix9prosolar47mm is 260 px like
+// fenix7/fenix6 but measures 21/31/20/20 where those measure 19/27/18/18, and
+// fenix9prosolar51mm is 280 px like fenix6xpro and measures 22/32/22/21 where
+// fenix6xpro measures 19/27/18/18. A row keyed on screen size alone would have
+// carried the wrong numbers for both.
 //
 // WHAT NONE OF IT CLAIMS. These are TEXT-BOX extents, not ink extents: nothing
 // in this repository can measure where a glyph's ink starts inside its box, so
@@ -58,7 +71,16 @@ function pipDevices() {
         [ "fenix6",        260, 260, 19, 27, 18, 18 ],
         [ "fenix6pro",     260, 260, 19, 27, 18, 18 ],
         [ "fenix6spro",    240, 240, 19, 27, 18, 18 ],
-        [ "fenix6xpro",    280, 280, 19, 27, 18, 18 ]
+        [ "fenix6xpro",    280, 280, 19, 27, 18, 18 ],
+        // fenix 9 family. Same probe, same SDK, same run as the re-measurement
+        // of the twelve above.
+        [ "fenix943mm",         416, 416, 34, 55, 36, 36 ],
+        [ "fenix947mm",         454, 454, 37, 59, 38, 39 ],
+        [ "fenix9pro43mm",      416, 416, 34, 55, 36, 36 ],
+        [ "fenix9pro47mm",      454, 454, 37, 59, 38, 39 ],
+        [ "fenix9pro51mm",      466, 466, 37, 59, 38, 39 ],
+        [ "fenix9prosolar47mm", 260, 260, 21, 31, 20, 20 ],
+        [ "fenix9prosolar51mm", 280, 280, 22, 32, 22, 21 ]
     ];
 }
 

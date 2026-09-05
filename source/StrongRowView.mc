@@ -1158,7 +1158,10 @@ const CUE_PERSIST_IN_MS  = 500;   // ms a change back into the band must hold
 // way it is.
 //
 // Method: dc.getTextDimensions and dc.getFontHeight called from a throwaway
-// app under SDK 9.2.0, on ALL TWELVE manifest devices. Every one of them
+// app under SDK 9.2.0, on ALL TWELVE manifest devices AS THEY THEN WERE. The
+// manifest now carries nineteen; the seven fenix 9 products were measured the
+// same way when they were added, and the twelve below were re-measured in that
+// same run and reproduced exactly. Every one of the nineteen
 // reports screenShape == SCREEN_SHAPE_ROUND with w == h, so the visible area is
 // the circle inscribed in the display box and the row's usable width at height
 // y is a chord, not w. The method reproduces a figure this file already
@@ -1205,8 +1208,13 @@ const CUE_PERSIST_IN_MS  = 500;   // ms a change back into the band must hold
 // compares each against its own derivation and counts the disagreements itself.
 // At half a pixel -- the precision the old one-decimal table was written to --
 // FOUR of the six disagree, which is #141's figure. At the 0.05 px the
-// corrected rows carry, FIVE do: the 454 px family joins them, out by 0.44 and
-// 0.39. Only fenix6spro was right under either reading.
+// corrected rows carry, FIVE do: the 454 px family joins them, out by 0.06 and
+// 0.11. Only fenix6spro was right under either reading. (Those two 454 px
+// figures were 0.44 and 0.39 until `rr` was measured for that family; the
+// measured 38 moved the derived row half a pixel CLOSER to what the old table
+// claimed, without changing which side of either tolerance it falls on. The
+// counts on the DISAGREE line are derived by the checker, so they are the
+// authority for both readings and neither is restated as arithmetic here.)
 //
 // ONE COPY OF EACH NUMBER, which is why there is no claimed/derived table in
 // prose here any more. An earlier revision carried one beside the marked rows;
@@ -1254,12 +1262,36 @@ const CUE_PERSIST_IN_MS  = 500;   // ms a change back into the band must hold
 //   after  = CT centred at pipCtCx(w, h)
 //
 //   PIPGEOM-BASE ct_today=0.66
-//   PIPGEOM 454px-family       w=454 ct=39 rr=39 gap_today=24.56 gap_after=8.61 edge_today=1.98 edge_after=17.93
+//   PIPGEOM 454px-family       w=454 ct=39 rr=38 gap_today=25.06 gap_after=9.11 edge_today=1.98 edge_after=17.93
 //   PIPGEOM fenix843mm         w=416 ct=36 rr=36 gap_today=22.24 gap_after=9.20 edge_today=1.68 edge_after=14.72
 //   PIPGEOM epix2pro47mm       w=416 ct=28 rr=28 gap_today=30.24 gap_after=17.20 edge_today=5.68 edge_after=18.72
 //   PIPGEOM fenix7-7pro-6-6pro w=260 ct=18 rr=18 gap_today=18.40 gap_after=10.00 edge_today=3.30 edge_after=11.70
 //   PIPGEOM fenix6spro         w=240 ct=18 rr=18 gap_today=15.60 gap_after=7.15 edge_today=2.35 edge_after=10.80
 //   PIPGEOM fenix6xpro         w=280 ct=18 rr=18 gap_today=21.20 gap_after=12.85 edge_today=4.25 edge_after=12.60
+//   PIPGEOM fenix9pro51mm      w=466 ct=39 rr=38 gap_today=26.74 gap_after=10.81 edge_today=2.54 edge_after=18.47
+//   PIPGEOM fenix9prosolar47mm w=260 ct=20 rr=20 gap_today=16.40 gap_after=8.00 edge_today=2.30 edge_after=10.70
+//   PIPGEOM fenix9prosolar51mm w=280 ct=21 rr=22 gap_today=17.70 gap_after=9.35 edge_today=2.75 edge_after=11.10
+//
+//   WHICH DEVICES EACH ROW COVERS, now that the manifest carries nineteen. A
+//   row exists per distinct (width, measured label widths) pair, NOT per width:
+//     454px-family        fr970, fr965, fenix847mm, fenix8pro47mm,
+//                         fenix947mm, fenix9pro47mm
+//     fenix843mm          fenix843mm, fenix943mm, fenix9pro43mm
+//     epix2pro47mm        epix2pro47mm
+//     fenix7-7pro-6-6pro  fenix7, fenix7pro, fenix6, fenix6pro
+//     fenix6spro          fenix6spro
+//     fenix6xpro          fenix6xpro
+//     fenix9pro51mm       fenix9pro51mm       (a NEW width, 466 px)
+//     fenix9prosolar47mm  fenix9prosolar47mm  (260 px, but NOT the fenix7 row)
+//     fenix9prosolar51mm  fenix9prosolar51mm  (280 px, but NOT the fenix6xpro row)
+//
+//   THE TWO SOLAR ROWS EXIST BECAUSE WIDTH DOES NOT DETERMINE THE FONT. Both
+//   share a width with a device already in the table and neither shares its
+//   FONT_XTINY metrics: at 260 px the solar measures ct=20 rr=20 against the
+//   fenix7 row's 18/18, and at 280 px it measures ct=21 rr=22 against
+//   fenix6xpro's 18/18. Reusing the size-mate's row would have understated the
+//   label by 2-4 px on both. The widths come from the same probe run as
+//   source/PipLayoutTest.mc's table, which carries the full per-device figures.
 //
 //   THE CLAIMED PAIRS, kept as data rather than as prose so the counts in the
 //   paragraph above are derived from them. These are HISTORY: they are not
@@ -1273,24 +1305,38 @@ const CUE_PERSIST_IN_MS  = 500;   // ms a change back into the band must hold
 //   PIPGEOM-CLAIMED fenix6xpro         gap_today=15.6 gap_after=12.9
 //   PIPGEOM-DISAGREE half_px=4 tight=5 today_dupes=5 after_dupes=0
 //
-// ONE INPUT IS ASSUMED RATHER THAN MEASURED, and it is called out here because
-// every figure above depends on it: `rr` is the rendered width of the "RR"
-// label, and NO MEASUREMENT OF IT EXISTS IN THIS REPOSITORY. Only the "CT"
-// widths were measured (see PIP_CT_W_FRAC). Both labels are two upper-case
-// characters at FONT_XTINY, so each row assumes rr == ct. If that is ever
-// measured and differs, every gap figure shifts by (rr - ct)/2 uniformly and
-// the rows above must be re-derived -- the marked rows carry `rr` explicitly so
-// that correction is one edit per device rather than a re-derivation. A
-// [Local] issue owns the measurement.
+// `rr` IS NOW MEASURED ON EVERY ROW, AND THE CLAIM THAT IT WAS NOT IS
+// RETRACTED. This block used to read "`rr` is the rendered width of the 'RR'
+// label, and NO MEASUREMENT OF IT EXISTS IN THIS REPOSITORY", with each row
+// assuming rr == ct because both labels are two upper-case characters at
+// FONT_XTINY. That sentence was FALSE WHEN IT WAS WRITTEN: source/
+// PipLayoutTest.mc's `pipDevices` table has carried a measured width("RR")
+// column for every device since it landed, and on the 454 px family it reads
+// 38, not the 39 the assumption produced.
+//
+// The rows above now take `rr` from that measurement, re-run device by device
+// under SDK 9.2.0 on all nineteen manifest devices (the twelve older rows
+// reproduced their committed values in the same run). The correction moved ONE
+// row: 454px-family rr 39 -> 38, which raises its gap_today from 24.56 to 25.06
+// and its gap_after from 8.61 to 9.11 -- a shift of exactly (39 - 38)/2 = 0.50
+// px, in the direction the old paragraph predicted. Every other row's measured
+// rr already equalled its ct, so nothing else moved. The three new rows carry
+// their own measured pair; fenix9prosolar51mm is the first row in this table
+// where rr (22) EXCEEDS ct (21), so the rr == ct shape is gone for good and no
+// figure here rests on it any more.
 //
 // The CT label itself gains bezel clearance (it moves inward, from 1.68-5.68 px
-// to 10.80-18.72); the mark takes the tight end. Nothing here says how any of
+// to 10.70-18.72); the mark takes the tight end. Nothing here says how any of
 // it looks on a wrist.
 const PIP_ROW_Y_FRAC = 0.045;   // top of the status row's text box, in h
 
 // Upper BOUND on the rendered width of the "CT" label, in w. MEASURED at
-// FONT_XTINY on all twelve devices: 39/454, 36/416 (fenix843mm), 28/416
-// (epix2pro47mm), 18/280, 18/260, 18/240 -- the largest is 0.0865w. Used as a
+// FONT_XTINY on all nineteen devices: 39/454, 39/466 (fenix9pro51mm), 36/416
+// (fenix843mm and the two fenix 9 43 mm), 28/416 (epix2pro47mm), 21/280
+// (fenix9prosolar51mm), 20/260 (fenix9prosolar47mm), 18/280, 18/260, 18/240 --
+// the largest is still 0.0865w, on the 416 px fenix 8/9 43 mm devices. The
+// seven fenix 9 rows were added by re-running the probe; the twelve older ones
+// reproduced their committed values in the same run. Used as a
 // bound rather than a value on purpose: the label is centre-justified, so
 // over-estimating its width can only move it further from the bezel, and that
 // keeps this a compile-time constant instead of a per-frame text measurement.
@@ -3411,8 +3457,10 @@ class StrongRowView extends Ui.View {
     // The rightmost x a mark may occupy at height `yTop`, for a display whose
     // visible area is the circle inscribed in `w` x `h`.
     //
-    // MEASURED PREMISE, not an assumption: all twelve manifest devices report
-    // SCREEN_SHAPE_ROUND with w == h under SDK 9.2.0. On any other shape the
+    // MEASURED PREMISE, not an assumption: all nineteen manifest devices report
+    // SCREEN_SHAPE_ROUND with w == h under SDK 9.2.0 -- re-measured device by
+    // device when the seven fenix 9 products were added, not extrapolated from
+    // the twelve. On any other shape the
     // inscribed circle is contained in the visible area, so this stays a valid
     // (merely conservative) bound rather than becoming wrong.
     //
@@ -7593,11 +7641,11 @@ class StrongRowView extends Ui.View {
         // derives it from the same functions and constants this comment names
         // and fails if the prose and the code disagree.
         //
-        //   PIPGEOM-RANGE gap_today=15.60-30.24 gap_after=7.15-17.20 edge_today=1.68-5.68 edge_after=10.80-18.72
+        //   PIPGEOM-RANGE gap_today=15.60-30.24 gap_after=7.15-17.20 edge_today=1.68-5.68 edge_after=10.70-18.72
         //
         // In words: the gap to the RR pip falls to 7.15-17.20 px from
         // 15.60-30.24, while this label's own clearance to the display edge
-        // IMPROVES, from 1.68-5.68 px to 10.80-18.72. GPS and RR do not move at
+        // IMPROVES, from 1.68-5.68 px to 10.70-18.72. GPS and RR do not move at
         // all.
         var ccol = Gfx.COLOR_DK_GRAY;
         if (mCoreSensor != null && mCoreSensor.isFresh()) {
@@ -7748,6 +7796,14 @@ class StrongRowView extends Ui.View {
         //   label gap 8.12 px (fenix843mm)
         //   left edge 13.4 px to the #110 arc (fenix6spro)
         //   right     15.4 px reserved for #123's arc (fenix6spro)
+        //
+        // THE TWELVE ARE NOT THE MANIFEST ANY MORE. Seven fenix 9 products were
+        // added; these figures were NOT re-measured for them and are pinned to
+        // the twelve-device sweep that produced them. Do not read them as
+        // covering the new devices, and do not extrapolate by screen width:
+        // fenix9prosolar47mm is 260 px like fenix7 and its FONT_XTINY metrics
+        // differ (21/31/20/20 against 19/27/18/18), measured, so a size-mate is
+        // not a font-mate. Issue #209 owns the re-measurement.
         //
         // #130: `dyFrac` is added to each row fraction and to nothing else,
         // and it is non-zero on DONE ALONE -- onUpdate's single call site
@@ -8453,8 +8509,13 @@ class StrongRowView extends Ui.View {
         // devices declare is COLOR_DK_GRAY (0x555555). Against the black
         // onUpdate clears to, WCAG contrast is 9.04:1 for LT_GRAY and 2.82:1
         // for DK_GRAY -- BELOW the 3:1 floor this file applies at rateColour to
-        // reject COLOR_DK_BLUE outright. Six of the twelve manifest devices are
-        // 8 bpp transflective MIP, where a sunlight-readable label matters most.
+        // reject COLOR_DK_BLUE outright. EIGHT of the nineteen manifest devices
+        // are 8 bpp transflective MIP, where a sunlight-readable label matters
+        // most: the six that were always here plus fenix9prosolar47mm and
+        // fenix9prosolar51mm (bitsPerPixel 8, displayType mip, read from each
+        // device's own compiler.json under the SDK's Devices directory -- the
+        // same 8 bpp the fenix 6/7 rows report, so this argument covers them
+        // without change).
         //
         // Dimming a glance element below the floor the file already enforces
         // would be trading a real legibility loss for a hierarchy gain that the

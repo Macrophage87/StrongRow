@@ -12,10 +12,10 @@ Workflow: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 SDK-dependent jobs run inside:
 
 ```
-ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f   # v2.8.0 = SDK 9.2.0
+ghcr.io/matco/connectiq-tester@sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105   # v2.10.0 = SDK 9.2.0, device files 2026-08-31
 ```
 
-The image is **pinned by digest** — the digest is the real pin; the `v2.8.0`
+The image is **pinned by digest** — the digest is the real pin; the `v2.10.0`
 tag lives in a trailing comment for humans. In the workflow the digest appears
 **once**, as the `&ciq_image` YAML anchor, aliased by every container job. The
 only other copy is the one quoted above in this file, and **nothing
@@ -25,6 +25,17 @@ and update this document, all together.
 **When to bump:** if a device in `manifest.xml` is not defined in the current
 SDK, the compile job fails with an unknown-device error. Bump to a newer
 `connectiq-tester` tag that ships that device and repin the digest.
+
+That is exactly why the pin moved from `v2.8.0` (`sha256:7a6f586c…`) to
+`v2.10.0` (`sha256:64958e8f…`). Garmin published the fenix 9 family on
+2026-08-25; the v2.8.0 image was built **2026-06-10**, so its device files
+predate those devices and `compile-unit-test` could not have found them.
+v2.10.0 was built **2026-09-01** from upstream revision `5508cf7`, whose
+`Dockerfile` sets `RESOURCES_VERSION=2026-08-31` and `CONNECT_IQ_VERSION=9.2.0`
+— **same SDK version, newer device files**. Both digests were read from the
+ghcr manifests endpoint's `docker-content-digest` header, not from a client's
+tag lookup; the build dates come from each image's own config blob
+(`created`, `org.opencontainers.image.version`).
 
 **When you bump, re-verify the three undeclared binaries.** The upstream
 Dockerfile's `apt-get install` list is exactly `openjdk-17-jre-headless`,
@@ -48,6 +59,13 @@ for the message's honesty, not for behaviour: a `command not found` exit 127
 already reads exactly as "pgrep found nothing", so a dropped `procps` degrades
 to `kill -0` either way — the guard just stops the log claiming pgrep concurred
 when it was never consulted.
+
+**The v2.10.0 bump did NOT run that probe**: the Docker daemon was down on the
+machine the bump was authored on, so no `command -v` line exists for this
+digest. What stands in for it is the CI run of the bump commit by itself, with
+no other change: a green `run-tests` on the new image cannot happen without
+`openssl` (the key block aborts `exit 2` without it) or without `python3` (the
+verdict step). `procps` is advisory and remains unconfirmed for this digest.
 
 ## Signing key
 
@@ -88,7 +106,7 @@ parse** in `manifest-lint`, so the two can't silently diverge.
 ### `run-tests` — the suites are actually executed
 
 Landed for #42. `compile-unit-test` proves the `(:test)` suites *compile* on all
-12 devices; `run-tests` proves they *pass*. What that buys, precisely: a test
+19 devices; `run-tests` proves they *pass*. What that buys, precisely: a test
 that fails, errors, is renamed, or is added unpinned now reds CI, where before
 it stayed green forever. A test that *disappears* reds CI **only if its pin
 line survives** — delete both together and everything passes (the
@@ -104,7 +122,7 @@ assertions are *meaningful* — see "What this does and does not buy" below.
 2. `export HOME=/root` — the runner starts container jobs with
    `HOME=/github/home`, but that devices path is hard-coded in the SDK;
 3. throwaway `openssl` key, then compile **one** device `--unit-test` (the tests
-   are device-independent; `compile-unit-test` already covers all 12);
+   are device-independent; `compile-unit-test` already covers all 19);
 4. `Xvfb :99 -screen 0 1280x1024x24` — the explicit 24-bit depth is required;
    with no `-screen` spec Xvfb defaults to depth 8 and the GTK/WebKit simulator
    dies instantly. Wait for the X socket, **aborting** on timeout;

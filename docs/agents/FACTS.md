@@ -60,10 +60,16 @@ its inputs (`.github/workflows/ci.yml`, the "Check the test results
 ### 1.3 The digest-pinned CI container
 
 ```
-ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
+ghcr.io/matco/connectiq-tester@sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
 ```
 
-`# v2.8.0 = SDK 9.2.0`. Verified at source: the `&ciq_image` YAML anchor in
+`# v2.10.0 = SDK 9.2.0, device files 2026-08-31`. **Repinned from `v2.8.0`
+(`sha256:7a6f586c…`) for the fenix 9 family**: that image was built 2026-06-10
+and Garmin published fenix 9 on 2026-08-25, so its device files cannot contain
+them. v2.10.0 was built 2026-09-01 from upstream revision `5508cf7`
+(`RESOURCES_VERSION=2026-08-31`, `CONNECT_IQ_VERSION=9.2.0` — same SDK, newer
+devices); the digest was read from ghcr's `docker-content-digest` header.
+Verified at source: the `&ciq_image` YAML anchor in
 `.github/workflows/ci.yml` (the single in-workflow copy, aliased by
 `run-tests` and `release-build`) and the quotation in `docs/CI.md` under
 "The SDK container". **The digest is the pin; the tag is a comment.**
@@ -85,7 +91,7 @@ and dropping any one of them produces a failure that looks like a code defect:
 ```sh
 git -c core.autocrlf=false archive --format=tar origin/main | tar -x -C CLEANDIR
 MSYS_NO_PATHCONV=1 docker run --rm --entrypoint bash -v "WINPATH:/work" -w /work \
-  ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f \
+  ghcr.io/matco/connectiq-tester@sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105 \
   -c "bash scripts/run_ciq_tests.sh fr965"
 ```
 
@@ -98,12 +104,29 @@ success.
 
 ### 1.4 Devices
 
-`manifest.xml` declares **12** `<iq:product>` entries (`fr970`, `fr965`,
-`fenix847mm`, `fenix843mm`, `fenix8pro47mm`, `fenix7`, `fenix7pro`,
-`epix2pro47mm`, `fenix6`, `fenix6pro`, `fenix6spro`, `fenix6xpro`).
-`scripts/list_devices.sh` **is** the CI device matrix: the compile and release
-jobs iterate exactly the manifest's products, and it exits non-zero on an empty
-list so a build can never pass having compiled nothing.
+`manifest.xml` declares **19** `<iq:product>` entries (`fenix943mm`,
+`fenix947mm`, `fenix9pro43mm`, `fenix9pro47mm`, `fenix9pro51mm`,
+`fenix9prosolar47mm`, `fenix9prosolar51mm`, `fr970`, `fr965`, `fenix847mm`,
+`fenix843mm`, `fenix8pro47mm`, `fenix7`, `fenix7pro`, `epix2pro47mm`, `fenix6`,
+`fenix6pro`, `fenix6spro`, `fenix6xpro`). `scripts/list_devices.sh` **is** the
+CI device matrix: the compile and release jobs iterate exactly the manifest's
+products, and it exits non-zero on an empty list so a build can never pass
+having compiled nothing.
+
+The seven `fenix9*` entries were added for the fenix 9 family; before that this
+count was **12**, and every "twelve devices" measurement note still in `source/`
+was taken against that older set and is **not** a statement about the current
+one. Read each such note as pinned to its own commit. **Two tables WERE
+re-measured on all nineteen** — `pipDevices()` in `source/PipLayoutTest.mc` and
+the `PIPGEOM` rows in `source/StrongRowView.mc`; the rest are listed in open
+issue **#209**, which owns the re-measurement.
+
+**A size-mate is not a font-mate.** Measured under SDK 9.2.0 when the seven were
+added: `fenix9prosolar47mm` is 260 px like `fenix7`/`fenix6` and its FONT_XTINY
+height/"GPS"/"RR"/"CT" are 21/31/20/20 against their 19/27/18/18;
+`fenix9prosolar51mm` is 280 px like `fenix6xpro` and measures 22/32/22/21
+against 19/27/18/18. Never extend a per-device table by copying a row from a
+device of the same width.
 
 `fr965` is the single test device (`run_ciq_tests.sh fr965` in the workflow).
 `fenix6` is the family that binds the `globals` ceiling (§5.1).
@@ -450,12 +473,15 @@ uniqueness (`STEPFIELDS … total_fields=26`); the **id→name** binding above i
 pinned by `scripts/check_agent_facts.py` and was not pinned by anything before
 this file existed.
 
-**Twenty-six is two different counts, and they are unrelated.** There are 26
-developer fields (this table, machine-checked) **and** 26 device parts in the
-exported `.iq` (§5.5, prose only) — across **12** manifest products (§1.4).
-Three numbers, one coincidence. Say which one you mean; open issue #172's title
-uses the field figure. Checking *what a figure is measured against* rather than
-just that it is right is this repository's "wrong pair" defect class (§6).
+**Twenty-six was two different counts, and they were never related.** There are
+27 developer fields today (this table, machine-checked; it was 26 at `211f106`)
+**and** there were 26 device parts in the exported `.iq` (§5.5, prose only) —
+across what were then **12** manifest products (§1.4). Three numbers, one
+coincidence, and the coincidence has now broken twice over: the field count
+moved to 27 and the manifest to **19** products. Say which one you mean; open
+issue #172's title uses the field figure. Checking *what a figure is measured
+against* rather than just that it is right is this repository's "wrong pair"
+defect class (§6).
 
 ### 5.4 Backlog size
 
@@ -470,12 +496,21 @@ Six published: `v0.8`, `v0.7.1`, `v0.7`, `v0.6`, `v0.5`, `v0.4`.
 filename — `StrongRow-v0.8.iq`, `StrongRow-v0.8-fr965.prg`.
 `v0.7` is titled "SUPERSEDED by v0.7.1"; see the release ritual.
 
-**26 device parts across the 12 manifest products.** Verified from the release
-bodies, which are the only place this figure is recorded: v0.8 reads "Built
-from `211f106` with the account-bound developer key, **26 of 26 device parts**
-across the 12 manifest products, `run-tests` green at **362/362**"; v0.7 and
-v0.6 say the same with their own commits and totals. The 362 there is the same
-figure as §5.2 — the two agree at `211f106`.
+**26 device parts across the 12 manifest products, AT `211f106`.** Verified from
+the release bodies, which are the only place this figure is recorded: v0.8
+reads "Built from `211f106` with the account-bound developer key, **26 of 26
+device parts** across the 12 manifest products, `run-tests` green at
+**362/362**"; v0.7 and v0.6 say the same with their own commits and totals. The
+362 there is the same figure as §5.2 — the two agree at `211f106`.
+
+**That pair is now STALE and no arithmetic replaces it.** The manifest carries
+**19** products since the fenix 9 family was added (§1.4), so the part count for
+the current tree is **UNMEASURED until the next export reads it off the log**.
+Do not derive it: the number belongs to `monkeyc -e`'s output and is read from
+there, never computed from a per-device part table. (`release-build` on
+`c383757` — the container repin alone, still 12 products — printed
+`26 OUT OF 26 DEVICES BUILT`, which is the last measurement of the OLD pair and
+not a measurement of the new one.)
 
 **Nothing in this repository derives the part count.** It comes out of
 `monkeyc -e`'s export, and the `.iq` is not a zip archive, so it cannot be
@@ -561,8 +596,8 @@ Loaded on demand, by verb:
 CI run and fails if this file disagrees. The marker lines are the contract; the
 prose above is the explanation.
 
-    AGENTFACT ci-container sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f
-    AGENTFACT manifest-devices 12
+    AGENTFACT ci-container sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
+    AGENTFACT manifest-devices 19
     AGENTFACT pinned-tests 412
     AGENTFACT ceiling hrv-correctness 249 253 4
     AGENTFACT devfield 0 row_stroke_rate

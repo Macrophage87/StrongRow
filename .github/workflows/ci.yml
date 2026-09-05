@@ -34,7 +34,8 @@ permissions:
 # The SDK container is pinned by digest, in exactly ONE place in this file:
 # the &ciq_image anchor on compile-unit-test, aliased by every other container
 # job (`container.image` can't read workflow `env`, hence an anchor instead).
-# v2.8.0 = Connect IQ SDK 9.2.0; the digest IS the pin, the tag is a comment.
+# v2.10.0 = SDK 9.2.0 with device files dated 2026-08-31; the digest IS the
+# pin, the tag is a comment.
 # When bumping, also update the copy quoted in docs/CI.md ("The SDK
 # container") — nothing cross-checks that one — and walk the SDK-bump
 # checklist there. (An earlier version of this comment said "keep the two
@@ -328,14 +329,14 @@ jobs:
   #    rc is collected; the job fails if any single device fails to compile.
   compile-unit-test:
     runs-on: ubuntu-latest
-    # Generous multiple of the observed run time (image pull + 12 device
+    # Generous multiple of the observed run time (image pull + 19 device
     # compiles); the point is that a hang fails instead of holding the merge
     # gate for the 360-minute default.
     timeout-minutes: 30
     container:
       # Digest is single-sourced via the &ciq_image YAML anchor and aliased in
       # release-build, so a bump can't leave the two jobs on different SDKs.
-      image: &ciq_image ghcr.io/matco/connectiq-tester@sha256:7a6f586cb0e0393ff288da09cf27b6dad40a0058a346c529b99fd0fc19858f0f # v2.8.0 = SDK 9.2.0
+      image: &ciq_image ghcr.io/matco/connectiq-tester@sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105 # v2.10.0 = SDK 9.2.0, device files 2026-08-31
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -430,7 +431,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: *ciq_image # same digest as compile-unit-test (v2.8.0 = SDK 9.2.0)
+      image: *ciq_image # same digest as compile-unit-test (v2.10.0 = SDK 9.2.0, device files 2026-08-31)
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -542,7 +543,7 @@ jobs:
     # Same rationale as compile-unit-test: fail on hang, never idle for hours.
     timeout-minutes: 30
     container:
-      image: *ciq_image # same digest as compile-unit-test (v2.8.0 = SDK 9.2.0)
+      image: *ciq_image # same digest as compile-unit-test (v2.10.0 = SDK 9.2.0, device files 2026-08-31)
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -634,7 +635,7 @@ jobs:
         # artifact publication is withheld for forks.
         if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         # Same reasoning as run-tests' log upload: this job is required, so a
-        # blob-storage flake must not red a build whose 12 devices all
+        # blob-storage flake must not red a build whose 19 devices all
         # compiled — an availability dependency on the merge gate that buys
         # nothing. The guard stands on that principle alone: no upload failure
         # has actually been observed (an earlier claim here citing run

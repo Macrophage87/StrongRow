@@ -2,7 +2,7 @@
 """Fail-closed derivation check on the CT status-row geometry tables (#141).
 
 WHY THIS EXISTS. source/StrongRowView.mc carried a "gap today / gap after"
-table for the six distinct display widths, and a one-sentence summary quoting
+table for the six distinct display widths it then had, and a summary quoting
 ranges from it. A reviewer re-derived both from the shipped constants and the
 file's own measured font widths: FOUR OF THE SIX ROWS DISAGREED, and both upper
 bounds in the summary were wrong. The dangerous row was fenix7/7pro/6/6pro,
@@ -276,8 +276,9 @@ def check_bodies(text, path, problems):
 
 def derive(w, ct, rr, consts, rr_x, ct_today):
     """The five shipped formulas, mirrored. h == w on every manifest device --
-    all twelve report SCREEN_SHAPE_ROUND with w == h, which is the measured
-    premise pipChordXMax's own comment records."""
+    all nineteen report SCREEN_SHAPE_ROUND with w == h, which is the measured
+    premise pipChordXMax's own comment records (re-measured device by device
+    when the seven fenix 9 products were added, not extrapolated)."""
     h = w
     r = min(w, h) / 2.0
     y_top = consts["PIP_ROW_Y_FRAC"] * h
