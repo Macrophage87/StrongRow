@@ -339,7 +339,7 @@ function hlProbeFor(wide) {
 // The configuration arrives as ONE ARRAY rather than as separate parameters,
 // and that is forced rather than stylistic: at ten parameters monkeyc rejects
 // the declaration with "Too many arguments passed to method" -- but only in the
-// SHIPPING build, so the --unit-test compile passes on all twelve devices and
+// SHIPPING build, so the --unit-test compile passes on all nineteen devices and
 // release-build is the job that fails. Layout of cfg:
 //   [0] kind        step-type constant, or -1 pre-START, or -2 free row
 //   [1] paused

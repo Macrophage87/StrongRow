@@ -507,7 +507,7 @@ device parts** across the 12 manifest products, `run-tests` green at
 **19** products since the fenix 9 family was added (§1.4), so the part count for
 the current tree is **UNMEASURED until the next export reads it off the log**.
 Do not derive it: the number belongs to `monkeyc -e`'s output and is read from
-there, never computed from a per-device part table. (`compile-unit-test` on
+there, never computed from a per-device part table. (`release-build` on
 `c383757` — the container repin alone, still 12 products — printed
 `26 OUT OF 26 DEVICES BUILT`, which is the last measurement of the OLD pair and
 not a measurement of the new one.)

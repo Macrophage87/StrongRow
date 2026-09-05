@@ -6,7 +6,7 @@ using Toybox.Test;
 // never reach the field.
 //
 // These are (:test) functions: included in the --unit-test build (the
-// compile-unit-test CI job compiles them across all 12 devices) and stripped
+// compile-unit-test CI job compiles them across all 19 devices) and stripped
 // from the shipping build. They EXECUTE on every PR: the run-tests CI job
 // runs them headlessly in the simulator (`monkeydo <prg> fr965 -t`) and a
 // fail-closed parser judges the output. Their names are pinned in
