@@ -147,16 +147,23 @@ def _():
 
 
 @case("A9 the window is chosen by the CANDIDATE, not by the zone being left "
-      "(theWindows... (c))")
+      "(theWindowsAreTheTwoConstantsOnAClock (a))")
 def _():
     # THE MUTANT THIS KILLS: need chosen by the zone being LEFT
     # (`CUE_PERSIST_IN_MS if cur == CUEZ_IN else ...`), which is the rule the
-    # superseded analysis replayed. It would adopt here at CUE_PERSIST_IN_MS.
+    # superseded analysis replayed. Leaving IN for ABOVE, that mutant adopts at
+    # CUE_PERSIST_IN_MS; the shipped rule keys on the candidate and waits
+    # CUE_PERSIST_OUT_MS.
+    #
+    # RETARGETED FROM BELOW -> ABOVE, and the reason is not cosmetic: that
+    # vector is now the one transition that bypasses the window entirely (A13),
+    # so it can no longer say anything about which window applies. IN -> ABOVE
+    # kills the identical mutant and is not a sign reversal.
     out = R.CUE_PERSIST_OUT_MS
-    early = R.cue_step(25.0, LO, HI, BELOW, ABOVE, 0, out - 1)[0]
-    late = R.cue_step(25.0, LO, HI, BELOW, ABOVE, 0, out)[0]
-    mid = R.cue_step(25.0, LO, HI, BELOW, ABOVE, 0, R.CUE_PERSIST_IN_MS)[0]
-    return [early, late, mid], [BELOW, ABOVE, BELOW]
+    early = R.cue_step(19.5, LO, HI, IN, ABOVE, 0, out - 1)[0]
+    late = R.cue_step(19.5, LO, HI, IN, ABOVE, 0, out)[0]
+    mid = R.cue_step(19.5, LO, HI, IN, ABOVE, 0, R.CUE_PERSIST_IN_MS)[0]
+    return [early, late, mid], [IN, ABOVE, IN]
 
 
 @case("A10 persistence means CONTINUOUS -- an interrupted spike banks nothing "
@@ -182,6 +189,27 @@ def _():
 def _():
     back = R.cue_step(19.5, LO, HI, IN, ABOVE, 5000, 1000)
     return [back[0], back[2]], [IN, 1000]
+
+
+@case("A13 a candidate on the OPPOSITE side of the band bypasses the window "
+      "(c2_anOppositeZoneIsAdoptedWithoutTheLatch (a)/(b))")
+def _():
+    # RED before the sign-reversal fix, and the transcription's half of it. The
+    # Monkey C case of the same name asserts the same two vectors against the
+    # shipping cueStep.
+    down = R.cue_step(7.0, LO, HI, ABOVE, ABOVE, 0, 0)
+    up = R.cue_step(25.0, LO, HI, BELOW, BELOW, 0, 0)
+    return [down[0], down[1], down[2], up[0]], [BELOW, BELOW, 0, ABOVE]
+
+
+@case("A14 CUE_REVERSAL_FAST records which rule the mirror is mirroring")
+def _():
+    # The transcription's statement of WHICH machine it is. cue_replay.py's
+    # sweep and the CUE_* comment both key off this flag, and a flag that
+    # disagreed with the branch beside it would be the transcription drifting
+    # from the Monkey C in the one place a reader would not look.
+    got = R.cue_step(7.0, LO, HI, ABOVE, ABOVE, 0, 0)[0] == BELOW
+    return [R.CUE_REVERSAL_FAST, got], [True, True]
 
 
 # ===========================================================================
@@ -242,32 +270,68 @@ def tab(s):
             "%.0f" % s["lag_s"])
 
 
-@case("C1 the calm row's table: FALSE-HIGH 11.8 -> 2.6, flicker 2.87 -> 1.10")
+@case("C1 the calm row's table: FALSE-HIGH 11.8 -> 2.3, flicker 2.87 -> 1.37")
 def _():
+    # MOVED BY THIS BRANCH, from (2.6, 1.8, 15.3, 1.10, 1). The sign-reversal
+    # fast path and the 4000/1000 -> 2000/500 retune both land in the same
+    # commit, so the "after" column is the new machine's. Every component of
+    # the movement is reported rather than only the flattering ones:
+    # FALSE-HIGH 2.6 -> 2.3 and missed-HIGH 15.3 -> 13.7 improve, false-low
+    # 1.8 -> 2.4 and flicker 1.10 -> 1.37 get worse, median lag 1 s -> 0 s.
     f = figures("calm")
     return [tab(f["raw"]), tab(f["cue"])], \
            [("11.8", "7.1", "6.2", "2.87", "0"),
-            ("2.6", "1.8", "15.3", "1.10", "1")]
+            ("2.3", "2.4", "13.7", "1.37", "0")]
 
 
-@case("C2 the choppy row's table: FALSE-HIGH UNCHANGED at 6.9, "
-      "false-low 18.1 -> 3.0, flicker 2.30 -> 1.17")
+@case("C2 the choppy row's table: FALSE-HIGH 6.9 -> 4.5 on the RETUNED rule, "
+      "false-low 18.1 -> 4.5, flicker 2.30 -> 1.25")
 def _():
-    # The load-bearing correction. The comment advertised choppy FALSE-HIGH
-    # 6.9% -> 4.5%; that was a property of a candidate that never shipped. The
-    # shipped rule leaves it where it was, and this case is what keeps the
-    # retraction honest: a future edit that "restores" 4.5% has to red here.
+    # 4.5 IS BACK, AND THE COINCIDENCE HAS TO BE ADDRESSED HEAD ON, because the
+    # previous revision of this case said in as many words that "a future edit
+    # that 'restores' 4.5% has to red here". It has. Read what that sentence
+    # was protecting:
+    #
+    #   * the retracted 4.5% was a figure quoted for a machine that NEVER
+    #     SHIPPED -- a two-stage replay whose deadband ran free on every
+    #     sample, whose window was keyed on the zone being LEFT, and which
+    #     counted samples rather than milliseconds. It was not reproducible
+    #     from anything committed.
+    #   * this 4.5% is what `python3 scripts/cue_replay.py` prints today, from
+    #     the committed fixture, for the rule in StrongRowView.mc as of this
+    #     commit: the sign-reversal fast path plus CUE_PERSIST_OUT_MS = 2000
+    #     and CUE_PERSIST_IN_MS = 500. Halving the RE-ENTRY window is what
+    #     moves it -- at 2000/1000 it is still 6.0 -- because a spike's colour
+    #     is withdrawn sooner.
+    #
+    # The retraction is NOT being quietly reversed. What was withdrawn was the
+    # claim that the SHIPPED 4000/1000 rule reduced this figure; it did not,
+    # and C2's previous expectation (6.9 -> 6.9) is what said so. That claim
+    # stays withdrawn and is stated in the CUE_* block as history.
+    #
+    # AND THIS IS NOT A FIX FOR #149. #149's substance is that a design was
+    # chosen on a figure nobody could regenerate. One replay of a retuned
+    # machine over the same two rows is the same class of evidence, and the
+    # honest report of it is "the number moved", not "the defect is closed".
+    #
+    # The movement in full, including the part that is worse: FALSE-HIGH
+    # 6.9 -> 4.5, false-low 3.0 -> 4.5, missed-HIGH 2.5 -> 2.1, flicker
+    # 1.17 -> 1.25, median lag 5 s -> 4 s.
     f = figures("choppy")
     return [tab(f["raw"]), tab(f["cue"])], \
            [("6.9", "18.1", "1.5", "2.30", "0"),
-            ("6.9", "3.0", "2.5", "1.17", "5")]
+            ("4.5", "4.5", "2.1", "1.25", "4")]
 
 
-@case("C3 the choppy FALSE-HIGH count is identical, but not the same seconds")
+@case("C3 the choppy false-highs are now a strict SUBSET of the raw ones")
 def _():
-    # 28 of 403 truth-IN seconds either way, with 18 in common: the cue
-    # RELOCATES the choppy row's false-highs rather than removing them. Stated
-    # numerically because "unchanged" alone would read as "does nothing".
+    # MOVED. The shipped 4000/1000 rule gave 28 against 28 with 18 in common --
+    # it RELOCATED the choppy row's false-highs rather than removing them, and
+    # that relocation is what C2's retracted 4.5% had obscured. The retuned rule
+    # gives 18 against the raw 28, all 18 of them among the raw 28: nothing new
+    # is invented, ten are removed. Stated as a set relation and not as a count,
+    # because two equal counts over different seconds is what happened last
+    # time.
     f = figures("choppy")
     lo, hi = f["band"]
     sets = []
@@ -281,21 +345,25 @@ def _():
                     acc.add((li, i))
         sets.append(acc)
     return [len(sets[0]), len(sets[1]), len(sets[0] & sets[1]),
-            f["cue"]["truth_in"]], [28, 28, 18, 403]
+            f["cue"]["truth_in"]], [28, 18, 18, 403]
 
 
 @case("C4 smoothing the NUMBER makes the choppy row worse, on the SHIPPED rule")
 def _():
     f = figures("choppy")
+    # Re-measured on the RETUNED rule. The negative result survives the retune,
+    # which is the point of re-running it rather than assuming: 4.5 unfiltered
+    # against 7.9 (median-5) and 11.4 (median-9), with Hampel unable to move it.
     return ["%.1f" % f[k]["false_high"] for k in ("cue", "m5", "m9", "hp")], \
-           ["6.9", "9.7", "13.2", "6.9"]
+           ["4.5", "7.9", "11.4", "4.5"]
 
 
 @case("C5 smoothing the NUMBER makes the calm row worse too")
 def _():
     f = figures("calm")
+    # Re-measured on the RETUNED rule: 2.3 unfiltered against 3.3, 4.1 and 2.4.
     return ["%.1f" % f[k]["false_high"] for k in ("cue", "m5", "m9", "hp")], \
-           ["2.6", "3.4", "4.7", "2.9"]
+           ["2.3", "3.3", "4.1", "2.4"]
 
 
 @case("C6 neither filter touches the 37.5 spm spike, which is 6 s long "
@@ -411,9 +479,19 @@ def _():
     for _k, lo, hi, _l, laps in R.load_all():
         c = R.coherence(laps, lo, hi, R.zones_cue)
         out.append((c["opposite"], c["disagree"], c["ambiguous"], c["shown"]))
-    return out, [(22, 707, 3053, 3496),
-                 (8, 300, 811, 1436),
-                 (20, 185, 705, 1420)]
+    # AFTER: opposite-side seconds are ZERO on every row, which is the whole
+    # acceptance criterion -- a displayed instruction never points the opposite
+    # way from the number beside it. Disagreement and ambiguity fall too, but
+    # they are not targets: the residue is the deadband and the latch, which
+    # are the feature.
+    #
+    #   row       opposite    disagree     ambiguous of seconds carrying a value
+    #   calm       22 -> 0    707 -> 562   3053 -> 1636 of 3496 (87.3 -> 46.8 %)
+    #   choppy      8 -> 0    300 -> 216    811 ->  450 of 1436 (56.5 -> 31.3 %)
+    #   reversal   20 -> 0    185 -> 127    705 ->  379 of 1420 (49.6 -> 26.7 %)
+    return out, [(0, 562, 1636, 3496),
+                 (0, 216, 450, 1436),
+                 (0, 127, 379, 1420)]
 
 
 @case("D5 a 125 ms drive gives the same table as the 250 ms tick, every row")
@@ -428,6 +506,47 @@ def _():
         b = R.score(laps, lo, hi, lambda s, l, h: R.zones_cue(s, l, h, 125))
         same.append(tab(a) == tab(b))
     return same, [True, True, True]
+
+
+@case("D6 the two windows are the sweep's own choice, by a stated rule")
+def _():
+    # THE SELECTION RULE, in code rather than in prose, so the retune can be
+    # re-derived instead of taken on trust -- which is exactly what #149 says
+    # was missing the first time these constants were chosen.
+    #
+    #   ADMISSIBLE   flips/min at or below 0.70x the memoryless machine's, on
+    #                EVERY row. The sign-reversal fast path alone already costs
+    #                the reversal row 1.18 -> 1.77 flips/min, which is 0.665 of
+    #                raw, so 0.70 is the nearest round bound above what the fix
+    #                spends before any retune: the retune is allowed at most
+    #                3.5 further points of the flicker suppression the cue was
+    #                introduced for.
+    #   CHOSEN       of the admissible settings, the one with the smallest MEAN
+    #                ADOPT LAG over the three rows -- the latch alone, with the
+    #                deadband already spent. Responsiveness is the objective;
+    #                the flicker bound is the constraint.
+    #
+    # STATED PLAINLY: 0.70 was fixed after reading the sweep, so it is a
+    # selection rule and not a prediction. What it is not is arbitrary -- it is
+    # pinned to a quantity the fix had already spent before any tuning
+    # happened, and the sweep it selects from is printed by
+    # `python3 scripts/cue_replay.py --sweep`.
+    rows = R.load_all()
+    best, best_lag = None, None
+    for out_ms, in_ms in R.SWEEP:
+        st = R.tuned(out_ms, in_ms, True)
+        ratios, lags = [], []
+        for _k, lo, hi, _l, laps in rows:
+            ratios.append(R.score(laps, lo, hi, st)["flips_per_min"]
+                          / R.score(laps, lo, hi, R.zones_raw)["flips_per_min"])
+            lags.append(R.adopt_lag(laps, lo, hi, out_ms, in_ms, True)["mean_s"])
+        if max(ratios) > 0.70:
+            continue
+        mean_lag = sum(lags) / len(lags)
+        if best_lag is None or mean_lag < best_lag:
+            best, best_lag = (out_ms, in_ms), mean_lag
+    return [best, (R.CUE_PERSIST_OUT_MS, R.CUE_PERSIST_IN_MS)], \
+           [(2000, 500), (2000, 500)]
 
 
 def main():

@@ -925,19 +925,24 @@ module CueFix {
     }
 
     // (c) CROSSING THE BAND, below to above, with no settled frame in between.
-    // Covered by neither "leaving IN" nor "entering IN", so it is stated rather
-    // than left to be inferred: any out-of-band instruction is the expensive
-    // claim and pays the long window.
+    //
+    // RETRACTION, corrected here rather than in new text elsewhere. This
+    // section used to assert that such a crossing pays the LONG window --
+    // "any out-of-band instruction is the expensive claim, whichever zone it
+    // replaces". That generalisation is wrong for exactly one transition and
+    // it is the one the athlete reported: while ABOVE is displayed and the
+    // number has gone BELOW, holding the old zone leaves "ease off" printed
+    // beside a 7. The claim survives for every SAME-SIDE change (c0's
+    // theLatchGovernsEverySameSideChange is what says so); it does not survive
+    // for a sign reversal, which is adopted at once because the alternative is
+    // an instruction pointing the opposite way from the number beside it.
     var xe = StrongRowView.cueStep(25.0, CueFix.LO, CueFix.HI,
-                                   $.CUEZ_BELOW, $.CUEZ_ABOVE, 0, outw - 1);
-    var xl = StrongRowView.cueStep(25.0, CueFix.LO, CueFix.HI,
-                                   $.CUEZ_BELOW, $.CUEZ_ABOVE, 0, outw);
-    if (xe[0] != $.CUEZ_BELOW || xl[0] != $.CUEZ_ABOVE) {
-        logger.error("(c) an out-of-band instruction is the expensive claim " +
-                     "whichever zone it replaces: at " + (outw - 1) +
-                     " ms the zone is " + xe[0] + " (expected " +
-                     $.CUEZ_BELOW + ") and at " + outw + " ms " + xl[0] +
-                     " (expected " + $.CUEZ_ABOVE + ")");
+                                   $.CUEZ_BELOW, $.CUEZ_ABOVE, 0, 0);
+    if (xe[0] != $.CUEZ_ABOVE) {
+        logger.error("(c) a candidate on the OPPOSITE side of the band from " +
+                     "the zone on screen is adopted on the frame it appears, " +
+                     "with no window: at 0 ms the zone is " + xe[0] +
+                     ", expected " + $.CUEZ_ABOVE);
         return false;
     }
 
@@ -1112,6 +1117,215 @@ module CueFix {
                      "either the candidate or its timestamp is not surviving " +
                      "the frame at the call site, so the zone freezes at " +
                      "whatever it first showed");
+        return false;
+    }
+    return true;
+}
+
+// -- c2: the differentials for the SIGN-REVERSAL fix ---------------------------
+//
+// Every case from here to the end of this block is RED before the fix and green
+// after it. They are the whole of what changes.
+//
+// THE DEFECT, as reported and as measured. "It can be red at 7 spm." Reproduced
+// on i183553852 (2026-09-05, v0.9): 20 work-seconds carry a displayed value
+// whose own band zone is the opposite side of the 16-18 band from the colour
+// beside it. The mechanism is cueStep's persistence window -- any candidate
+// zone must hold CUE_PERSIST_OUT_MS continuously before the colour follows, and
+// only CUEZ_NONE bypassed it -- so when the estimator collapses 21 -> 7 for two
+// to four seconds (a lock subharmonic, owned by a different branch), the red
+// earned at 21 stays on screen beside a 7.
+//
+// WHAT IS NOT CLAIMED HERE. The reported "blue at 20 spm" does NOT reproduce at
+// the 16-18 default band -- zero seconds of it -- and the app records no band
+// setting anywhere in the file, so it is unresolved rather than fixed. And the
+// subharmonic itself is not touched: the number still collapses to 7. This
+// makes the instruction agree with the number, not the number correct.
+
+// THE REVERSAL, BOTH WAYS, AS A PURE CALL.
+(:test) function test_cue_c2_anOppositeZoneIsAdoptedWithoutTheLatch(logger) {
+    // (a) ABOVE displayed, BELOW asking, ONE frame, at the very instant the
+    // candidate first appears -- `since == now`, so not one millisecond of the
+    // window has been earned. 7.0 is the subharmonic the recording shows.
+    var d = StrongRowView.cueStep(7.0, CueFix.LO, CueFix.HI,
+                                  $.CUEZ_ABOVE, $.CUEZ_ABOVE, 0, 0);
+    if (d[0] != $.CUEZ_BELOW) {
+        logger.error("(a) 'ease off' printed beside a 7.0 is an instruction " +
+                     "pointing the opposite way from the number: the opposite " +
+                     "zone must be adopted on the frame it appears. Zone is " +
+                     d[0] + ", expected " + $.CUEZ_BELOW);
+        return false;
+    }
+    // The candidate and the timestamp go with it: a machine that returned the
+    // right zone but left a stale candidate behind would flap on the next frame.
+    if (d[1] != $.CUEZ_BELOW || d[2] != 0) {
+        logger.error("(a) the adopted zone must also become the candidate, " +
+                     "with the clock restarted, exactly as the other " +
+                     "adopt-at-once paths do; got candidate " + d[1] +
+                     ", since " + d[2] + ", expected " + $.CUEZ_BELOW + " and 0");
+        return false;
+    }
+
+    // (b) THE SYMMETRIC CASE. BELOW displayed, ABOVE asking. Neither direction
+    // is privileged: an athlete told to row harder while the number reads 25 is
+    // the same defect wearing the other colour.
+    var u = StrongRowView.cueStep(25.0, CueFix.LO, CueFix.HI,
+                                  $.CUEZ_BELOW, $.CUEZ_BELOW, 0, 0);
+    if (u[0] != $.CUEZ_ABOVE) {
+        logger.error("(b) 'row harder' printed beside a 25.0 is the same " +
+                     "defect with the colours swapped; zone is " + u[0] +
+                     ", expected " + $.CUEZ_ABOVE);
+        return false;
+    }
+
+    // (c) NOT A DELAY, A BYPASS. Driven as a real frame sequence at the 250 ms
+    // tick from a settled ABOVE, feeding the output back exactly as the call
+    // site does: the FIRST frame carrying the opposite reading must already
+    // show the opposite zone. A machine that merely shortened the window would
+    // pass (a) -- which starts at since == now -- and fail here.
+    var z = $.CUEZ_IN;
+    var c = $.CUEZ_IN;
+    var t0 = 60000;
+    var since = t0;
+    for (var t = t0; t <= t0 + $.CUE_PERSIST_OUT_MS + 2000; t += 250) {
+        var o = StrongRowView.cueStep(25.0, CueFix.LO, CueFix.HI,
+                                      z, c, since, t);
+        z = o[0]; c = o[1]; since = o[2];
+    }
+    if (z != $.CUEZ_ABOVE) {
+        logger.error("(c) setup: a 25.0 spm reading held past the out-of-band " +
+                     "window must be displaying ABOVE before the dip; zone is " +
+                     z);
+        return false;
+    }
+    var dip = StrongRowView.cueStep(7.0, CueFix.LO, CueFix.HI, z, c, since,
+                                    t0 + $.CUE_PERSIST_OUT_MS + 2250);
+    if (dip[0] != $.CUEZ_BELOW) {
+        logger.error("(c) the first frame carrying the opposite reading must " +
+                     "already carry the opposite zone -- shortening the window " +
+                     "is not the fix, bypassing it is. Zone is " + dip[0] +
+                     ", expected " + $.CUEZ_BELOW);
+        return false;
+    }
+    return true;
+}
+
+// THE LATCH IS NARROWED, NOT REMOVED.
+//
+// c0's theLatchGovernsEverySameSideChange makes the same point against the
+// constants, so it is green in both epochs. This one states the two numbers,
+// so it is RED until they are the numbers the sweep chose -- and it is the ONLY
+// case in the suite that has to be edited by a retune.
+(:test) function test_cue_c2_theWindowsAreTwoSecondsAndAHalf(logger) {
+    if ($.CUE_PERSIST_OUT_MS != 2000) {
+        logger.error("CUE_PERSIST_OUT_MS is " + $.CUE_PERSIST_OUT_MS +
+                     ", expected 2000. Chosen by the sweep in " +
+                     "scripts/cue_replay.py --sweep: the fastest setting whose " +
+                     "flips/min stays at or below 0.70x the memoryless " +
+                     "machine's on all three recorded rows");
+        return false;
+    }
+    if ($.CUE_PERSIST_IN_MS != 500) {
+        logger.error("CUE_PERSIST_IN_MS is " + $.CUE_PERSIST_IN_MS +
+                     ", expected 500. Halving the RE-ENTRY window is what moves " +
+                     "the ambiguous-value fraction (46.8/31.3/26.7 % against " +
+                     "82.4/56.5/47.2 % at 2000/1000): a spike's colour is " +
+                     "cleared sooner, so fewer numerals carry two colours");
+        return false;
+    }
+
+    // A SAME-SIDE out-of-band candidate still pays, to the millisecond, at the
+    // NEW window. Literal stamps on purpose -- this case is the one that owns
+    // the numbers.
+    var early = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
+                                      $.CUEZ_IN, $.CUEZ_ABOVE, 0, 1999);
+    var late = StrongRowView.cueStep(19.5, CueFix.LO, CueFix.HI,
+                                     $.CUEZ_IN, $.CUEZ_ABOVE, 0, 2000);
+    if (early[0] != $.CUEZ_IN || late[0] != $.CUEZ_ABOVE) {
+        logger.error("IN -> ABOVE is not a sign reversal and must still hold " +
+                     "for the full 2000 ms: at 1999 ms the zone is " +
+                     early[0] + " (expected " + $.CUEZ_IN + ") and at 2000 ms " +
+                     late[0] + " (expected " + $.CUEZ_ABOVE + ")");
+        return false;
+    }
+    var back = StrongRowView.cueStep(17.0, CueFix.LO, CueFix.HI,
+                                     $.CUEZ_ABOVE, $.CUEZ_IN, 0, 499);
+    var backIn = StrongRowView.cueStep(17.0, CueFix.LO, CueFix.HI,
+                                       $.CUEZ_ABOVE, $.CUEZ_IN, 0, 500);
+    if (back[0] != $.CUEZ_ABOVE || backIn[0] != $.CUEZ_IN) {
+        logger.error("returning to the band pays 500 ms: at 499 ms the zone " +
+                     "is " + back[0] + " (expected " + $.CUEZ_ABOVE +
+                     ") and at 500 ms " + backIn[0] + " (expected " +
+                     $.CUEZ_IN + ")");
+        return false;
+    }
+    return true;
+}
+
+// THE DEFECT ITSELF, ON THE SHIPPING DRAW PATH.
+//
+// Everything above is cueStep called directly. This is what the athlete sees:
+// onUpdate -> drawRate, with the numeral and its colour read off a recording
+// Dc. c0's theNumeralSurvivesASignReversal asserts the numeral on the same
+// frame sequence and says nothing about the colour; this asserts the colour.
+// Together they are the pair.
+(:test) function test_cue_c2_theColourNeverPointsOppositeTheNumeral(logger) {
+    var p = CueFix.workProbe();
+    p.setRate(17.0);
+    CueFix.renderAt(p, 0);
+    CueFix.renderAt(p, 250);
+    p.setRate(25.0);
+    for (var t = 500; t <= 500 + $.CUE_PERSIST_OUT_MS + 1000; t += 250) {
+        CueFix.renderAt(p, t);
+    }
+    var settled = CueFix.renderAt(p, 500 + $.CUE_PERSIST_OUT_MS + 1250);
+    if (CueFix.numeralColour(settled) != Gfx.COLOR_RED) {
+        logger.error("setup: the overshoot must have reached red before the " +
+                     "reversal; got " + CueFix.numeralColour(settled));
+        return false;
+    }
+
+    p.setRate(7.0);
+    var d = CueFix.renderAt(p, 500 + $.CUE_PERSIST_OUT_MS + 1500);
+    var col = CueFix.numeralColour(d);
+    var txt = CueFix.numeralText(d);
+    if (txt == null || !txt.equals("7.0")) {
+        logger.error("setup: the numeral must already read 7.0 on this frame; " +
+                     "got '" + txt + "'");
+        return false;
+    }
+    if (col != Gfx.COLOR_BLUE) {
+        logger.error("the numeral reads " + txt + ", which is below the " +
+                     "16-18 band, and the colour beside it is " + col +
+                     " (COLOR_RED = " + Gfx.COLOR_RED + ", COLOR_BLUE = " +
+                     Gfx.COLOR_BLUE + "). An instruction to EASE OFF printed " +
+                     "beside a 7.0 points the opposite way from the number it " +
+                     "is describing -- the whole defect, on one frame");
+        return false;
+    }
+
+    // The mirror, through the same path: a settled BELOW with the number
+    // jumping above the band must turn red at once.
+    var q = CueFix.workProbe();
+    q.setRate(17.0);
+    CueFix.renderAt(q, 0);
+    CueFix.renderAt(q, 250);
+    q.setRate(7.0);
+    for (var u = 500; u <= 500 + $.CUE_PERSIST_OUT_MS + 1000; u += 250) {
+        CueFix.renderAt(q, u);
+    }
+    if (CueFix.numeralColour(CueFix.renderAt(q, 500 + $.CUE_PERSIST_OUT_MS + 1250))
+            != Gfx.COLOR_BLUE) {
+        logger.error("setup (mirror): a held 7.0 must have reached blue");
+        return false;
+    }
+    q.setRate(25.0);
+    var m = CueFix.renderAt(q, 500 + $.CUE_PERSIST_OUT_MS + 1500);
+    if (CueFix.numeralColour(m) != Gfx.COLOR_RED) {
+        logger.error("mirror: the numeral reads " +
+                     CueFix.numeralText(m) + " and the colour is " +
+                     CueFix.numeralColour(m) + ", expected COLOR_RED (" +
+                     Gfx.COLOR_RED + ")");
         return false;
     }
     return true;
