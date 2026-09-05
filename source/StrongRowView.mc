@@ -756,6 +756,14 @@ const CUEZ_ABOVE = 2;    // ease off
 // re-derives every number quoted here and reds if any of them moves, so this
 // comment can no longer drift away from the data.
 //
+// THAT IS NOW TRUE OF THE BEFORE COLUMNS TOO, and for one revision it was not.
+// The figures describing the machine that shipped BEFORE this change -- the
+// opposite-side counts, the #149 table's left-hand column, the two rejected
+// designs -- were reachable only as library calls with no command behind them
+// and no case asserting them. `zones_before`, `design_a` and `design_b` in
+// scripts/cue_replay.py are those machines, `main()` prints all of them, and
+// D10 / D11 / D12 pin them.
+//
 // RETRACTION, kept rather than edited away because the retracted claims were
 // load-bearing for the whole design. An earlier revision of this block quoted
 // figures produced by a DIFFERENT machine from the one that shipped: a two-stage
@@ -888,9 +896,16 @@ const CUEZ_ABOVE = 2;    // ease off
 //
 //   ADMISSIBLE   flips/min at or below 0.70x the memoryless machine's, on EVERY
 //                row. The fast path alone already costs the reversal row 1.18
-//                -> 1.77, which is 0.665 of raw, so 0.70 is the nearest round
+//                -> 1.77, which is 0.667 of raw, so 0.70 is the nearest round
 //                bound above what the FIX had already spent before any tuning:
-//                the retune may spend at most 3.5 further points.
+//                the retune may spend at most 3.3 further points.
+//                (0.665 was this block's figure for one revision. It is what
+//                you get by dividing the two DISPLAYED, ROUNDED flips/min --
+//                1.77 / 2.66. The quantity the sentence names is the one the
+//                selection rule computes, and it is 0.666667, exactly two
+//                thirds; `python3 scripts/cue_replay.py --sweep` prints it in
+//                the `ratio` column and again in the selection block. The
+//                allowance moves with it, 0.0333 rather than 0.035.)
 //   CHOSEN       of those, the smallest MEAN ADOPT LAG -- the latch alone, with
 //                the deadband already spent. Responsiveness is the objective and
 //                the flicker bound is the constraint, which is the maintainer's
@@ -910,7 +925,17 @@ const CUEZ_ABOVE = 2;    // ease off
 // EDGE LAG -- the number crossing a band edge to the colour FOLLOWING it, which
 // is what the athlete experiences -- moves far less: mean 6.93 / 10.16 / 4.36 s
 // -> 6.34 / 7.73 / 2.91 s, and the MAXIMUM does not move at all (calm 84 s ->
-// 85 s, and 89 s with no latch whatsoever). That residue is not the latch, it
+// 85 s, and 89 s with no latch whatsoever).
+//
+// THOSE TWO MEANS ARE OVER DIFFERENT POPULATIONS AND MUST NOT BE SUBTRACTED.
+// edge_lag() averages only the crossings THAT machine followed within 90 s; the
+// faster machine follows MORE of them -- calm 127 -> 138 of 165, reversal
+// 45 -> 53 of 60 -- and the ones it newly follows are the SLOW ones, which
+// raises its own mean. On the 127 calm crossings both machines follow, the same
+// change is 6.93 -> 5.53 s, so the calm improvement is UNDERSTATED by the bare
+// pair and the reversal row's is OVERSTATED. cue_replay.py prints the
+// denominator beside each mean and D8 pins it. What survives either way is the
+// MAXIMUM, which is a property of one machine at a time. That residue is not the latch, it
 // is the DEADBAND: a number a tenth of a spm over hi does not move a colour
 // showing IN, by design, and may never. Anyone attacking "the cue is slow" by
 // shortening these windows a SECOND time should read those two lines first --
@@ -1977,7 +2002,10 @@ class StrongRowView extends Ui.View {
     //
     // THE COST, STATED RATHER THAN DISCOVERED: the numeral reads "--.-" until
     // TWO strokes have registered after START -- one to set mLastStrokeT, one to
-    // form the first period. At 20 spm that is about 6 s, at 26 spm about 4.6 s.
+    // form the first period. That is ONE FULL STROKE INTERVAL plus however far
+    // into an interval the START press landed, so at 20 spm it is 3 to 6 s and
+    // about 4.5 s typically, and at 26 spm 2.3 to 4.6 s. The 6 s and 4.6 s are
+    // the WORST cases, not the expected ones.
     // It is NOT the ~10 s an autocorrelation lock takes to come up (#9): the
     // lock is not needed below fastGate, and the same recording shows readings
     // published from its first record with lock_rate 0.00 throughout the first
@@ -3479,6 +3507,24 @@ class StrongRowView extends Ui.View {
         // still pays; two candidates on the same side cannot arise, because
         // want == cur returns above.
         //
+        // WHAT STOPS THIS OSCILLATING, since it is the one branch with no
+        // window. It is NOT CUE_DEADBAND: cueTarget widens the band only while
+        // cur == CUEZ_IN, and this branch is reachable only with cur BELOW or
+        // ABOVE, so the deadband is not applied on the frames that reach here.
+        // The hysteresis is THE BAND ITSELF -- to fire, the reading must cross
+        // the whole of it between two frames, 2.0 spm at the shipped default
+        // 16-18. Measured on the three committed rows at the 250 ms tick: the
+        // branch fires 9 / 2 / 14 times, never on consecutive ticks, minimum
+        // gap 2000 ms.
+        //
+        // SO THE HYSTERESIS IS ZERO WHEN targetLo == targetHi, and nothing
+        // clamps that: loadSettings swaps the pair when hi < lo but does not
+        // force hi > lo. At 20/20 a reading straddling one threshold would flip
+        // the colour with no window and no deadband, where before this change
+        // it paid CUE_PERSIST_OUT_MS each way. Narrow -- it needs a deliberate
+        // one-value band -- and filed rather than clamped here, because a
+        // settings clamp is a different change with its own cases.
+        //
         // WHY THIS ONE. Every other stale zone is a WEAKER claim than the
         // truth: showing IN while the rate has gone above the band understates
         // the correction, and showing ABOVE while the rate has come back into
@@ -3493,8 +3539,18 @@ class StrongRowView extends Ui.View {
         // MEASURED, on the row that reported it (i183553852, 2026-09-05, v0.9,
         // committed as scripts/fixtures/cue_reversal_row.txt): 20 of its 1420
         // work-seconds carrying a reading were in this state. Across all three
-        // recorded rows the count goes 22 / 8 / 20 -> 0 / 0 / 0. Regenerate
-        // with `python3 scripts/cue_replay.py`.
+        // recorded rows the count goes 22 / 8 / 20 -> 0 / 0 / 0.
+        //
+        // BOTH COLUMNS COME OFF `python3 scripts/cue_replay.py`, and for one
+        // revision only one of them did. That command printed the AFTER column
+        // -- opposite 0 on every row -- while this comment cited it for
+        // 22 / 8 / 20, which describes a machine no longer in the tree. It is
+        // now named (`SHIPPED_BEFORE` / `zones_before` in that file, the
+        // 4000/1000 windows with no fast path), printed as the
+        // `shipped 4000/1000` row of the pair table, and pinned by
+        // scripts/test_cue_replay.py D10. A "regenerate with" pointer whose
+        // command does not print the figure is the pointer-that-contradicts-
+        // its-target defect landing in the block written to close it.
         //
         // THIS DOES NOT MAKE THE NUMBER RIGHT. The 7.0 is a lock subharmonic
         // and is still displayed and still recorded; what changes is that the
@@ -5231,8 +5287,23 @@ class StrongRowView extends Ui.View {
                 // reality, and either way it crosses the default 16-18 band.
                 //
                 // mRate and the DSP ring above are left running because
-                // clearing them would blank the numeral for NPER strokes after
+                // clearing them would blank the numeral for two strokes after
                 // every resume.
+                //
+                // TWO, NOT NPER, and this line said NPER until the START reset
+                // was written and computed it: recomputeRate publishes as soon
+                // as mPCount > 0, so an emptied ring costs ONE stroke to set
+                // mLastStrokeT and ONE to form the first period. The same
+                // figure is derived at resetStrokeBaseline. Corrected here
+                // because a file carrying both numbers for one quantity is how
+                // the next reader picks the wrong one.
+                //
+                // AND THE RESET DOES NOT RUN ON RESUME. togglePause() never
+                // calls beginSessionAccum(), so pause-time boat handling still
+                // shapes the first post-resume seconds. That is deliberate for
+                // now -- the pause carry-over is the separate, already-argued
+                // trade below, with its own mRateBase gate and hold -- and it
+                // is filed rather than folded in.
                 //
                 // THAT IS A TRADE, NOT A CLEAN WIN, and the cost follows from
                 // the same premise as the paragraph above: sustained motion at
@@ -5406,21 +5477,69 @@ class StrongRowView extends Ui.View {
     //
     //                       WHAT THE RESET IS AND IS NOT FOR, because the two
     //                       halves have different evidence.
+    //
     //                       THE RING is what published the 28.8, and that is
-    //                       measured on the file above.
+    //                       MEASURED: scripts/fixtures/start_carryover.txt
+    //                       carries the second, and
+    //                       scripts/test_start_witness.py C1/C2 assert both
+    //                       that the app displayed 28.8461 there and that
+    //                       clearing the baseline alone would have changed
+    //                       nothing on it.
+    //
     //                       THE BASELINE is a MECHANISM argument and is
-    //                       labelled as one: on that file it changes no gate
-    //                       decision, because LOCK_REL_K * 20.0 is exactly
-    //                       FAST_NEEDS_LOCK, so fastGate(b) == fastGate(0) for
-    //                       every b at or above 20.0 and that row's rate_base
-    //                       never fell below 22.68 in its first work interval
-    //                       (pinned by
-    //                       Lock.test_lock_c0_theGateSaturatesForAnyBaselineFromTwentyUp).
-    //                       The case it guards is the one that file does NOT
-    //                       show: a slow pre-START handling cadence
-    //                       establishing a base below 20.0, where the gate does
-    //                       bind and would zero genuine rowing at the top of
-    //                       the row.
+    //                       labelled as one. On this file it changed no
+    //                       published value in the first work interval -- and
+    //                       the reason is NOT the one an earlier revision of
+    //                       this paragraph gave.
+    //
+    //                       A SECOND RETRACTION, in the same shape as the first
+    //                       and for the same reason. This paragraph used to
+    //                       read "...so fastGate(b) == fastGate(0) for every b
+    //                       at or above 20.0 and that row's rate_base never
+    //                       fell below 22.68 in its first work interval",
+    //                       crediting the saturation case below with both
+    //                       halves. Two things were wrong with it and a third
+    //                       was misattributed:
+    //                         * 22.68 IS NOT THE MINIMUM. 22.6813 is the
+    //                           baseline at the interval's FIRST second; the
+    //                           minimum over the interval is 15.2863, a third
+    //                           lower and well under the 20.0 spm knee.
+    //                         * SO THE SATURATION IDENTITY DOES NOT COVER THE
+    //                           INTERVAL. fastGate was strictly below the
+    //                           absolute on 148 of its 181 seconds, with the
+    //                           bar as low as 22.9295 spm. The baseline was
+    //                           binding for most of the piece.
+    //                         * THE ATTRIBUTION WAS WRONG.
+    //                           Lock.test_lock_c0_theGateSaturatesForAnyBaselineFromTwentyUp
+    //                           asserts the ARITHMETIC IDENTITY and nothing
+    //                           else -- fastGate(b) == fastGate(0.0) ==
+    //                           FAST_NEEDS_LOCK for five inputs at or above
+    //                           20.0, with 22.68 as one of the five INPUTS. It
+    //                           says nothing about what any recording did, and
+    //                           at the time nothing could: no fixture carried
+    //                           rate_base at all. scripts/check_source_refs.py
+    //                           cannot catch this -- the named function exists,
+    //                           so the reference resolves and the claim beside
+    //                           it is still false. It did catch the abbreviated
+    //                           spellings this retraction was first written
+    //                           with, which is why both names are now in full.
+    //
+    //                       THE CORRECTED REASON, and it is a better one.
+    //                       fastGate is read ONLY on gatedRate's NO-LOCK
+    //                       branch. All 148 of those binding seconds carried a
+    //                       lock, so the tightened bar was never consulted on
+    //                       any of them, and on zero seconds of the interval
+    //                       did it zero a reading the absolute would have
+    //                       passed. Every figure in this paragraph is now
+    //                       printed by `python3 scripts/start_witness.py` and
+    //                       pinned by scripts/test_start_witness.py C3/C4.
+    //
+    //                       The case the baseline reset guards is still the one
+    //                       this file does NOT show: a slow pre-START handling
+    //                       cadence establishing a base below 20.0 on a row
+    //                       whose work is NOT lock-corroborated, where the gate
+    //                       binds and is consulted and would zero genuine
+    //                       rowing at the top of the row.
     //
     // WHAT THIS IS NOT. It is not validated on the water. What is established is
     // that the over-reads are real detector errors -- the hull sits at 0.814x /

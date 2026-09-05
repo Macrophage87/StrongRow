@@ -1998,20 +1998,36 @@ module Lock {
     return true;
 }
 
-// THE GATE SATURATES AT THE ABSOLUTE FOR EVERY BASELINE FROM 20.0 SPM UP, so an
-// inherited HIGH baseline is NOT what let the 28.8 through.
+// THE GATE SATURATES AT THE ABSOLUTE FOR EVERY BASELINE FROM 20.0 SPM UP.
 //
-// This case exists to stop the fix being sold on the wrong mechanism. fastGate
-// is min(FAST_NEEDS_LOCK, max(LOCK_GATE_FLOOR, LOCK_REL_K * base)), and with the
-// shipped constants LOCK_REL_K * 20.0 is exactly FAST_NEEDS_LOCK -- so for every
-// base at or above 20.0 the gate IS the absolute, identical to the gate with no
-// baseline at all. On the recording above, rate_base never fell below 22.68
-// during the first work interval, so zeroing it would have changed no gate
-// decision on that file. What published the 28.8 was the stroke-period RING,
-// which held pre-START periods and gave mRate a median to publish; the baseline
-// reset is for the case this file does NOT show -- a SLOW pre-START handling
-// cadence establishing a base below 20.0, where fastGate does bind and would
-// zero genuine rowing.
+// WHAT THIS CASE ASSERTS, AND WHAT IT DOES NOT. It asserts an ARITHMETIC
+// IDENTITY and nothing else: fastGate is
+// min(FAST_NEEDS_LOCK, max(LOCK_GATE_FLOOR, LOCK_REL_K * base)), the shipped
+// LOCK_REL_K * 20.0 is exactly FAST_NEEDS_LOCK, so for every base at or above
+// 20.0 the gate IS the absolute and is identical to the gate with no baseline at
+// all. 22.68 and 29.57 appear below as two of five INPUTS to that identity. This
+// case says nothing whatever about what any recording did.
+//
+// RETRACTION, because this header said otherwise for one revision and credited
+// this case with it. It read "On the recording above, rate_base never fell below
+// 22.68 during the first work interval, so zeroing it would have changed no gate
+// decision on that file." Measured since, from a fixture that did not exist when
+// that was written (scripts/fixtures/start_carryover.txt, printed by
+// scripts/start_witness.py):
+//   * 22.6813 is the baseline at that interval's FIRST second. The MINIMUM over
+//     the interval is 15.2863.
+//   * So the identity above does NOT cover the interval: fastGate was strictly
+//     below the absolute on 148 of its 181 seconds, as low as 22.9295 spm.
+//   * The conclusion nevertheless holds, for a different reason: fastGate is
+//     read only on gatedRate's NO-LOCK branch, all 148 of those seconds carried
+//     a lock, and on zero of them did the tightened bar change a published
+//     value. scripts/test_start_witness.py C3 and C4 pin both halves.
+//
+// So: what published the 28.8 was the stroke-period RING, which held pre-START
+// periods and gave mRate a median to publish. The baseline half of the reset is
+// for the case that file does NOT show -- a SLOW pre-START handling cadence
+// establishing a base below 20.0 on a row whose work is not lock-corroborated,
+// where fastGate does bind, is consulted, and would zero genuine rowing.
 (:test) function test_lock_c0_theGateSaturatesForAnyBaselineFromTwentyUp(logger) {
     var saturating = [20.0, 22.68, 25.0, 29.57, 40.0];
     for (var i = 0; i < saturating.size(); i++) {
