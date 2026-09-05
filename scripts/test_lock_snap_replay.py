@@ -37,30 +37,46 @@ MUTATION MATRIX, so "this suite pins the harness" is a measurement and not a
 claim. Each row is ONE edit to scripts/lock_snap_replay.py (or to a fixture),
 applied to a scratch copy of scripts/, after which this suite is run. A pin
 that does not red under the mutation it claims to guard is decoration, and
-decoration reads as coverage. Reproduce any row with one substitution:
+decoration reads as coverage.
 
-  #   the edit                                          named failures
-  M1  delete the guard: `r = ac` unconditionally             33
-  M2  `q = raw / ac` (drop the max/min swap)                 20
-  M3  `d <= tol` (absolute, not relative to the ratio)       13
-  M4  LOCK_HARM_TOL 0.10 -> 0.30                             22
-  M5  `return False` for the 3:1 band                        29
-  M6  drop `raw <= 0.0 or ac <= 0.0` from the predicate       2
-  M7  LOCK_SNAP_K 0.30 -> 0.25                               19
-  M8  count an absent enhanced_speed as a slow boat           2
+  #    the edit                                             named failures
+  M1   delete the guard: `r = ac` unconditionally                50
+  M2   `q = raw / ac` (drop the max/min swap)                    31
+  M3   `d <= tol` on the band (absolute, not relative to         30
+       the ratio)
+  M4   LOCK_HARM_TOL 0.10 -> 0.30                                34
+  M5   BANDS = (3.0,) -- guard the ratio the evidence            40
+       rejected instead of the one it supports
+  M6   drop `raw <= 0.0 or ac <= 0.0` from the predicate          2
+  M7   LOCK_SNAP_K 0.30 -> 0.25                                  19
+  M8   count an absent enhanced_speed as a slow boat              2
+  M9   decide the witness in ABSOLUTE spm, not ratio space        7
+  M10  calibrate k over ALL records, not just non-snap ones       3
+  M11  score cadence == 0 as a real 0 spm witness                 2
+  M12  fixture drift: one CAD value changed, 19 -> 21             1
 
   baseline (unmutated): 0 failures.
 
-Eight of eight are killed, and all eight by NAMED checks. That was not true
-when the matrix was first run: M1, M2 and M6 killed the suite with an unhandled
-ZeroDivisionError instead, which is a kill that names no check and stops every
-later assertion from running. `ratio()` below and the try/except in section A8
-exist because of that measurement, not in anticipation of it.
+MEASURED AT THE ROUND-2 HEAD. A count here is pinned to the commit it was taken
+at, and this table has already gone stale once: adding a section in round 1
+moved five of eight rows with nothing machine-checking them, which the round-2
+review caught. Re-measure at the FINAL head of any round; never carry forward.
 
-Note M7: mutating LOCK_SNAP_K rather than anything #193 added still reds
-nineteen checks, including the fixture cross-checks in section B. That is the
-point of section B -- the published figures depend on the WHOLE output-stage
-rule, not only on the part this branch changed.
+TWO OF THESE TWELVE FOUND DEFECTS IN THIS SUITE RATHER THAN CONFIRMING IT, and
+they are the reason M9-M12 exist at all -- the first eight all pointed at code
+this suite already guarded, which is what a matrix looks like when it only
+tests what you thought of:
+
+  * M12 was NOT KILLED on its first run. Changing a single CAD value from 19
+    to 21 left the suite green, because the fixture checks pinned how many
+    records were non-zero and both 19 and 21 are non-zero. Section B9 now pins
+    the series' sum and peak, which any single-value edit moves.
+  * M11 killed the suite by TRACEBACK, not by name -- and it still did after a
+    catch was added around the contract check, because `check()` records a
+    failure and CONTINUES, so the next witness_split call died before anything
+    printed. Section E0 now runs first AND returns early, so a broken witness
+    contract is reported instead of being fatal. A guard that only works when
+    nothing else runs first is not a guard.
 
 Run: python3 scripts/test_lock_snap_replay.py
 """
@@ -297,6 +313,30 @@ def section_b(rows):
               "B8 %s: cadence is an INTEGER on every record, which is the "
               "header's claim that omitting fractional_cadence loses no "
               "resolution" % key)
+    # B9: the CONTENT of the witness fixture, not only its shape. Found by
+    # the round-2 mutation matrix: changing a single CAD value from 19 to 21
+    # left this suite GREEN, because B8 pins how many records are non-zero and
+    # a 19 and a 21 are both non-zero. A fixture whose values nothing checks is
+    # a fixture that can drift silently, which is the whole failure this
+    # harness exists to prevent -- so the series carries an aggregate that any
+    # single-value edit moves, alongside two named records.
+    for key, total, hi in (("i183553852", 39282, 40),
+                           ("i178249719", 43644, 44),
+                           ("i174014735", 39445, 36)):
+        row = [r for r in rows if r.key == key][0]
+        got = int(sum(row.cad))
+        check(got == total, "B9 %s: the cadence series sums to %d, got %d -- "
+                            "a single changed CAD value moves this"
+              % (key, total, got))
+        check(int(max(row.cad)) == hi, "B9 %s: peak cadence %d, got %d"
+              % (key, hi, int(max(row.cad))))
+    for key, total in (("i183553852", 720), ("i178249719", 790),
+                       ("i174014735", 677)):
+        row = [r for r in rows if r.key == key][0]
+        got = sum(l[2] for l in row.laps)
+        check(got == total, "B9 %s: the lap total_cycles sum to %d, got %d"
+              % (key, total, got))
+
     # lap_step_type is present on the reported row and ABSENT on both
     # hold-outs -- a different state from zero, and the reason those two rows
     # get no work-lap figure anywhere in this harness.
@@ -439,6 +479,46 @@ def section_d(rows):
 def section_e(rows):
     by = {r.key: r for r in rows}
 
+    # E0: A ZERO CADENCE IS SKIPPED, NOT SCORED -- and this runs FIRST, before
+    # any other call into witness_split, ON PURPOSE. The contract is the
+    # difference between "this witness is absent here" and "0 spm was rowed
+    # here"; absence rendered as a value is a named defect class here. It is
+    # called through a CATCH for the reason section A8 uses one, and it is
+    # FIRST because of a second thing the round-2 matrix found: with the catch
+    # further down, a version that scored zeros divided by zero inside the
+    # POOLED split above it and still killed this suite by traceback, naming no
+    # check. A guard that only works when nothing else runs first is not a
+    # guard.
+    z = by["i183553852"]
+    zk = L.witness_scale(z)
+    zeros = [i for i in range(len(z))
+             if z.cad[i] == 0.0 and z.raw[i] > 0.0 and z.lock[i] > 0.0]
+    check(len(zeros) > 100,
+          "E0 the reported row must carry plenty of zero-cadence records for "
+          "this case to mean anything; it has %d" % len(zeros))
+    before = len(FAILS)
+    try:
+        w, r, sk = L.witness_split(z, zeros, zk)
+        check((w, r, sk) == (0, 0, len(zeros)),
+              "E0 every zero-cadence record must be SKIPPED, never scored: "
+              "expected (0, 0, %d), got %r" % (len(zeros), (w, r, sk)))
+    except Exception as e:
+        check(False, "E0 witness_split must SKIP a zero-cadence record, not "
+                     "raise: it raised %s. A counter reading zero cannot say "
+                     "which of two non-zero candidates is right."
+              % type(e).__name__)
+    if len(FAILS) > before:
+        # ABORT THE SECTION rather than carry on. Recording the failure is not
+        # enough: every figure below calls witness_split over sets that include
+        # zero-cadence records, so continuing means dying in one of them and
+        # printing NOTHING -- which is what the round-2 matrix measured before
+        # this return existed. A suite that knows its witness is broken must
+        # say so and stop, not compute from it.
+        check(False, "E0 the witness contract is broken, so sections E1-E7 "
+                     "were NOT run; fix the skip rule before reading any "
+                     "figure below")
+        return
+
     # E1: the calibration constants, from the fixture header's cross-check.
     for key, want in (("i183553852", 1.077), ("i178249719", 1.303),
                       ("i174014735", 0.988)):
@@ -538,6 +618,21 @@ def section_e(rows):
     check(row.cad[2675] == 10.0,
           "E5 the first non-zero cadence after that run is record 2675 at 10 "
           "spm; got %r" % (row.cad[2675],))
+
+    # E7: and the calibration excludes the records under dispute. k is taken
+    # over NON-SNAP records only; taking it over all of them would let the very
+    # disagreements being judged set the scale they are judged by.
+    fired = set(L.fires(row))
+    allrec = L.statistics.median(
+        [row.cad[i] / row.raw[i] for i in range(len(row))
+         if row.raw[i] > 0.0 and row.cad[i] > 0.0])
+    check(abs(allrec - L.witness_scale(row)) > 1e-6,
+          "E7 calibrating k over ALL records must give a different scale from "
+          "calibrating it over the non-snap ones -- if it does not, the "
+          "exclusion is not doing anything and the claim that it matters is "
+          "empty. non-snap %.4f, all %.4f"
+          % (L.witness_scale(row), allrec))
+    check(len(fired) > 0, "E7 there are snap records to exclude")
 
 
 def main():
