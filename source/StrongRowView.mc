@@ -743,14 +743,17 @@ const CUEZ_ABOVE = 2;    // ease off
 // below is REGENERABLE IN ONE COMMAND:
 //
 //     python3 scripts/cue_replay.py
+//     python3 scripts/cue_replay.py --sweep
 //
 // That harness drives THE RULE BELOW (cueBandZone / cueTarget / cueStep,
 // transcribed into Python, with the transcription pinned against the same
 // numeric vectors source/CueZoneTest.mc asserts against this file) over the work
-// laps of both recordings, which are committed as
-// scripts/fixtures/cue_work_laps.txt. scripts/test_cue_replay.py re-derives
-// every number quoted here and reds if any of them moves, so this comment can no
-// longer drift away from the data.
+// laps of THREE recordings, committed as scripts/fixtures/cue_work_laps.txt
+// (the two the cue was originally chosen against) and
+// scripts/fixtures/cue_reversal_row.txt (the later one that reported the colour
+// pointing the opposite way from the number). scripts/test_cue_replay.py
+// re-derives every number quoted here and reds if any of them moves, so this
+// comment can no longer drift away from the data.
 //
 // RETRACTION, kept rather than edited away because the retracted claims were
 // load-bearing for the whole design. An earlier revision of this block quoted
@@ -767,6 +770,17 @@ const CUEZ_ABOVE = 2;    // ease off
 //   * "the calm row never exceeds 1.5x", which it does.
 // No CODE was wrong; the evidence quoted for it was.
 //
+// SECOND RETRACTION, and it reverses one of the four above IN PART, so read
+// both. The first retraction withdrew "choppy FALSE-HIGH 6.9% -> 4.5%" because
+// the 4.5% belonged to a machine that never shipped and could not be
+// regenerated from anything committed. That withdrawal stands: the rule that
+// shipped at 4000/1000 left the figure at 6.9%, unchanged. The rule that ships
+// NOW -- sign-reversal fast path, windows 2000/500 -- prints 4.5% from the
+// committed fixture in one command. The number is the same by coincidence and
+// the evidence behind it is not: one was unreproducible, this one is
+// `python3 scripts/cue_replay.py`. Both statements are kept because deleting
+// the first would make this one look like a claim that was right all along.
+//
 // THE TWO ROWS, work laps only, from the row_stroke_rate developer field. A zero
 // is the app's no-data sentinel (drawRate renders it "--.-"), so it is an
 // ABSENCE and not a slow stroke, and it is excluded from every figure here:
@@ -775,6 +789,21 @@ const CUEZ_ABOVE = 2;    // ease off
 //     laps over 600 s: 4 laps, 3522 recorded seconds, 3496 carrying a reading
 //   8x3'  strength-endurance, choppy water, target 16-18 spm
 //     laps within 5 s of 180: 8 laps, 1442 recorded seconds, 1436 with a reading
+//
+// AND A THIRD ROW, added when the colour was reported pointing the opposite way
+// from the number. It is scored SEPARATELY and never pooled with the two above,
+// and it is in its own fixture file for the reasons that file's header gives:
+//
+//   8x3'  progressive, i183553852 (2026-09-05, v0.9), target 16-18 spm ASSUMED
+//     step_type == SFIT_WORK, contiguous runs: 8 intervals, 1443 recorded
+//     seconds, 1420 carrying a reading
+//
+// THE BAND IS THE SHIPPED DEFAULT AND NOT A DECODED VALUE on that row -- the app
+// records no target-band setting anywhere in the file -- so every figure taken
+// from it is conditional on the athlete having rowed 16-18. The same report also
+// described "blue at 20 spm"; that does NOT reproduce at 16-18 (zero seconds of
+// it) and nothing in the recording can settle whether the band was different or
+// the symptom misremembered. It is UNRESOLVED, not fixed.
 //
 // THE FAILURE BEING FIXED IS TRANSIENT SPIKES, not a biased median. Against its
 // own row median the choppy row reads above 1.25x on 8.7% of its reading-seconds
@@ -810,36 +839,88 @@ const CUEZ_ABOVE = 2;    // ease off
 // denominator is in scripts/cue_replay.py in code rather than in prose, because
 // their absence is precisely why the superseded figures could not be checked.
 //
-//   row     metric        raw (before)   shipped cueStep (after)
-//   calm    FALSE-HIGH        11.8%              2.6%
-//   calm    false-low          7.1%              1.8%
-//   calm    missed-HIGH        6.2%             15.3%
-//   calm    flips/min          2.87              1.10
-//   calm    lag                 0 s               1 s
-//   choppy  FALSE-HIGH         6.9%              6.9%
-//   choppy  false-low         18.1%              3.0%
-//   choppy  missed-HIGH        1.5%              2.5%
-//   choppy  flips/min          2.30              1.17
-//   choppy  lag                 0 s               5 s
+//   row       metric        raw (before)   shipped cueStep (after)
+//   calm      FALSE-HIGH        11.8%              2.3%
+//   calm      false-low          7.1%              2.4%
+//   calm      missed-HIGH        6.2%             13.7%
+//   calm      flips/min          2.87              1.37
+//   calm      lag                 0 s               0 s
+//   choppy    FALSE-HIGH         6.9%              4.5%
+//   choppy    false-low         18.1%              4.5%
+//   choppy    missed-HIGH        1.5%              2.1%
+//   choppy    flips/min          2.30              1.25
+//   choppy    lag                 0 s               4 s
+//   reversal  FALSE-HIGH         9.8%              3.3%
+//   reversal  false-low         10.3%              3.3%
+//   reversal  missed-HIGH        4.6%              8.0%
+//   reversal  flips/min          2.66              1.86
+//   reversal  lag                 0 s               2 s
 //
-// WHAT THAT TABLE SAYS, INCLUDING THE PART THAT WAS SOLD WRONG. On the CALM row
-// the cue does what it was chosen to do: FALSE-HIGH 11.8% -> 2.6%. On the CHOPPY
-// row it does not reduce false-high AT ALL -- 28 of 403 truth-in-band seconds
-// either way, and only 18 of those are the same seconds, so it relocates them
-// rather than removing them. The choppy row's real and reproducible gains are
-// FALSE-LOW 18.1% -> 3.0% and flicker 2.30 -> 1.17 flips/min. A later strategy
-// comparison should be scored against those, never against the 4.5% this block
-// used to advertise. Whether the choppy row's residual false-high wants a
-// further change is a live question and NOT settled here.
+// THE "AFTER" COLUMN IS THE MACHINE AS OF THIS COMMIT: the sign-reversal fast
+// path plus CUE_PERSIST_OUT_MS = 2000 and CUE_PERSIST_IN_MS = 500. It is NOT
+// the 4000/1000 machine the first version of this table described. Where it
+// moved, in both directions:
 //
-// FLICKER roughly halves on both rows, and by more than was advertised: 2.87 ->
-// 1.10 flips/min calm, 2.30 -> 1.17 choppy.
+//   BETTER   calm FALSE-HIGH 2.6 -> 2.3, choppy 6.9 -> 4.5, and the choppy
+//            row's false-highs are now a strict SUBSET of the memoryless
+//            machine's (18 of its 28) instead of an equal-sized relocation
+//            (28 against 28, 18 shared). missed-HIGH falls on both older rows,
+//            15.3 -> 13.7 and 2.5 -> 2.1. Median lag falls on both, 1 -> 0 s
+//            and 5 -> 4 s.
+//   WORSE    false-low rises on both, 1.8 -> 2.4 calm and 3.0 -> 4.5 choppy,
+//            and flicker rises on all three rows (below). Being told "row
+//            harder" while in band is the cheaper error of the two and this
+//            trade is taken deliberately, but it IS a trade.
 //
-// THE COST, ACCEPTED DELIBERATELY: missed-HIGH rises from 6.2% to 15.3% of
-// scored seconds (calm) and 1.5% to 2.5% (choppy), and the median lag on a
-// genuine zone change goes from 0 s to 1 s (calm) and 5 s (choppy). A late
-// warning is far cheaper than a false one, and the deadband is only 1 spm, so a
-// genuine overshoot past +1 still arrives -- four seconds later.
+// FLICKER STILL FALLS AGAINST THE MEMORYLESS MACHINE ON EVERY ROW, and it falls
+// by less than it used to: 2.87 -> 1.37 flips/min calm (was 1.10), 2.30 -> 1.25
+// choppy (was 1.17), 2.66 -> 1.86 on the reversal row. Most of the reversal
+// row's rise is the FAST PATH rather than the retune -- 0.59 of the 0.68, since
+// at 4000/1000 with the fast path in it is already 1.77 -- because the
+// subharmonic dips that used to be swallowed by a stale red now show as blue
+// and back.
+// THAT IS THE POINT: those frames were disagreeing with the number on screen,
+// and a flip is the price of agreeing with it.
+//
+// THE WINDOWS WERE CHOSEN BY THE SWEEP, NOT BY FEEL, and the rule is in code at
+// scripts/test_cue_replay.py D6 so it can be re-derived rather than trusted:
+//
+//   ADMISSIBLE   flips/min at or below 0.70x the memoryless machine's, on EVERY
+//                row. The fast path alone already costs the reversal row 1.18
+//                -> 1.77, which is 0.665 of raw, so 0.70 is the nearest round
+//                bound above what the FIX had already spent before any tuning:
+//                the retune may spend at most 3.5 further points.
+//   CHOSEN       of those, the smallest MEAN ADOPT LAG -- the latch alone, with
+//                the deadband already spent. Responsiveness is the objective and
+//                the flicker bound is the constraint, which is the maintainer's
+//                order: "because the status changes so slowly, it causes
+//                overcorrections".
+//
+// It selects 2000/500. 4000/1000, 3000/1000, 3000/750 and 2000/1000 are also
+// admissible and all slower; 1500/500 and everything below it reaches 0.746 on
+// the reversal row and fails. STATED PLAINLY: 0.70 was fixed after reading the
+// sweep, so it is a selection rule and not a prediction -- what it is not is
+// arbitrary, being pinned to a quantity the fix had already spent.
+//
+// ADOPT LAG, which is what the change actually buys: mean 2.01 / 1.86 / 1.29 s
+// -> 0.91 / 0.85 / 0.52 s across calm / choppy / reversal, and the maximum is
+// the window itself, 4.00 s -> 2.00 s on all three.
+//
+// EDGE LAG -- the number crossing a band edge to the colour FOLLOWING it, which
+// is what the athlete experiences -- moves far less: mean 6.93 / 10.16 / 4.36 s
+// -> 6.34 / 7.73 / 2.91 s, and the MAXIMUM does not move at all (calm 84 s ->
+// 85 s, and 89 s with no latch whatsoever). That residue is not the latch, it
+// is the DEADBAND: a number a tenth of a spm over hi does not move a colour
+// showing IN, by design, and may never. Anyone attacking "the cue is slow" by
+// shortening these windows a SECOND time should read those two lines first --
+// the windows are already most of the way to zero and the edge lag is not.
+//
+// THE COST, ACCEPTED DELIBERATELY: missed-HIGH is still well above the
+// memoryless machine's -- 6.2% -> 13.7% of scored seconds (calm), 1.5% -> 2.1%
+// (choppy), 4.6% -> 8.0% (reversal) -- and a genuine zone change is still seen
+// late. A late warning is far cheaper than a false one, and the deadband is
+// only 1 spm, so a genuine overshoot past +1 still arrives, two seconds later
+// instead of four.
 //
 // DO NOT "IMPROVE" THIS BY SMOOTHING THE NUMBER. Pre-smoothing the displayed
 // rate and taking the zone from the smoothed value makes BOTH rows worse on
@@ -847,10 +928,15 @@ const CUEZ_ABOVE = 2;    // ease off
 // which is the only kind a live display could run:
 //
 //   pre-filter          calm false-high   choppy false-high
-//   none (shipped)            2.6%              6.9%
-//   median-5                  3.4%              9.7%
-//   median-9                  4.7%             13.2%
-//   Hampel (7, 3 MAD)         2.9%              6.9%
+//   none (shipped)            2.3%              4.5%
+//   median-5                  3.3%              7.9%
+//   median-9                  4.1%             11.4%
+//   Hampel (7, 3 MAD)         2.4%              4.5%
+//
+// RE-MEASURED ON THE RETUNED RULE rather than carried forward, which is why the
+// figures differ from the ones this table used to show (2.6/6.9, 3.4/9.7,
+// 4.7/13.2, 2.9/6.9). The conclusion is unchanged and that is the point of
+// re-running it: every filter is worse than or equal to no filter, on both rows.
 //
 // The Hampel row is the instructive one: it moves the choppy figure not at all,
 // because it does not suppress the 37.5 spm spike. That spike is SIX CONSECUTIVE
@@ -861,13 +947,38 @@ const CUEZ_ABOVE = 2;    // ease off
 // displayed number stays raw outputRate() because it is the measurement, and the
 // colour carries the instruction.
 //
+// THE NUMBER AND THE COLOUR AS A PAIR, which is the family of figures the
+// table above cannot see. Everything above grades the COLOUR against a 31 s
+// centred median the athlete never sees. These grade it against the NUMBER
+// printed beside it on the same frame, which is what the athlete actually reads:
+//
+//   row       opposite-side    disagreement    ambiguous of seconds with a value
+//   calm         22 ->  0       707 -> 562     3053 -> 1636 of 3496
+//   choppy        8 ->  0       300 -> 216      811 ->  450 of 1436
+//   reversal     20 ->  0       185 ->  127     705 ->  379 of 1420
+//
+//   OPPOSITE-SIDE   the colour says BELOW and the number's own band zone is
+//                   ABOVE, or the mirror. This is the defect, it is the only
+//                   one of the three with a target, and the target is ZERO.
+//   DISAGREEMENT    the colour is anything other than the number's own zone.
+//                   STRICTLY WIDER, and NOT a defect: the deadband and the
+//                   latch are disagreements by construction and are the whole
+//                   feature. Reported so the size of the deliberate
+//                   disagreement is visible, never minimised.
+//   AMBIGUOUS       seconds whose NUMERAL STRING -- the value at drawRate's own
+//                   "%.1f", not the float -- this row rendered in more than one
+//                   colour. 49.6% -> 26.7% on the reported row. The residue is
+//                   the deadband: 18.5 spm is legitimately green coming from IN
+//                   and red coming from ABOVE, and removing that would remove
+//                   the hysteresis.
+//
 // WHAT NONE OF THIS MEASURES: how the result reads on a wrist mid-stroke. These
 // figures are a replay of two recordings against a decision function. They say
 // the cue would have lied less often on the calm row and flickered less on both;
 // they do not say the athlete would have rowed better.
 const CUE_DEADBAND = 1.0;         // spm, paid on EXIT from the band only
-const CUE_PERSIST_OUT_MS = 4000;  // ms a change to an out-of-band cue must hold
-const CUE_PERSIST_IN_MS  = 1000;  // ms a change back into the band must hold
+const CUE_PERSIST_OUT_MS = 2000;  // ms a change to an out-of-band cue must hold
+const CUE_PERSIST_IN_MS  = 500;   // ms a change back into the band must hold
 
 // ---- #80: the status row and the heat-strain pip ----------------------------
 //
@@ -3245,11 +3356,19 @@ class StrongRowView extends Ui.View {
     // tick period ever changed, or if the platform coalesced updates.
     //
     // WHICH WINDOW APPLIES IS DECIDED BY THE CANDIDATE, not by the zone being
-    // left, and that is the generalisation the measured result asks for: any
-    // out-of-band candidate is the EXPENSIVE claim ("ease off" / "row harder")
-    // and pays CUE_PERSIST_OUT_MS, whether it replaces IN or the other side of
-    // the band; a candidate of IN is the cheap claim and pays
-    // CUE_PERSIST_IN_MS.
+    // left: an out-of-band candidate is the EXPENSIVE claim ("ease off" / "row
+    // harder") and pays CUE_PERSIST_OUT_MS, a candidate of IN is the cheap
+    // claim and pays CUE_PERSIST_IN_MS.
+    //
+    // RETRACTION, kept because the sentence was load-bearing and was quoted in
+    // two test files. This paragraph used to end "...whether it replaces IN or
+    // THE OTHER SIDE OF THE BAND". That extension was wrong. Replacing the
+    // other side of the band is not an expensive claim being asserted, it is a
+    // contradictory claim being WITHDRAWN, and making it wait produced the
+    // reported defect: red on screen beside a numeral reading 7 spm. The rule
+    // survives for IN <-> either side, which is every transition the sentence
+    // was actually measured on; it does not survive for a sign reversal, which
+    // the body below now adopts at once.
     static function cueStep(rate, lo, hi, cur, cand, since, now) {
         var want = cueTarget(rate, lo, hi, cur);
 
@@ -3268,6 +3387,46 @@ class StrongRowView extends Ui.View {
         //               it buys nothing. This is also what makes a work interval
         //               start clean -- see the parking branch in onUpdate.
         if (want == $.CUEZ_NONE || cur == $.CUEZ_NONE) {
+            return [want, want, now];
+        }
+
+        // A SIGN REVERSAL IS ADOPTED WITHOUT DELAY, and this is the one
+        // transition that does not pay a window.
+        //
+        // The condition is exactly "the candidate is on the OPPOSITE SIDE of
+        // the band from the zone on screen" -- BELOW asking while ABOVE is
+        // displayed, or the mirror. IN is not a side, so IN <-> either side
+        // still pays; two candidates on the same side cannot arise, because
+        // want == cur returns above.
+        //
+        // WHY THIS ONE. Every other stale zone is a WEAKER claim than the
+        // truth: showing IN while the rate has gone above the band understates
+        // the correction, and showing ABOVE while the rate has come back into
+        // band overstates it by one step. A stale zone across the band is not
+        // weaker, it is INVERTED -- "ease off" printed beside a 7.0 tells the
+        // athlete to correct in the direction that made the number wrong. The
+        // cue's whole contract is that the colour is an instruction; an
+        // instruction pointing the opposite way from the number beside it is
+        // worse than no instruction, so it cannot be allowed to persist for a
+        // window, however short the window is.
+        //
+        // MEASURED, on the row that reported it (i183553852, 2026-09-05, v0.9,
+        // committed as scripts/fixtures/cue_reversal_row.txt): 20 of its 1420
+        // work-seconds carrying a reading were in this state. Across all three
+        // recorded rows the count goes 22 / 8 / 20 -> 0 / 0 / 0. Regenerate
+        // with `python3 scripts/cue_replay.py`.
+        //
+        // THIS DOES NOT MAKE THE NUMBER RIGHT. The 7.0 is a lock subharmonic
+        // and is still displayed and still recorded; what changes is that the
+        // instruction beside it now agrees with it. The subharmonic is a
+        // separate defect with its own owner.
+        //
+        // THE CANDIDATE AND THE CLOCK MOVE WITH THE ZONE, exactly as the
+        // CUEZ_NONE path above does. Returning the new zone while leaving a
+        // stale candidate behind would make the very next frame treat the
+        // adopted zone as a pending change.
+        if ((want == $.CUEZ_BELOW && cur == $.CUEZ_ABOVE) ||
+            (want == $.CUEZ_ABOVE && cur == $.CUEZ_BELOW)) {
             return [want, want, now];
         }
 

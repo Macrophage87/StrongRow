@@ -66,14 +66,14 @@ ZNAME = {CUEZ_NONE: "--", CUEZ_BELOW: "BELOW", CUEZ_IN: "IN", CUEZ_ABOVE: "ABOVE
 
 # The three tunables, same values as the consts they mirror.
 CUE_DEADBAND = 1.0
-CUE_PERSIST_OUT_MS = 4000
-CUE_PERSIST_IN_MS = 1000
+CUE_PERSIST_OUT_MS = 2000
+CUE_PERSIST_IN_MS = 500
 
 # Whether cueStep has the SIGN-REVERSAL fast path: a candidate on the opposite
 # side of the band from the zone on screen is adopted without waiting out the
 # persistence window. Mirrors the presence of that branch in the Monkey C, so
 # the sweep below and the mirror cannot disagree about which rule shipped.
-CUE_REVERSAL_FAST = False
+CUE_REVERSAL_FAST = True
 
 # The display tick the shipping call site runs on (onUpdate).
 TICK_MS = 250
@@ -107,15 +107,23 @@ def cue_target(rate, lo, hi, cur):
 def cue_step(rate, lo, hi, cur, cand, since, now):
     """Mirrors StrongRowView.cueStep. Returns [zone, candidate, since].
 
-    Note the two things that separate it from the sample-counting machine the
+    Note the three things that separate it from the sample-counting machine the
     superseded analysis replayed:
       * `need` is chosen by the CANDIDATE (`want`), not by the zone being left;
-      * the window is MILLISECONDS on the caller's clock, not a run length.
+      * the window is MILLISECONDS on the caller's clock, not a run length;
+      * a candidate on the OPPOSITE SIDE of the band from the displayed zone is
+        adopted with no window at all -- the third branch, mirroring the sign
+        -reversal fast path in the Monkey C. CUE_REVERSAL_FAST above records
+        that this branch is present, and test_cue_replay.py A14 reds if the
+        flag and the branch disagree.
     """
     want = cue_target(rate, lo, hi, cur)
     if want == cur:
         return [cur, cur, now]
     if want == CUEZ_NONE or cur == CUEZ_NONE:
+        return [want, want, now]
+    if ((want == CUEZ_BELOW and cur == CUEZ_ABOVE)
+            or (want == CUEZ_ABOVE and cur == CUEZ_BELOW)):
         return [want, want, now]
     if want != cand:
         return [cur, want, now]
