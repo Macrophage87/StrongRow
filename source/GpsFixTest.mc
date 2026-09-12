@@ -41,6 +41,30 @@ using Toybox.Lang;
 // cases as `GpsFix.test_gps_...`, which is the name scripts/list_tests.py
 // emits and the name scripts/expected_tests.txt must therefore carry.
 //
+// Measured by bisection on this branch, with monkeyc --unit-test for fenix6, by
+// adding N throwaway file-scope (:test) stubs to a scratch file until the build
+// reds. Measured at the c1 commit, with `module GpsDiag` and `module GpsFix`
+// both present -- so this line is the branch's figure at every commit from c1
+// onward, not a per-commit one:
+//
+//     CEILING gps-fenix9 fenix6: 251 used of 253, 2 free -- the 3rd file-scope (:test) added reds
+//
+// N=2 BUILD SUCCESSFUL; N=3 "ERROR: fenix6: Found 254 members in module
+// 'globals', exceeding the limit of 253"; N=4 "Found 255".
+//
+// THIS CHANGE COSTS EXACTLY TWO MEMBERS against the previous anchor
+// (`hrv-correctness`, 249 used / 4 free, source/RrHrvTest.mc), and the two are
+// the two module blocks: `module GpsDiag` and `module GpsFix`. Every constant
+// this change adds -- both freshness windows, the eleven slot indices, the four
+// FORM_* values, the three flag bits -- is inside GpsDiag and costs nothing,
+// which is why GPS_FRESH_MS is $.GpsDiag.GPS_FRESH_MS rather than a file-scope
+// sibling of $.HR_FRESH_MS. Every (:test), fixture class and helper here is
+// inside GpsFix for the same reason.
+//
+// scripts/check_ceiling_notes.py enumerates every anchor in the tree and
+// CANNOT tell you which is the newest one. Re-bisect when the tree changes; do
+// not read either note as current without doing so.
+//
 // THE COMMIT PARTITION, which is how the red evidence exists at all
 // (docs/agents/rituals/FIX_ROUND.md section 3):
 //   c0  characterization pins on shipped symbols -- green in EVERY epoch.
@@ -136,11 +160,65 @@ class GpsDc extends HrDc {
 // startSensor() and startGps() and nothing else, so every draw case below
 // drives the ACTUAL call site.
 class GpsProbe extends HrProbe {
-    function initialize() { HrProbe.initialize(); }
+    // The enable ladder's three inputs and its transcript. Set by a case before
+    // it calls realStartGps(); read afterwards.
+    var capSatIq;     // what gpsCapSatIq() should report
+    var capConst;     // what gpsCapConstellations() should report
+    var failForms;    // the FORM_* values gpsEnable() should report as throwing
+    var attempted;    // every form gpsEnable() was asked for, in call order
+    var starts;       // startGps() calls, counted whether or not the body runs
+    var runRealStart; // when true, startGps() runs the SHIPPING ladder
+
+    function initialize() {
+        HrProbe.initialize();
+        capSatIq = false;
+        capConst = false;
+        failForms = [];
+        attempted = [];
+        starts = 0;
+        runRealStart = false;
+    }
 
     // `hidden` is protected in Monkey C, so this reads the shipping field
     // rather than a copy of it.
     function gpsQual() { return mGpsQual; }
+
+    // COUNTS FIRST, THEN RUNS, the rule LifeTimer.start states
+    // (ViewLifecycleTest.mc:125-127): "never called" and "called and did
+    // something" must stay distinguishable.
+    //
+    // The body is off by default, so a case about the WATCHDOG never reaches
+    // the enable ladder and a case about the LADDER has to ask for it. That is
+    // also what keeps a probe from ever arming real positioning: with
+    // runRealStart set, gpsEnable below is overridden too, so no case in this
+    // file can reach Position.enableLocationEvents.
+    hidden function startGps() {
+        starts += 1;
+        if (runRealStart) { StrongRowView.startGps(); }
+    }
+
+    hidden function gpsCapSatIq()          { return capSatIq; }
+    hidden function gpsCapConstellations() { return capConst; }
+
+    hidden function gpsEnable(form) {
+        attempted.add(form);
+        return failForms.indexOf(form) < 0;
+    }
+
+    // -- seams on the new shipping methods -------------------------------------
+    // Every one of these CALLS the shipping code. None re-implements it: a test
+    // that re-implements logic instead of calling it pins nothing
+    // (docs/agents/FACTS.md section 6, which has the receipt twice).
+    function note(acc, t)     { gpsNote(acc, t); }
+    function watchdog()       { gpsWatchdog(); }
+    function sessionReset(t)  { gpsDiagSessionReset(t); }
+    function snapshot()       { return gpsDiagSnapshot(); }
+    function pipColour()      { return gpsPipColour(); }
+    function slot(i)          { return mGpsDiag[i]; }
+    function setSlot(i, v)    { mGpsDiag[i] = v; }
+    function lastGpsMs()      { return mLastGpsMs; }
+    function everSeen()       { return mGpsEver; }
+    function realStartGps()   { runRealStart = true; startGps(); }
 
     // Drive the SHIPPING callback. Never a transcription of it: onPosition is
     // what the platform calls, and it is what these cases must exercise.
@@ -281,6 +359,442 @@ function gpsRender(p, kind, nowMs) {
         logger.error("the work screen drops the status row, so it must draw no " +
                      "GPS pip; counted " + work.countOf("GPS") +
                      ". A mark added outside drawGps would appear here.");
+        ok = false;
+    }
+    return ok;
+}
+
+// Element-wise array compare. Not (:test)-annotated, and inside the module, so
+// it costs no globals member and drops out of the shipping build.
+function arrEq(got, exp, logger, what) {
+    if (got == null) { logger.error(what + ": got null"); return false; }
+    if (got.size() != exp.size()) {
+        logger.error(what + ": size " + got.size() + " != " + exp.size());
+        return false;
+    }
+    for (var i = 0; i < exp.size(); i++) {
+        if (got[i] != exp[i]) {
+            logger.error(what + ": idx " + i + " got " + got[i] + " exp " + exp[i]);
+            return false;
+        }
+    }
+    return true;
+}
+
+// ===========================================================================
+// c1 -- THE NEW SYMBOLS, pinned in ISOLATION. Green from the commit that adds
+// them. None of these proves the shipping call sites USE them; that is exactly
+// what the c2 differentials one section down are for.
+// ===========================================================================
+
+// gpsHave's whole truth table, including the case a `> 0` test gets wrong.
+//
+// THE NEGATIVE-CLOCK ROW IS THE REASON THIS FUNCTION EXISTS IN THIS SHAPE.
+// System.getTimer() is negative for 25 of every 50 days of device uptime
+// (#70), so `lastMs > 0` reads a live signal as absent for half the calendar.
+// Both stamps below are negative and one millisecond apart: the sentinel test
+// must be `!= 0`, and the age term subtracts exactly inside one half of the
+// signed cycle.
+(:test) function test_gps_c1_freshnessUsesTheNeverSeenSentinel(logger) {
+    var ok = true;
+    // [lastMs, now, thresh, expected]
+    var rows = [[0,       100000,  5000, false],   // never seen
+                [0,       0,       5000, false],   // never seen, clock at 0
+                [100000,  100000,  5000, true],    // same instant
+                [100000,  104999,  5000, true],    // one ms inside
+                [100000,  105000,  5000, false],   // EXACTLY the threshold is stale
+                [100000,  105001,  5000, false],
+                [-900000, -899000, 5000, true],    // negative clock, 1 s old
+                [-900000, -894000, 5000, false]];  // negative clock, 6 s old
+    for (var i = 0; i < rows.size(); i++) {
+        var got = StrongRowView.gpsHave(rows[i][0], rows[i][1], rows[i][2]);
+        if (got != rows[i][3]) {
+            logger.error("gpsHave(" + rows[i][0] + ", " + rows[i][1] + ", " +
+                         rows[i][2] + ") = " + got + ", expected " + rows[i][3]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// gpsColour: absence is a DIFFERENT KIND of answer from a poor fix.
+//
+// The three graded bands are today's, unchanged. The fourth row is the change:
+// with no recent callback the pip carries the no-data colour whatever the last
+// accuracy was -- which is the whole of i185890690's display defect.
+(:test) function test_gps_c1_theColourSeparatesAbsenceFromQuality(logger) {
+    var ok = true;
+    // [have, qual, expected]
+    var rows = [[true,  4, Gfx.COLOR_GREEN],
+                [true,  3, Gfx.COLOR_GREEN],
+                [true,  2, Gfx.COLOR_YELLOW],
+                [true,  1, Gfx.COLOR_RED],
+                [true,  0, Gfx.COLOR_RED],
+                [false, 4, Gfx.COLOR_DK_GRAY],
+                [false, 2, Gfx.COLOR_DK_GRAY],
+                [false, 0, Gfx.COLOR_DK_GRAY]];
+    for (var i = 0; i < rows.size(); i++) {
+        var got = StrongRowView.gpsColour(rows[i][0], rows[i][1]);
+        if (got != rows[i][2]) {
+            logger.error("gpsColour(" + rows[i][0] + ", " + rows[i][1] + ") = " +
+                         got + ", expected " + rows[i][2]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// The enable ladder's two pure decisions: which rung to start on, and which
+// rung follows a throw.
+//
+// BOTH IN ONE CASE, because the pair IS the ladder: a chooser that preferred
+// the configuration form while nextFormFrom dropped straight to legacy would
+// be green on either half alone and wrong together.
+(:test) function test_gps_c1_theFormChooserPrefersConfigurationThenConstellations(logger) {
+    var ok = true;
+    // [satIqOk, constOk, expected first rung]
+    var first = [[true,  true,  $.GpsDiag.FORM_CONFIG],
+                 [true,  false, $.GpsDiag.FORM_CONFIG],
+                 [false, true,  $.GpsDiag.FORM_CONST],
+                 [false, false, $.GpsDiag.FORM_LEGACY]];
+    for (var i = 0; i < first.size(); i++) {
+        var got = $.GpsDiag.chooseForm(first[i][0], first[i][1]);
+        if (got != first[i][2]) {
+            logger.error("chooseForm(" + first[i][0] + ", " + first[i][1] +
+                         ") = " + got + ", expected " + first[i][2]);
+            ok = false;
+        }
+    }
+    // [form, constOk, expected next rung]
+    var next = [[$.GpsDiag.FORM_CONFIG, true,  $.GpsDiag.FORM_CONST],
+                [$.GpsDiag.FORM_CONFIG, false, $.GpsDiag.FORM_LEGACY],
+                [$.GpsDiag.FORM_CONST,  true,  $.GpsDiag.FORM_LEGACY],
+                [$.GpsDiag.FORM_CONST,  false, $.GpsDiag.FORM_LEGACY],
+                [$.GpsDiag.FORM_LEGACY, true,  $.GpsDiag.FORM_NONE],
+                [$.GpsDiag.FORM_LEGACY, false, $.GpsDiag.FORM_NONE],
+                [$.GpsDiag.FORM_NONE,   true,  $.GpsDiag.FORM_NONE]];
+    for (var j = 0; j < next.size(); j++) {
+        var g = $.GpsDiag.nextFormFrom(next[j][0], next[j][1]);
+        if (g != next[j][2]) {
+            logger.error("nextFormFrom(" + next[j][0] + ", " + next[j][1] +
+                         ") = " + g + ", expected " + next[j][2]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// gpsRearmDue's four refusals, one row each.
+(:test) function test_gps_c1_theRearmDecisionIsBoundedAndNeedsAFixEverSeen(logger) {
+    var ok = true;
+    var R = $.GpsDiag.GPS_REARM_MS;
+    // [ever, lastMs, lastRearmMs, now, expected]
+    var rows = [
+        [false, 100000, 0, 100000 + R,     false],  // never had a usable fix
+        [true,  0,      0, 100000 + R,     false],  // never-seen stamp
+        [true,  100000, 0, 100000 + R - 1, false],  // one ms short of the window
+        [true,  100000, 0, 100000 + R,     true],   // EXACTLY the window is due
+        [true,  100000, 0, 100000 + R + 1, true],
+        // already re-armed inside this window: refused until the next one
+        [true,  100000, 100000 + R, 100000 + R + 1,     false],
+        [true,  100000, 100000 + R, 100000 + 2 * R - 1, false],
+        [true,  100000, 100000 + R, 100000 + 2 * R,     true],
+        // a negative clock, where a `> 0` sentinel would refuse forever
+        [true,  -900000, 0, -900000 + R, true]];
+    for (var i = 0; i < rows.size(); i++) {
+        var got = StrongRowView.gpsRearmDue(rows[i][0], rows[i][1], rows[i][2],
+                                            rows[i][3], R);
+        if (got != rows[i][4]) {
+            logger.error("gpsRearmDue(" + rows[i][0] + ", " + rows[i][1] + ", " +
+                         rows[i][2] + ", " + rows[i][3] + ", " + R + ") = " +
+                         got + ", expected " + rows[i][4]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// THE SLOT INDICES ARE THE WIRE FORMAT. Every one nailed to its literal number,
+// for the reason RrDiag.mc's header gives: a permutation confined to an
+// unpinned tail would re-key every file already recorded with the whole suite
+// green. The FORM_* values are pinned for the same reason -- they are the
+// contents of slot 7, not an internal enum.
+(:test) function test_gps_c1_theSlotKeyIsZeroToTen(logger) {
+    var ok = true;
+    var names = ["I_VERSION", "I_CB_TOTAL", "I_CB_USABLE", "I_CB_GOOD",
+                 "I_LAST_CB_S", "I_MAXGAP_S", "I_REARMS", "I_FORM",
+                 "I_ENABLE_THROW", "I_LAST_ACC", "I_FLAGS"];
+    var idx = [$.GpsDiag.I_VERSION, $.GpsDiag.I_CB_TOTAL, $.GpsDiag.I_CB_USABLE,
+               $.GpsDiag.I_CB_GOOD, $.GpsDiag.I_LAST_CB_S, $.GpsDiag.I_MAXGAP_S,
+               $.GpsDiag.I_REARMS, $.GpsDiag.I_FORM, $.GpsDiag.I_ENABLE_THROW,
+               $.GpsDiag.I_LAST_ACC, $.GpsDiag.I_FLAGS];
+    for (var i = 0; i < idx.size(); i++) {
+        if (idx[i] != i) {
+            logger.error($.GpsDiag.VERSION + ": " + names[i] + " must be " + i +
+                         ", is " + idx[i] + " -- slot indices are the wire " +
+                         "format; renumbering one re-keys every recorded file");
+            ok = false;
+        }
+    }
+    if ($.GpsDiag.SLOTS != 11) {
+        logger.error("SLOTS must be 11, is " + $.GpsDiag.SLOTS);
+        ok = false;
+    }
+    if ($.GpsDiag.MAXV != 65534) {
+        logger.error("MAXV must be 65534 -- one below the UINT16 invalid " +
+                     "value, so a saturated slot cannot be read as absent; is " +
+                     $.GpsDiag.MAXV);
+        ok = false;
+    }
+    var forms = [$.GpsDiag.FORM_NONE, $.GpsDiag.FORM_LEGACY,
+                 $.GpsDiag.FORM_CONST, $.GpsDiag.FORM_CONFIG];
+    for (var j = 0; j < forms.size(); j++) {
+        if (forms[j] != j) {
+            logger.error("FORM_* value " + j + " must be " + j + ", is " + forms[j]);
+            ok = false;
+        }
+    }
+    var flags = [$.GpsDiag.F_CFG_API, $.GpsDiag.F_SATIQ_OK, $.GpsDiag.F_CONST_API];
+    var want  = [1, 2, 4];
+    for (var k = 0; k < flags.size(); k++) {
+        if (flags[k] != want[k]) {
+            logger.error("flag bit " + k + " must be " + want[k] + ", is " + flags[k]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// newCounters and clamp: a clean array carries the version and nothing else,
+// and no slot can leave the range the field can hold.
+(:test) function test_gps_c1_theCountersStartCleanAndClampAtTheSlotCeiling(logger) {
+    var a = $.GpsDiag.newCounters();
+    var exp = [$.GpsDiag.VERSION, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    if (!arrEq(a, exp, logger, "newCounters")) { return false; }
+    var ok = true;
+    // [input, expected]
+    var rows = [[null, 0], [-1, 0], [-99999, 0], [0, 0], [1, 1],
+                [65533, 65533], [65534, 65534], [65535, 65534], [999999, 65534]];
+    for (var i = 0; i < rows.size(); i++) {
+        var got = $.GpsDiag.clamp(rows[i][0]);
+        if (got != rows[i][1]) {
+            logger.error("clamp(" + rows[i][0] + ") = " + got + ", expected " +
+                         rows[i][1]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// The session reset zeroes the receive path and KEEPS the enable answer.
+//
+// Both halves in one case, because the split is the decision: a reset that
+// cleared I_FORM would delete the answer for exactly the row -- one with no
+// callbacks at all -- that this field was built to explain.
+(:test) function test_gps_c1_theSessionResetKeepsTheEnableAnswer(logger) {
+    var a = $.GpsDiag.newCounters();
+    for (var i = 0; i < $.GpsDiag.SLOTS; i++) { a[i] = 7; }
+    a[$.GpsDiag.I_VERSION]      = $.GpsDiag.VERSION;
+    a[$.GpsDiag.I_FORM]         = $.GpsDiag.FORM_CONFIG;
+    a[$.GpsDiag.I_ENABLE_THROW] = 2;
+    a[$.GpsDiag.I_FLAGS]        = 3;
+    $.GpsDiag.resetSession(a);
+    var exp = [$.GpsDiag.VERSION,      // 0 version, untouched
+               0, 0, 0,                // 1-3 callback counters, zeroed
+               7,                      // 4 derived at readout, not reset here
+               0, 0,                   // 5-6 gap and re-arms, zeroed
+               $.GpsDiag.FORM_CONFIG,  // 7 the enable answer, KEPT
+               2,                      // 8 throws, KEPT
+               0,                      // 9 last accuracy, zeroed
+               3];                     // 10 flags, KEPT
+    return arrEq(a, exp, logger, "resetSession");
+}
+
+// secsBetween: truncation, the never-seen sentinel, and the refusal to report a
+// negative span as a duration.
+(:test) function test_gps_c1_secondsBetweenTruncatesAndRefusesNegatives(logger) {
+    var ok = true;
+    // [from, to, expected]
+    var rows = [[0,     500000, 0],        // never-seen baseline
+                [0,     0,      0],
+                [1000,  1000,   0],
+                [1000,  1999,   0],        // truncates, never rounds up
+                [1000,  2000,   1],
+                [1000,  3999,   2],
+                [5000,  1000,   0],        // out of order: 0, not a wrap
+                [1000,  1000 + 65534000, 65534],
+                [1000,  1000 + 99999000, 65534]];   // clamped, "at least"
+    for (var i = 0; i < rows.size(); i++) {
+        var got = $.GpsDiag.secsBetween(rows[i][0], rows[i][1]);
+        if (got != rows[i][2]) {
+            logger.error("secsBetween(" + rows[i][0] + ", " + rows[i][1] + ") = " +
+                         got + ", expected " + rows[i][2]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+// gpsNote, called directly: the stamp, the three counters, the ever-latch and
+// the gap slot.
+//
+// IN ISOLATION ONLY. Nothing here says onPosition calls it; the c2 section
+// below owns that, and this case would stay green if the call site were
+// deleted.
+(:test) function test_gps_c1_theCallbackNoteCountsAndStamps(logger) {
+    var p = new GpsProbe();
+    p.sessionReset(100000);
+    p.note(4, 101000);
+    p.note(3, 102000);
+    p.note(2, 103000);
+    p.note(null, 110000);       // counted, but grades nothing
+    var ok = true;
+    if (p.slot($.GpsDiag.I_CB_TOTAL) != 4) {
+        logger.error("every callback counts, including a null accuracy; got " +
+                     p.slot($.GpsDiag.I_CB_TOTAL));
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_CB_USABLE) != 2) {
+        logger.error("accuracy >= 3 is usable: expected 2, got " +
+                     p.slot($.GpsDiag.I_CB_USABLE));
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_CB_GOOD) != 1) {
+        logger.error("accuracy == 4 is good: expected 1, got " +
+                     p.slot($.GpsDiag.I_CB_GOOD));
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_LAST_ACC) != 2) {
+        logger.error("a null accuracy must not overwrite the last graded one; got " +
+                     p.slot($.GpsDiag.I_LAST_ACC));
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_MAXGAP_S) != 7) {
+        logger.error("the longest gap is the 7 s between 103000 and 110000; got " +
+                     p.slot($.GpsDiag.I_MAXGAP_S));
+        ok = false;
+    }
+    if (p.lastGpsMs() != 110000) {
+        logger.error("the arrival stamp must be the last callback; got " +
+                     p.lastGpsMs());
+        ok = false;
+    }
+    if (!p.everSeen()) {
+        logger.error("a usable fix was seen, so the ever-latch must be set");
+        ok = false;
+    }
+    return ok;
+}
+
+// The gap slot's BASELINE, which is the half a bare `previous arrival` would
+// get wrong: a silence that straddles START belongs to the row before it.
+(:test) function test_gps_c1_theGapSlotBaselinesAtTheStartOfTheRow(logger) {
+    var p = new GpsProbe();
+    p.note(4, 10000);            // long before START -- no session yet
+    p.sessionReset(600000);      // START, ten minutes later
+    p.note(4, 602000);           // two seconds into the row
+    var ok = true;
+    if (p.slot($.GpsDiag.I_MAXGAP_S) != 2) {
+        logger.error("the 590 s straddling START belongs to no row: the gap " +
+                     "must be 2 s, got " + p.slot($.GpsDiag.I_MAXGAP_S));
+        ok = false;
+    }
+    return ok;
+}
+
+// The watchdog seam, called directly: one re-arm per window and no more.
+//
+// IN ISOLATION ONLY. Nothing here says onTick calls it; the c2 section below
+// owns that, and this case would stay green if the call site were deleted.
+(:test) function test_gps_c1_theWatchdogSeamRearmsAtMostOncePerWindow(logger) {
+    var R = $.GpsDiag.GPS_REARM_MS;
+    var p = new GpsProbe();
+    p.sessionReset(100000);
+    p.note(4, 100000);                 // a usable fix, so the latch is set
+    var ok = true;
+    p.setNowMs(100000 + R - 1);
+    p.watchdog();
+    if (p.starts != 0) {
+        logger.error("one ms short of the window must not re-arm; starts=" + p.starts);
+        ok = false;
+    }
+    p.setNowMs(100000 + R);
+    p.watchdog();
+    if (p.starts != 1) {
+        logger.error("at the window the watchdog re-arms once; starts=" + p.starts);
+        ok = false;
+    }
+    p.setNowMs(100000 + 2 * R - 1);
+    p.watchdog();
+    p.watchdog();
+    if (p.starts != 1) {
+        logger.error("inside the same window no further re-arm; starts=" + p.starts);
+        ok = false;
+    }
+    p.setNowMs(100000 + 2 * R);
+    p.watchdog();
+    if (p.starts != 2) {
+        logger.error("the next window re-arms again; starts=" + p.starts);
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_REARMS) != 2) {
+        logger.error("every re-arm is counted; slot says " +
+                     p.slot($.GpsDiag.I_REARMS));
+        ok = false;
+    }
+    return ok;
+}
+
+// The watchdog will not re-arm a receiver that has never produced a usable fix:
+// that device is acquiring, not stalled, and a re-enable may reset it.
+(:test) function test_gps_c1_theWatchdogWaitsForTheFirstUsableFix(logger) {
+    var R = $.GpsDiag.GPS_REARM_MS;
+    var p = new GpsProbe();
+    p.sessionReset(100000);
+    p.note(2, 100000);                 // POOR: a callback, but not a usable fix
+    p.setNowMs(100000 + 10 * R);
+    p.watchdog();
+    if (p.starts != 0) {
+        logger.error("no usable fix has ever been seen, so no re-arm; starts=" +
+                     p.starts);
+        return false;
+    }
+    return true;
+}
+
+// The snapshot: SLOTS long, version in slot 0, every counter clamped, and
+// I_LAST_CB_S derived from the two stamps rather than accumulated.
+(:test) function test_gps_c1_theSnapshotIsSlotsLongAndDerivesTheLastCallback(logger) {
+    var p = new GpsProbe();
+    p.sessionReset(100000);
+    p.note(4, 112500);                        // 12.5 s into the row
+    p.setSlot($.GpsDiag.I_CB_TOTAL, 99999);   // past the ceiling
+    p.setSlot($.GpsDiag.I_FORM, $.GpsDiag.FORM_CONFIG);
+    var a = p.snapshot();
+    var ok = true;
+    if (a.size() != $.GpsDiag.SLOTS) {
+        logger.error("the snapshot must be SLOTS long -- a setData array longer " +
+                     "than :count is an uncatchable System Error at save time; " +
+                     "got " + a.size());
+        return false;
+    }
+    if (a[$.GpsDiag.I_VERSION] != $.GpsDiag.VERSION) {
+        logger.error("slot 0 must carry the layout version; got " +
+                     a[$.GpsDiag.I_VERSION]);
+        ok = false;
+    }
+    if (a[$.GpsDiag.I_CB_TOTAL] != $.GpsDiag.MAXV) {
+        logger.error("counters clamp at readout; got " + a[$.GpsDiag.I_CB_TOTAL]);
+        ok = false;
+    }
+    if (a[$.GpsDiag.I_LAST_CB_S] != 12) {
+        logger.error("the last callback is 12.5 s into the row and truncates to " +
+                     "12; got " + a[$.GpsDiag.I_LAST_CB_S]);
+        ok = false;
+    }
+    if (a[$.GpsDiag.I_FORM] != $.GpsDiag.FORM_CONFIG) {
+        logger.error("the enable answer reaches the snapshot; got " +
+                     a[$.GpsDiag.I_FORM]);
         ok = false;
     }
     return ok;

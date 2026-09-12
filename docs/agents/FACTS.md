@@ -389,19 +389,28 @@ is why `scripts/check_ceiling_notes.py` now derives the consequence
 arithmetically.
 
 Current headroom, verbatim from the newest anchor in the tree,
-`source/RrHrvTest.mc:21` (epic #59, the `claude/hrv-correctness` branch):
+`source/GpsFixTest.mc` (#211, the `claude/gps-fenix9` branch):
 
-    CEILING hrv-correctness fenix6: 249 used of 253, 4 free -- the 5th file-scope (:test) added reds
+    CEILING gps-fenix9 fenix6: 251 used of 253, 2 free -- the 3rd file-scope (:test) added reds
 
-Epic #59 costs **two** members against the previous anchor: the `RR_FRESH_MS`
+Bisected at that branch's c1 commit: `monkeyc --unit-test -d fenix6` with 2
+throwaway file-scope `(:test)` stubs is `BUILD SUCCESSFUL`, with 3 it is
+`ERROR: fenix6: Found 254 members in module 'globals', exceeding the limit of
+253.` and with 4 it is `Found 255`. #211 costs **two** members against the
+previous anchor, and they are its two module blocks — `module GpsDiag` and
+`module GpsFix`; every constant and every `(:test)` it adds lives inside one of
+them and costs nothing.
+
+**`hrv-correctness` is the previous anchor, not the current one.** Its note
+(`249 used of 253, 4 free`) is still in the tree at `source/RrHrvTest.mc:21`,
+and epic #59 cost **two** members against *its* predecessor: the `RR_FRESH_MS`
 split is +3 constants and -1, and `module RrDiag` and `module RrHrv` are one
-each. The `v08-display-fixes` note (`246 used of 253, 7 free`) is still in the
-tree at `source/GridGateTest.mc:34` and `source/SetGridLayoutTest.mc:79`; it is
-an OLDER anchor, not the current headroom, and the paragraph below is why that
-is allowed. Re-bisected at the round-2 head of `claude/hrv-correctness`:
-`monkeyc --unit-test -d fenix6` with 4 throwaway file-scope `(:test)` stubs is
-`BUILD SUCCESSFUL`, with 5 it is
-`ERROR: fenix6: Found 254 members in module 'globals', exceeding the limit of 253.`
+each. An earlier revision of this section presented that note as "the newest
+anchor in the tree"; it was correct when written and is not now, and it is
+corrected here rather than left to be noticed. The `v08-display-fixes` note
+(`246 used of 253, 7 free`) is older still and is at
+`source/GridGateTest.mc:34` and `source/SetGridLayoutTest.mc:79`. The paragraph
+below is why keeping all three is allowed.
 
 Older anchors are also in the tree. Do not carry a count of them in prose:
 `python3 scripts/check_ceiling_notes.py` prints every note line with its
@@ -412,9 +421,9 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**428** `(:test)` functions under `source/`, matching
+**441** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/gps-fenix9` branch at its c0 commit: "OK: 428 (:test)
+run on the `claude/gps-fenix9` branch at its c1 commit: "OK: 441 (:test)
 function(s) under source/ match scripts/expected_tests.txt exactly."). It was
 **423** at `a0b1fc9` (`origin/main`, the merge of #213), **412** at `9ece925`
 (v0.9.2, the merge of #208), **362** at `211f106`, **385** at `d2cd8a6`
@@ -608,8 +617,8 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
     AGENTFACT manifest-devices 19
-    AGENTFACT pinned-tests 428
-    AGENTFACT ceiling hrv-correctness 249 253 4
+    AGENTFACT pinned-tests 441
+    AGENTFACT ceiling gps-fenix9 251 253 2
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke
     AGENTFACT devfield 2 rr_interval
@@ -640,8 +649,10 @@ prose above is the explanation.
     AGENTFACT devfield 28 cue_cfg
 
 The `CEILING` line in §5.1 is additionally checked by
-`scripts/check_ceiling_notes.py`, which requires it to be byte-identical to its
-two copies in `source/`.
+`scripts/check_ceiling_notes.py`, which requires it to be byte-identical to
+every other copy of the SAME ANCHOR in `source/`. Older anchors are separate
+notes and are checked separately; the number of copies an anchor has is not
+fixed, so do not read a count of them here.
 
 **What is NOT machine-checked**, so nobody reads more into a green run: every
 prose claim in §1-§4, §6 and §7, the `[Local]` issue numbers, the backlog and

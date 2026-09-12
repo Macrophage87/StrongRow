@@ -1978,6 +1978,31 @@ class StrongRowView extends Ui.View {
     // ================= app / workout state ==================================
     hidden var mSensorOk;
     hidden var mGpsQual;
+    // #211: the POSITIONING state the shipped view did not keep.
+    //
+    //   mLastGpsMs   when the last onPosition callback arrived
+    //                (System.getTimer()). 0 means NEVER-SEEN -- the sentinel
+    //                gpsHave tests with `!= 0`, never with `> 0`, because
+    //                System.getTimer() is negative for 25 of every 50 days of
+    //                uptime and a sign test on a live signal fails closed
+    //                (#70, and the same shape #192 corrected).
+    //                DELIBERATELY SURVIVES a session boundary, like mLastRrMs:
+    //                a fix acquired before START is still a fix, and blanking
+    //                the pip at START would be a lie in the other direction.
+    //   mGpsEver     has a USABLE fix (accuracy >= QUALITY_USABLE) ever been
+    //                seen? The watchdog will not re-arm before the first one:
+    //                a device that has never had a fix is acquiring, not
+    //                stalled, and re-enabling would reset the acquisition.
+    //   mGpsBaseMs   the START of the row, as the baseline for the gap slot.
+    //                Written by gpsDiagSessionReset and by nothing else.
+    //   mGpsRearmMs  when the watchdog last re-enabled positioning. 0 means
+    //                never, same sentinel.
+    //   mGpsDiag     the gps_diag slots, indexed by $.GpsDiag.I_*.
+    hidden var mLastGpsMs;
+    hidden var mGpsEver;
+    hidden var mGpsBaseMs;
+    hidden var mGpsRearmMs;
+    hidden var mGpsDiag;
     hidden var mTimer;
     hidden var mSession;
     hidden var mFitRate;
@@ -2080,6 +2105,15 @@ class StrongRowView extends Ui.View {
         computeCoeffs();
         mSensorOk   = false;
         mGpsQual    = 0;
+        // #211. Explicit for the reason the block below gives for mTimer: both
+        // sentinels are load-bearing (0 = never-seen, false = never usable) and
+        // a precondition that load-bearing should be a statement in this file
+        // rather than a language default a reader has to know.
+        mLastGpsMs  = 0;
+        mGpsEver    = false;
+        mGpsBaseMs  = 0;
+        mGpsRearmMs = 0;
+        mGpsDiag    = $.GpsDiag.newCounters();
         // Explicit, though Monkey C already defaults an unassigned member to
         // null. shutdown()'s `if (mTimer != null)` and onLayout's idempotency
         // guard both read this before anything writes it, and a precondition
@@ -2981,16 +3015,234 @@ class StrongRowView extends Ui.View {
 
     // GPS on for the whole app lifetime, so a fix is ready before START and
     // the recording session logs position / speed / distance.
+    //
+    // c1 ROUTES THE ONE LEGACY CALL THROUGH gpsEnable, and that is
+    // behaviour-preserving rather than cosmetic: gpsEnable's FORM_LEGACY branch
+    // makes exactly this call inside exactly this try/catch. What it buys is
+    // that a (:test) probe overriding gpsEnable intercepts it, so no case in
+    // the suite can arm real positioning in the simulator -- which the existing
+    // probes achieve by neutralising startGps entirely, and which a case about
+    // the LADDER cannot do because the ladder is what it drives.
     hidden function startGps() {
+        gpsEnable($.GpsDiag.FORM_LEGACY);
+    }
+
+    // #211. The two CAPABILITY READS, each in its own method so a (:test) probe
+    // can drive the enable ladder without a GNSS chipset. They are the only
+    // part of the ladder that touches the Position module's feature surface;
+    // everything downstream of them is pure ($.GpsDiag.chooseForm /
+    // nextFormFrom) or is gpsEnable below.
+    //
+    // `has` ON EVERY SYMBOL, not just on the function. hasConfigurationSupport
+    // arrived in Connect IQ 3.3.6 and CONFIGURATION_SAT_IQ with it, but the
+    // documented device list for hasConfigurationSupport in SDK 9.2.0
+    // (doc/Toybox/Position.html) was written before the fenix 9 family was
+    // published and does not name it -- so "the docs list this device" is not
+    // available as evidence here, and the runtime check is the only one that
+    // is. The `has` guard costs nothing where the symbol exists.
+    //
+    // THE CALL ITSELF IS WRAPPED: hasConfigurationSupport is a platform call
+    // and a throw from it must degrade to "cannot use the configuration form",
+    // not take onLayout down.
+    hidden function gpsCapSatIq() {
+        if (!(Position has :hasConfigurationSupport)) { return false; }
+        if (!(Position has :CONFIGURATION_SAT_IQ))    { return false; }
         try {
-            Position.enableLocationEvents(Position.LOCATION_CONTINUOUS, method(:onPosition));
-        } catch (e) {}
+            return Position.hasConfigurationSupport(Position.CONFIGURATION_SAT_IQ);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // ALL THREE constellation symbols, because the request below names all
+    // three and enableLocationEvents throws InvalidValueException "if a
+    // specific CONSTELLATION_* value is not supported by a device, or if an
+    // invalid combination of constellation values are specified" (SDK 9.2.0,
+    // doc/Toybox/Position.html). A partial check would let the call be made and
+    // charge its failure to the throw counter.
+    //
+    // THE CONSTELLATION ENUM IS DEPRECATED, and that is measured rather than
+    // inferred: monkeyc -w on SDK 9.2.0 / fr965 emits
+    // "'$.Toybox.Position.CONSTELLATION_GPS' is deprecated" (and the same for
+    // GLONASS and GALILEO) for the call below, and the SDK's own page says of
+    // the enum "This has been deprecated. This enum may be removed after
+    // System 10." Garmin's example on that same page still uses it as the
+    // middle fallback, which is exactly the role it has here: below the
+    // configuration form, above the legacy call. It is NOT the preferred rung
+    // and must not be promoted to one.
+    hidden function gpsCapConstellations() {
+        return (Position has :CONSTELLATION_GPS)
+            && (Position has :CONSTELLATION_GLONASS)
+            && (Position has :CONSTELLATION_GALILEO);
+    }
+
+    // #211. Ask the platform for ONE enable form. Returns true if the call
+    // returned, false if it threw.
+    //
+    // EACH FORM IN ITS OWN try/catch, which is what the caller's fall-through
+    // needs: a throw from the configuration form must leave the constellation
+    // form reachable, and a throw from that must leave the legacy call
+    // reachable. Catching per form rather than per ladder is what makes
+    // "returned false" mean "this rung failed" rather than "something failed".
+    //
+    // THE CONSTELLATION LIST IS GPS + GLONASS + GALILEO, and it can still throw
+    // on a device that has all three symbols: the fenix6 family's device
+    // definitions declare GPS L1 / GALILEO L1 / GLONASS for the World Wide SKU
+    // and GPS L1 / GLONASS / BEIDOU L1 for the APAC one, so an APAC fenix6 has
+    // the GALILEO symbol and not the combination. That is exactly why this rung
+    // falls through to the legacy call rather than being the last one.
+    //
+    // NOTHING HERE IS REACHABLE FROM A (:test). A probe overrides this method,
+    // so the suite pins WHICH form is asked for and in what order the ladder
+    // falls back -- never that any form acquires a fix on any device.
+    hidden function gpsEnable(form) {
+        try {
+            if (form == $.GpsDiag.FORM_CONFIG) {
+                Position.enableLocationEvents({
+                    :acquisitionType => Position.LOCATION_CONTINUOUS,
+                    :configuration   => Position.CONFIGURATION_SAT_IQ
+                }, method(:onPosition));
+                return true;
+            }
+            if (form == $.GpsDiag.FORM_CONST) {
+                Position.enableLocationEvents({
+                    :acquisitionType => Position.LOCATION_CONTINUOUS,
+                    :constellations  => [Position.CONSTELLATION_GPS,
+                                         Position.CONSTELLATION_GLONASS,
+                                         Position.CONSTELLATION_GALILEO]
+                }, method(:onPosition));
+                return true;
+            }
+            Position.enableLocationEvents(Position.LOCATION_CONTINUOUS,
+                                          method(:onPosition));
+            return true;
+        } catch (e) {
+            return false;
+        }
     }
 
     function onPosition(info as Position.Info) as Void {
         if (info != null && info.accuracy != null) {
             mGpsQual = info.accuracy;
         }
+    }
+
+    // #211. Fold ONE position callback into the receive-path state: the
+    // arrival stamp, the three callback counters, the gap slot and the
+    // ever-seen latch.
+    //
+    // A SEAM RATHER THAN FOUR LINES IN onPosition, for the reason
+    // rrDiagSessionReset states: onPosition is the platform's entry point and
+    // takes a Position.Info, so a case driving it has to build a stand-in and
+    // cast it. This takes the one member the shipped code reads.
+    //
+    // THE ORDER OF THE LAST TWO WRITES IS LOAD-BEARING, and it is sampleHr's
+    // rule applied here: the stamp is written BEFORE the ever-latch, so
+    // gpsRearmDue can never see "a usable fix has been seen" against a stamp
+    // that was not written.
+    //
+    // COUNTS EVERY CALLBACK, including one carrying a null accuracy. That a
+    // callback arrived at all is the fact this field exists to record, and
+    // i185890690's question is whether they stopped -- not whether they were
+    // good. The accuracy-dependent slots are inside the null guard; CB_TOTAL is
+    // outside it, deliberately.
+    hidden function gpsNote(acc, now) {
+        mGpsDiag[$.GpsDiag.I_CB_TOTAL] += 1;
+        if (acc != null) {
+            mGpsDiag[$.GpsDiag.I_LAST_ACC] = acc;
+            if (acc >= Position.QUALITY_USABLE) {
+                mGpsDiag[$.GpsDiag.I_CB_USABLE] += 1;
+            }
+            if (acc == Position.QUALITY_GOOD) {
+                mGpsDiag[$.GpsDiag.I_CB_GOOD] += 1;
+            }
+        }
+        // laterStamp, not a bare `>`, for the reason it documents: the baseline
+        // is 0 until the row starts and 0 WINS a `>` comparison on a negative
+        // clock, which would silently delete the measurement.
+        var base = laterStamp(mLastGpsMs, mGpsBaseMs);
+        if (base != 0) {
+            var gap = (now - base) / 1000;
+            if (gap > mGpsDiag[$.GpsDiag.I_MAXGAP_S]) {
+                mGpsDiag[$.GpsDiag.I_MAXGAP_S] = gap;
+            }
+        }
+        mLastGpsMs = now;
+        if (acc != null && acc >= Position.QUALITY_USABLE) { mGpsEver = true; }
+    }
+
+    // #211. The WATCHDOG: re-enable positioning when a stream that once worked
+    // has been silent for GPS_REARM_MS, at most once per window.
+    //
+    // A LISTED RISK, not a free repair. enableLocationEvents re-arms the
+    // receiver, and a re-arm issued while an acquisition is in progress may
+    // reset that acquisition -- so this makes a marginal-reception row slightly
+    // worse in exchange for making a dead-stream row recoverable. The bound is
+    // the interval and nothing else, which is why gpsRearmDue's fourth term
+    // exists and why the stamp below is written BEFORE startGps() rather than
+    // after: a throw inside startGps must not leave the window unstamped and
+    // turn this into a per-tick retry loop.
+    //
+    // THE COUNTER IS INCREMENTED WHETHER OR NOT THE RE-ENABLE SUCCEEDS,
+    // deliberately: "the watchdog fired" and "the watchdog's enable worked" are
+    // different facts, and I_FORM / I_ENABLE_THROW carry the second one.
+    hidden function gpsWatchdog() {
+        var now = nowMs();
+        if (!gpsRearmDue(mGpsEver, mLastGpsMs, mGpsRearmMs, now,
+                         $.GpsDiag.GPS_REARM_MS)) {
+            return;
+        }
+        mGpsRearmMs = now;
+        mGpsDiag[$.GpsDiag.I_REARMS] += 1;
+        startGps();
+    }
+
+    // #211. The SESSION-SCOPE reset of the positioning diagnostic: the
+    // receive-path counters, the gap baseline and the re-arm budget, together,
+    // because they are one fact ("this row starts here").
+    //
+    // A FUNCTION RATHER THAN THREE LINES IN startSession, for the reason
+    // rrDiagSessionReset gives: no (:test) can obtain a Session, so
+    // startSession's body is unreachable from the suite and an inline
+    // assignment could not be pinned at all.
+    //
+    // WHAT IT DOES NOT RESET is the half a reader of a mute row needs most --
+    // I_FORM, I_ENABLE_THROW and I_FLAGS describe an enable that happened at
+    // onLayout, before any session existed. $.GpsDiag.resetSession holds that
+    // decision in one place; see its comment.
+    //
+    // mLastGpsMs is NOT reset either, and that is the same call mLastRrMs makes
+    // (stopAndSave says so): a fix acquired in the two minutes before START is
+    // still a fix, and blanking the pip at START would be a lie in the other
+    // direction. The gap baseline is what keeps the straddling silence out of
+    // the slot.
+    hidden function gpsDiagSessionReset(now) {
+        mGpsDiag    = $.GpsDiag.resetSession(mGpsDiag);
+        mGpsBaseMs  = now;
+        mGpsRearmMs = 0;
+    }
+
+    // #211. The whole positioning diagnostic as one $.GpsDiag.SLOTS-element
+    // array, ready for the gps_diag field. Called ONCE per session, from
+    // stopAndSave, so this allocation and this loop are off every hot path --
+    // which is the entire reason the counters are raw and unclamped until here.
+    //
+    // THE LENGTH IS SAFETY-CRITICAL, not tidy: a setData array LONGER than the
+    // field's :count is an uncatchable System Error at save time that takes the
+    // whole activity with it. Both this array and the createField `:count` read
+    // $.GpsDiag.SLOTS; neither may substitute a literal.
+    //
+    // I_LAST_CB_S IS DERIVED HERE, not accumulated. It is a property of two
+    // stamps -- the session baseline and the last arrival -- and computing it
+    // per callback would write the same answer 2,600 times a row.
+    hidden function gpsDiagSnapshot() {
+        var a = new [$.GpsDiag.SLOTS];
+        for (var i = 0; i < $.GpsDiag.SLOTS; i++) {
+            a[i] = $.GpsDiag.clamp(mGpsDiag[i]);
+        }
+        a[$.GpsDiag.I_VERSION]   = $.GpsDiag.VERSION;
+        a[$.GpsDiag.I_LAST_CB_S] = $.GpsDiag.secsBetween(mGpsBaseMs, mLastGpsMs);
+        return a;
     }
 
     // Derive the DSP time base from REQ_RATE -- the rate the accelerometer is
@@ -5071,6 +5323,89 @@ class StrongRowView extends Ui.View {
 
     static function hrHave(ever, lastMs, nowMs, threshMs) {
         return ever && lastMs != 0 && (nowMs - lastMs) < threshMs;
+    }
+
+    // #211. Pure: has a position callback arrived recently enough for the pip
+    // to be reporting a fix rather than a memory?
+    //
+    // SHAPED LIKE hrHave ABOVE, and the `lastMs != 0` term is the same
+    // never-seen sentinel for the same reason: `> 0` would be a SIGN test, and
+    // System.getTimer() is negative for 25 of every 50 days of device uptime,
+    // so a sign test reads a live signal as absent for half the calendar. That
+    // is #70's measurement and #192's correction, applied rather than
+    // rediscovered.
+    //
+    // FRESHNESS ONLY -- NO QUALITY TERM, and that is a deliberate departure
+    // from hrHave's `ever` argument rather than an omission. The two questions
+    // this pip answers are "is there data?" and "how good is it?", and
+    // i185890690 is what happens when they are conflated: a good accuracy
+    // value, latched, went on being painted green for 43 minutes after the
+    // stream died. Absence rendered as a value is one of this repository's
+    // named defect classes (docs/agents/FACTS.md section 6). gpsColour below
+    // takes the two answers as two arguments and can never collapse them.
+    //
+    // STRICT `<`, so an age of exactly threshMs is STALE. gpsRearmDue below
+    // uses `>=` against its own window for the complementary half; between them
+    // every age falls on exactly one side of each boundary.
+    static function gpsHave(lastMs, nowMs, threshMs) {
+        return lastMs != 0 && (nowMs - lastMs) < threshMs;
+    }
+
+    // #211. Pure: the status pip's colour.
+    //
+    // `have` FIRST, because it dominates: with no recent callback there is
+    // nothing to grade, and the answer is the NO-DATA colour the RR pip, the CT
+    // pip and the heart-rate arc's track all already use (COLOR_DK_GRAY). One
+    // vocabulary across four indicators, so a reader learns one rule.
+    //
+    // THAT IS A BEHAVIOUR CHANGE AND IT IS THE POINT. Before #211 a view with
+    // no callback at all painted the pip RED, because mGpsQual initialises to 0
+    // and 0 falls through to the red branch -- so "no fix yet" and "a callback
+    // arrived carrying an unusable fix" were the same colour, and "the stream
+    // died an hour ago" was whatever colour it had last been. Red is a
+    // QUALITY statement; absence is not a quality.
+    //
+    // The three graded bands are UNCHANGED from what drawGps shipped, and they
+    // are written with Position's own names rather than the literals 3 and 2:
+    // QUALITY_USABLE is 3 and QUALITY_POOR is 2 (SDK 9.2.0,
+    // doc/Toybox/Position.html), so this is the same mapping, not a new one.
+    static function gpsColour(have, qual) {
+        if (!have) { return Gfx.COLOR_DK_GRAY; }
+        if (qual >= Position.QUALITY_USABLE) { return Gfx.COLOR_GREEN; }
+        if (qual == Position.QUALITY_POOR)   { return Gfx.COLOR_YELLOW; }
+        return Gfx.COLOR_RED;
+    }
+
+    // #211. Pure: should the watchdog re-enable positioning now?
+    //
+    // FOUR TERMS, and every one of them is a refusal:
+    //
+    //   ever            a device that has NEVER produced a usable fix is
+    //                   acquiring, not stalled. Re-enabling mid-acquisition is
+    //                   the one way this watchdog can make things worse, so it
+    //                   does not fire until the receiver has proved it can
+    //                   produce a fix at all.
+    //   lastMs != 0     the never-seen sentinel, tested as `!= 0` and never as
+    //                   `> 0` -- see gpsHave. Redundant with `ever` today and
+    //                   kept anyway: the two fields are written by one function
+    //                   in one order, and a predicate that depended on that
+    //                   ordering to be safe would be a trap for whoever changes
+    //                   it.
+    //   age >= rearmMs  the stream has actually been silent that long. `>=`
+    //                   rather than `>`, complementing gpsHave's strict `<`.
+    //   since the last  at most one re-arm per window. This is the entire bound
+    //   re-arm          on the risk: a re-enable may reset an acquisition in
+    //                   progress, so the damage is capped at one reset per
+    //                   GPS_REARM_MS rather than one per tick (4 Hz).
+    //
+    // RETURNS A DECISION, NOT AN ACTION, so a (:test) can drive the whole truth
+    // table without a GNSS chipset -- the shape rrIsFresh and hrHave established.
+    static function gpsRearmDue(ever, lastMs, lastRearmMs, nowMs, rearmMs) {
+        if (!ever) { return false; }
+        if (lastMs == 0) { return false; }
+        if ((nowMs - lastMs) < rearmMs) { return false; }
+        if (lastRearmMs != 0 && (nowMs - lastRearmMs) < rearmMs) { return false; }
+        return true;
     }
 
     // The freshness clock, as one overridable call.
@@ -7972,10 +8307,22 @@ class StrongRowView extends Ui.View {
         return m.format("%d") + ":" + r.format("%02d");
     }
 
+    // #211. The status pip's colour, as ONE call reading the view's state.
+    //
+    // A METHOD RATHER THAN AN EXPRESSION INSIDE drawGps, because drawGps needs
+    // a Dc and the decision does not: this is the seam a (:test) drives. The
+    // grading half is the static gpsColour and the freshness half is the static
+    // gpsHave, so the only thing here is which fields feed them.
+    hidden function gpsPipColour() {
+        // c1 passes `true` -- today's implicit "there is always data", which is
+        // exactly the defect. c3 replaces it with the freshness test; keeping
+        // the call shape identical is what lets the c2 differential name this
+        // method.
+        return gpsColour(true, mGpsQual);
+    }
+
     hidden function drawGps(dc, w, h) {
-        var col = Gfx.COLOR_RED;
-        if (mGpsQual >= 3)      { col = Gfx.COLOR_GREEN;  }   // usable / good
-        else if (mGpsQual == 2) { col = Gfx.COLOR_YELLOW; }   // poor
+        var col = gpsPipColour();
         dc.setColor(col, Gfx.COLOR_TRANSPARENT);
         dc.drawText(w * 0.36, h * 0.045, Gfx.FONT_XTINY, "GPS", Gfx.TEXT_JUSTIFY_CENTER);
         // RR: green while beat intervals are streaming in
