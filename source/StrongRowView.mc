@@ -8990,13 +8990,33 @@ class StrongRowView extends Ui.View {
     // Pure: which rung of a widest-first ladder to draw, given each rung's
     // MEASURED width and the room available.
     //
-    // c1 NOTE, and it is deliberate: this body returns 0 unconditionally, which
-    // is exactly what drawFoot did before this refactor -- always the widest
-    // form. The refactor is behaviour-preserving on purpose so that the c2
-    // differentials have something to be red against. c3 replaces the body.
+    // THE LONGEST RUNG THAT FITS, and the floor when none does.
+    //
+    // `widths` is widest-first and every entry is a MEASURED width from the Dc
+    // this frame is being drawn into; `chordPx` already has the bezel taken off
+    // once per side, so the comparison is a plain <=. Inclusive on purpose: a
+    // rung exactly as wide as the chord fits, because the clearance is inside
+    // the chord and adding a second copy of it here would be the same figure
+    // counted against two different references.
+    //
+    // THE FALLBACK IS THE FLOOR, NOT THE HEAD. Nothing fitting means the row is
+    // narrower than every form of this state -- which is where the two
+    // one-rung safety ladders land on the 13 devices named in the
+    // FOOTGEOM-COUNT line above. Returning the head there would draw the widest
+    // string of all; returning the floor draws the least wrong one. For a
+    // one-rung ladder the two coincide, which is exactly what makes NO ACCEL
+    // and NOT RECORDING unshortenable by construction rather than by a special
+    // case somebody could delete.
+    //
+    // This replaces a `return 0` that was behaviour-preserving on purpose (the
+    // c1 commit of #217), so that the six c2 differentials had something to be
+    // red against. That partition is the evidence; this body is the fix.
     static function footFit(widths, chordPx) {
         if (widths == null || widths.size() == 0) { return 0; }
-        return 0;
+        for (var i = 0; i < widths.size(); i++) {
+            if (widths[i] <= chordPx) { return i; }
+        }
+        return widths.size() - 1;
     }
 
     // #108: `fs` is now a PARAMETER rather than computed here, and the reason is
