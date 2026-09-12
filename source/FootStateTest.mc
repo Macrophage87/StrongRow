@@ -322,4 +322,212 @@ module Foot {
     return true;
 }
 
+
+// ===========================================================================
+// #217: THE FOOTER'S WIDTH, MEASURED. c0 -- characterization only.
+// ===========================================================================
+//
+// THE FIELD REPORT, 2026-09-12, fenix 9 Pro 51 mm (466 px AMOLED), first row
+// on that watch: "some of the text on the bottom (in red) overflowed the
+// watch." The only red text on the bottom of this app is drawFoot's recording
+// footer. On the reported row it would have read "REC 43:45 0.03km 400wk".
+//
+// WHAT WAS NEVER MEASURED, and is measured here. drawFoot's own comment said
+// the widest form is "REC 199:59 12.35km 9999wk" and that this is "a CHARACTER
+// bound and not a clearance ... nothing here claims a measured margin". It did
+// not, and nothing else did either: the string's PIXEL width had never been put
+// beside the round chord at the row's y on any device.
+//
+// THE PROBE. dc.getTextWidthInPixels, dc.getTextDimensions, dc.getFontHeight,
+// Gfx.getFontAscent and Gfx.getFontDescent, called from a throwaway app under
+// SDK 9.2.0, once per device, on all NINETEEN products in manifest.xml -- the
+// same procedure that produced Hsi.pipDevices() (issue #209 states it step by
+// step). getTextWidthInPixels and getTextDimensions[0] agreed on every string
+// on every device. The run also re-read the five columns pipDevices() already
+// carries and reproduced all nineteen rows EXACTLY, and reproduced the 277 px
+// this repository records for "-:--/500m  12.5m/str" on the 454 px family.
+// That agreement is what makes these rows comparable to the committed ones;
+// test_foot_c0_theMeasuredFooterTableAgreesWithPipDevices re-checks it here.
+//
+// A SIZE-MATE IS NOT A FONT-MATE, and it cut both ways this time. The two
+// fenix 9 Pro Solar devices share a width with an older device and do NOT
+// share its metrics (260 px: fh 21 against 19; 280 px: fh 22 against 19), so
+// no row here is copied from a size-mate. The 466 px fenix9pro51mm DOES turn
+// out to be a font-mate of the 454 px family -- every string measures the same
+// number of pixels on both -- but that is MEASURED here, not assumed, and it
+// is why the 466 device is NOT the worst device in this table: it has 200.28
+// px of usable chord where the 454 family has 191.06.
+//
+// -- The measured table -------------------------------------------------------
+// [ name, w, h, FONT_XTINY height,
+//   then the FONT_XTINY pixel width of each footer form, in px:
+//   recRow   "REC 43:45 0.03km 400wk"      the reported row's own footer
+//   recMax   "REC 199:59 12.35km 9999wk"   the widest form drawFoot can build
+//   noKmMax  "REC 199:59 9999wk"           rung 2, widest
+//   noKm     "REC 43:45 400wk"             rung 2, the reported row
+//   timeMax  "REC 199:59"                  rung 3, widest
+//   time     "REC 43:45"                   rung 3, the reported row
+//   rec      "REC"                         rung 4, the floor
+//   pauseMax "PAUSED  9999wk"              paused rung 1, widest
+//   pause    "PAUSED"                      paused rung 2, the floor
+//   notRec   "NOT RECORDING"               safety state, never shortened
+//   noAccel  "NO ACCEL"                    safety state, never shortened
+//   startMax "START to record"             idle rung 1
+//   start    "START"                       idle rung 2, the floor
+// All values in pixels, SDK 9.2.0. Rows are kept per device, never collapsed
+// by width, for the reason pipDevices() gives.
+function footDevices() {
+    return [
+        [ "fr970",                454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fr965",                454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix847mm",           454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix843mm",           416,  416,   34,  326,  374,  255,  223,  147,  131,   53,  223,  108,  224,  137,  211,   88 ],
+        [ "fenix8pro47mm",        454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix7",               260,  260,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "fenix7pro",            260,  260,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "epix2pro47mm",         416,  416,   31,  261,  300,  204,  178,  118,  105,   40,  175,   83,  170,  103,  169,   71 ],
+        [ "fenix6",               260,  260,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "fenix6pro",            260,  260,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "fenix6spro",           240,  240,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "fenix6xpro",           280,  280,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        // fenix 9 family, same probe run, same SDK.
+        [ "fenix943mm",           416,  416,   34,  326,  374,  255,  223,  147,  131,   53,  223,  108,  224,  137,  211,   88 ],
+        [ "fenix947mm",           454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix9pro43mm",        416,  416,   34,  326,  374,  255,  223,  147,  131,   53,  223,  108,  224,  137,  211,   88 ],
+        [ "fenix9pro47mm",        454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix9pro51mm",        466,  466,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix9prosolar47mm",   260,  260,   21,  183,  210,  143,  125,   83,   74,   29,  124,   60,  123,   75,  121,   51 ],
+        [ "fenix9prosolar51mm",   280,  280,   22,  198,  228,  155,  135,   90,   80,   31,  132,   63,  129,   78,  123,   52 ]
+    ];
+}
+
+// Column indices into a footDevices() row, so no case counts commas.
+const FD_NAME = 0;
+const FD_W = 1;
+const FD_H = 2;
+const FD_FH = 3;
+const FD_REC_ROW = 4;
+const FD_REC_MAX = 5;
+const FD_NOKM_MAX = 6;
+const FD_NOKM = 7;
+const FD_TIME_MAX = 8;
+const FD_TIME = 9;
+const FD_REC = 10;
+const FD_PAUSE_MAX = 11;
+const FD_PAUSE = 12;
+const FD_NOTREC = 13;
+const FD_NOACCEL = 14;
+const FD_START_MAX = 15;
+const FD_START = 16;
+
+// The bezel floor these rows are held to, per side. THE SAME 2.0 px the
+// status-row suite works to (Hsi.PIP_MIN_BEZEL_PX). scripts/check_foot_geometry.py
+// fails if this copy and the shipped StrongRowView.FOOT_BEZEL_PX drift apart.
+const FOOT_MIN_BEZEL_PX = 2.0;
+
+// -- c0: pins on symbols that already exist ----------------------------------
+
+// The distance cell of the reported row, through the SHIPPING formatter.
+// "0.03km" is what footDistStr produces for the 30 m the reported row had
+// covered, and it is the string whose width the table above records.
+(:test) function test_foot_c0_footDistStrRendersTheReportedFieldRow(logger) {
+    var got = StrongRowView.footDistStr(30.0, false);
+    if (!got.equals("0.03km")) {
+        logger.error("footDistStr(30.0, false) = " + got + ", expected " +
+                     "0.03km -- the measured width of the reported row's " +
+                     "footer is the width of the string containing THIS cell, " +
+                     "so if the cell changed the table no longer describes it");
+        return false;
+    }
+    if (!StrongRowView.footDistStr(12345.0, false).equals("12.35km")) {
+        logger.error("footDistStr(12345.0, false) = " +
+                     StrongRowView.footDistStr(12345.0, false) +
+                     ", expected 12.35km (the widest form's cell)");
+        return false;
+    }
+    if (!StrongRowView.footDistStr(null, false).equals("--")) {
+        logger.error("footDistStr(null, false) should be --");
+        return false;
+    }
+    if (!StrongRowView.footDistStr(0.0, true).equals("--")) {
+        logger.error("footDistStr(0.0, true) should be -- (the erg gate)");
+        return false;
+    }
+    return true;
+}
+
+// The two tables must have come from the same probe run, or the new rows are
+// not comparable to the committed ones. Checked here rather than asserted in
+// prose: every device in footDevices() must appear in Hsi.pipDevices() with
+// the SAME width, height and FONT_XTINY height, and both must cover all 19.
+(:test) function test_foot_c0_theMeasuredFooterTableAgreesWithPipDevices(logger) {
+    var fd = footDevices();
+    var pd = Hsi.pipDevices();
+    if (fd.size() != 19 || pd.size() != 19) {
+        logger.error("footDevices has " + fd.size() + " rows and pipDevices " +
+                     pd.size() + "; manifest.xml declares 19 products and both " +
+                     "tables are per-product");
+        return false;
+    }
+    for (var i = 0; i < fd.size(); i++) {
+        var name = fd[i][FD_NAME];
+        var found = false;
+        for (var j = 0; j < pd.size(); j++) {
+            if (pd[j][0].equals(name)) {
+                found = true;
+                if (pd[j][1] != fd[i][FD_W] || pd[j][2] != fd[i][FD_H] ||
+                        pd[j][3] != fd[i][FD_FH]) {
+                    logger.error(name + ": footDevices says w/h/fh = " +
+                                 fd[i][FD_W] + "/" + fd[i][FD_H] + "/" +
+                                 fd[i][FD_FH] + ", pipDevices says " +
+                                 pd[j][1] + "/" + pd[j][2] + "/" + pd[j][3] +
+                                 " -- the two tables are then measurements of " +
+                                 "different things and neither can be read " +
+                                 "against the other");
+                    return false;
+                }
+            }
+        }
+        if (!found) {
+            logger.error(name + " is in footDevices and not in pipDevices");
+            return false;
+        }
+        if (fd[i][FD_W] != fd[i][FD_H]) {
+            logger.error(name + ": w != h. Every chord figure in this suite " +
+                         "takes the display as the circle inscribed in w x h " +
+                         "with w == h, which the probe measured on all 19.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The ladder must be a LADDER: each rung strictly narrower than the one above
+// it, on every device. A rung no narrower than its predecessor could never be
+// selected, and everything below is built on the ordering being real.
+(:test) function test_foot_c0_theFooterLadderWidthsDecreaseOnEveryDevice(logger) {
+    var fd = footDevices();
+    var sets = [ [ FD_REC_MAX, FD_NOKM_MAX, FD_TIME_MAX, FD_REC ],
+                 [ FD_REC_ROW, FD_NOKM, FD_TIME, FD_REC ],
+                 [ FD_PAUSE_MAX, FD_PAUSE ],
+                 [ FD_START_MAX, FD_START ] ];
+    var names = [ "REC widest", "REC reported row", "PAUSED", "idle" ];
+    for (var i = 0; i < fd.size(); i++) {
+        for (var s = 0; s < sets.size(); s++) {
+            for (var k = 1; k < sets[s].size(); k++) {
+                var prev = fd[i][sets[s][k - 1]];
+                var cur  = fd[i][sets[s][k]];
+                if (cur >= prev) {
+                    logger.error(fd[i][FD_NAME] + ": the " + names[s] +
+                                 " ladder is not decreasing -- rung " + k +
+                                 " measures " + cur + " px against " + prev +
+                                 " px above it, so it could never be reached");
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 }   // module Foot
