@@ -421,7 +421,7 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**457** `(:test)` functions under `source/`, matching
+**463** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
 run on the `claude/foot-overflow-fenix9` branch at its c0 commit, REBASED
 onto `c925f56`: "OK: 450 (:test) function(s) under source/ match
@@ -623,7 +623,7 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
     AGENTFACT manifest-devices 19
-    AGENTFACT pinned-tests 457
+    AGENTFACT pinned-tests 463
     AGENTFACT ceiling gps-fenix9 251 253 2
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke

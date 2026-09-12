@@ -746,4 +746,207 @@ function footAvailPx() {
     return true;
 }
 
+
+// -- c2: the red differentials -----------------------------------------------
+//
+// EVERY CASE BELOW IS RED AT c1 AND GREEN AT c3, and nothing else in the tree
+// changes between them: c3 edits one function body, StrongRowView.footFit, and
+// no test file, no pin, no script and no workflow.
+//
+// The REC ladder is read from footDevices() as [recRow, noKm, time, rec] --
+// the reported row's own four rungs -- so these cases are about the string the
+// field report was about, not about a synthetic one.
+function footRecLadder(row) {
+    return [ row[FD_REC_ROW], row[FD_NOKM], row[FD_TIME], row[FD_REC] ];
+}
+
+function footRoomFor(row) {
+    return StrongRowView.footChordPx(row[FD_W], row[FD_H],
+                                     StrongRowView.footRowYFrac(),
+                                     row[FD_FH],
+                                     StrongRowView.footBezelPx());
+}
+
+function footRowNamed(name) {
+    var fd = footDevices();
+    for (var i = 0; i < fd.size(); i++) {
+        if (fd[i][FD_NAME].equals(name)) { return fd[i]; }
+    }
+    return null;
+}
+
+// THE REPORTED ROW, ON THE REPORTED WATCH. "REC 43:45 0.03km 400wk" is 349 px
+// on fenix9pro51mm against 200.28 px of chord; the seam must step down to
+// "REC 43:45" at 141 px, a margin of 59.28 px. Red at c1, where footFit answers
+// 0 and the drawn string overflows by 148.72 px.
+(:test) function test_foot_c2_theReportedRowStepsDownOnTheReportedDevice(logger) {
+    var row = footRowNamed("fenix9pro51mm");
+    if (row == null) {
+        logger.error("fenix9pro51mm is not in footDevices(); this case is " +
+                     "about the device the field report came from");
+        return false;
+    }
+    var ladder = footRecLadder(row);
+    var room = footRoomFor(row);
+    var k = StrongRowView.footFit(ladder, room);
+    if (k != 2) {
+        logger.error("on fenix9pro51mm the seam chose rung " + k + " (" +
+                     ladder[k] + " px) against " + room + " px of chord. The " +
+                     "longest rung that fits is rung 2 at " + ladder[2] +
+                     " px. Rung 0 is the string the field report was about: " +
+                     "349 px, over by 148.72.");
+        return false;
+    }
+    if (ladder[k] > room) {
+        logger.error("the chosen rung is " + ladder[k] + " px against " + room +
+                     " px of chord -- wider than the display at that height");
+        return false;
+    }
+    return true;
+}
+
+// AND ON ALL NINETEEN, because the reported device is not the worst one: the
+// 454 px family has 9.22 px LESS chord than the 466 px device that was
+// reported, and fenix6spro has 98.84 px less.
+(:test) function test_foot_c2_theRecLadderFitsOnEveryDevice(logger) {
+    var fd = footDevices();
+    for (var i = 0; i < fd.size(); i++) {
+        var ladder = footRecLadder(fd[i]);
+        var room = footRoomFor(fd[i]);
+        var k = StrongRowView.footFit(ladder, room);
+        if (ladder[k] > room) {
+            logger.error(fd[i][FD_NAME] + ": the seam chose rung " + k +
+                         " at " + ladder[k] + " px against " + room +
+                         " px of chord, over by " + (ladder[k] - room) +
+                         " px. The ladder's floor is " + ladder[3] +
+                         " px and fits on every device, so there is always an " +
+                         "answer that does not overflow.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The PAUSED and idle ladders are the same mechanism on two more states, and
+// both overflow on 13 of the 19 at their top rung.
+(:test) function test_foot_c2_thePausedAndIdleLaddersFitOnEveryDevice(logger) {
+    var fd = footDevices();
+    var sets = [ [ FD_PAUSE_MAX, FD_PAUSE ], [ FD_START_MAX, FD_START ] ];
+    var names = [ "PAUSED", "idle" ];
+    for (var i = 0; i < fd.size(); i++) {
+        var room = footRoomFor(fd[i]);
+        for (var s = 0; s < sets.size(); s++) {
+            var ladder = [ fd[i][sets[s][0]], fd[i][sets[s][1]] ];
+            var k = StrongRowView.footFit(ladder, room);
+            if (ladder[k] > room) {
+                logger.error(fd[i][FD_NAME] + ": the " + names[s] +
+                             " ladder chose rung " + k + " at " + ladder[k] +
+                             " px against " + room + " px of chord");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// LONGEST FITTING, not merely fitting. A seam that always answered with the
+// floor would satisfy the three cases above and would throw away the elapsed
+// time on every device that has room for it -- which is most of them.
+(:test) function test_foot_c2_fitPrefersTheLongestFittingRung(logger) {
+    var ladder = [ 400, 239, 141, 57 ];
+    var want = [ [ 500.0, 0 ], [ 400.0, 0 ], [ 300.0, 1 ], [ 239.0, 1 ],
+                 [ 200.0, 2 ], [ 141.0, 2 ], [ 100.0, 3 ], [ 57.0, 3 ] ];
+    for (var i = 0; i < want.size(); i++) {
+        var k = StrongRowView.footFit(ladder, want[i][0]);
+        if (k != want[i][1]) {
+            logger.error("footFit([400,239,141,57], " + want[i][0] +
+                         ") answered rung " + k + ", expected rung " +
+                         want[i][1] + ". The rule is the LONGEST rung whose " +
+                         "measured width is at most the chord, and the " +
+                         "boundary is inclusive: a rung exactly as wide as " +
+                         "the chord fits, because the bezel is already paid " +
+                         "inside the chord.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// When nothing fits, the floor is drawn rather than the widest -- the failure
+// direction matters. A one-rung safety ladder takes this path on the 13 devices
+// where NOT RECORDING is over the chord, and must still be returned whole.
+(:test) function test_foot_c2_fitFallsBackToTheFloorWhenNothingFits(logger) {
+    var k = StrongRowView.footFit([ 400, 300, 250 ], 100.0);
+    if (k != 2) {
+        logger.error("with no rung fitting, footFit answered rung " + k +
+                     "; the floor (rung 2, the narrowest) is the least wrong " +
+                     "answer and the one the row is laid out around");
+        return false;
+    }
+    var n = StrongRowView.footFit([ 238 ], 191.06);
+    if (n != 0) {
+        logger.error("a one-rung ladder must answer rung 0 whatever the " +
+                     "chord: that is what makes NO ACCEL and NOT RECORDING " +
+                     "unshortenable; got " + n);
+        return false;
+    }
+    return true;
+}
+
+// END TO END, THROUGH THE SHIPPING onUpdate, because the five cases above pin
+// footFit and not the screen. This one renders a live recording REST step into
+// a Dc of each device's geometry and asserts the invariant on what was actually
+// DRAWN: the footer string is never wider, by that same Dc's own metric, than
+// the chord drawFoot computed from that same Dc.
+//
+// THE WIDTH MODEL IS A MODEL AND THE CASE DOES NOT DEPEND ON ITS VALUES. No
+// (:test) can obtain a real font metric (#121), so HrGeoDc answers
+// getTextWidthInPixels from a per-character stand-in, set here wide enough that
+// the top rung cannot fit. The invariant is true of ANY width model, which is
+// exactly why it is the one worth asserting end to end; the per-device pixel
+// figures live in footDevices() and are asserted by the cases above.
+//
+// The footer is identified by its y -- h * footRowYFrac() -- rather than by its
+// text, so a case about the footer cannot silently become a case about some
+// other row that happens to start with the same word.
+(:test) function test_foot_c2_theDrawnFooterNeverExceedsTheChordItComputed(logger) {
+    var fd = footDevices();
+    for (var i = 0; i < fd.size(); i++) {
+        var w = fd[i][FD_W];
+        var h = fd[i][FD_H];
+        var d = new HrGeoDc(w, h);
+        d.setPerCharPx(fd[i][FD_FH] * 0.45);
+        var p = wlProbeAt(new HrProbe().kindRest());
+        p.runUpdate(d);
+
+        var room = StrongRowView.footChordPx(w, h, StrongRowView.footRowYFrac(),
+                                             d.getFontHeight(Gfx.FONT_XTINY),
+                                             StrongRowView.footBezelPx());
+        var footY = h * StrongRowView.footRowYFrac();
+        var seen = null;
+        for (var t = 0; t < d.texts.size(); t++) {
+            var dy = d.texts[t][1] - footY;
+            if (dy < 0) { dy = -dy; }
+            if (dy < 0.5) { seen = d.texts[t][3]; }
+        }
+        if (seen == null) {
+            logger.error(fd[i][FD_NAME] + ": nothing was drawn at the footer's " +
+                         "own y (h * " + StrongRowView.footRowYFrac() + "), so " +
+                         "this case would hold vacuously");
+            return false;
+        }
+        var drawn = d.getTextWidthInPixels(seen, Gfx.FONT_XTINY);
+        if (drawn > room) {
+            logger.error(fd[i][FD_NAME] + ": the footer drawn at h * " +
+                         StrongRowView.footRowYFrac() + " was '" + seen +
+                         "' at " + drawn + " px, against " + room +
+                         " px of chord -- over by " + (drawn - room) +
+                         " px. This is the field report: the ends of the row " +
+                         "fall outside the display.");
+            return false;
+        }
+    }
+    return true;
+}
+
 }   // module Foot
