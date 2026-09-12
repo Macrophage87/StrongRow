@@ -14,4 +14,9 @@
     <string id="setErgMode">Erg mode (rowing machine)</string>
     <string id="setErgPowerUnits">Erg: show work and power units</string>
     <string id="setJouleBenchmark">Erg: joules per stroke benchmark</string>
+    <string id="setCueResponse">Rate cue response</string>
+    <string id="cueRespSteady">Steady (4000/1000 ms)</string>
+    <string id="cueRespBalanced">Balanced (2000/500 ms, default)</string>
+    <string id="cueRespTwitchy">Twitchy (1000/250 ms)</string>
+    <string id="cueRespInstant">Instant (0/0 ms)</string>
 </strings>

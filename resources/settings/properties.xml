@@ -13,4 +13,5 @@
     <property id="ergMode" type="boolean">false</property>
     <property id="ergPowerUnits" type="boolean">true</property>
     <property id="jouleBenchmark" type="float">400.0</property>
+    <property id="cueResponse" type="number">1</property>
 </properties>

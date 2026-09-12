@@ -2196,6 +2196,24 @@ class StrongRowView extends Ui.View {
         mTgtLo = getProp("targetLo", 16).toNumber();
         mTgtHi = getProp("targetHi", 18).toNumber();
         if (mTgtHi < mTgtLo) { var t = mTgtLo; mTgtLo = mTgtHi; mTgtHi = t; }
+        // #210: how fast the COLOUR follows the number. Resolved ONCE here, not
+        // per frame -- onUpdate runs at 4 Hz, and the pair this row is running
+        // on is the thing cue_cfg records.
+        //
+        // THROUGH cueClampPreset, NEVER STORED RAW, and the value stored is the
+        // CLAMPED one: cue_cfg records what the row actually ran on, so a row
+        // that fell back to the default because the property was junk must not
+        // have its file blame a preset the cue never used. The clamp is a pure
+        // static for jouleClampBench's measured reason -- an inline clamp here
+        // is unreachable from every (:test) in the repository, and the case
+        // that claimed to pin one was pinning a copy inside the test probe.
+        //
+        // `getProp`'s default is the DECLARED default, so an absent property
+        // and a corrupt one land in the same place by two different routes.
+        mCuePreset = cueClampPreset(getProp("cueResponse", $.CUE_PRESET_DEF));
+        var cw = cuePresetWindows(mCuePreset);
+        mCueOutMs = cw[0];
+        mCueInMs  = cw[1];
         // #110: the HEART-RATE band, in bpm. Defaults 116-130 are the
         // maintainer's measured target (a stated ~123 bpm intent on a 68-minute
         // durability row, +/-7), not a guess and not doctrine -- they are
@@ -6493,6 +6511,66 @@ class StrongRowView extends Ui.View {
                     mFitRmssd = null;
                     mFitAvgRmssd = null;
                 }
+                // cue_cfg: the configuration the row was COLOURED against
+                // (#191, id 28).
+                //
+                // WHY. #191 is the defect that a colour complaint cannot be
+                // checked after the row. On 2026-09-05 the rower reported "red
+                // at 7 spm and blue at 20 spm"; replaying i183553852 at the
+                // 16-18 default reproduces "red at 7" exactly and produces ZERO
+                // seconds of blue at 20, and nothing in the file says what band
+                // the watch was actually on -- so half the report is still
+                // unresolved and cannot be resolved. Two committed fixtures
+                // carry a header paragraph admitting their band is an
+                // assumption. This field ends that for every row recorded after
+                // it.
+                //
+                // ITS OWN try/catch WITH A NULL HANDLE, per #74 and for the
+                // reason every group here gives for theirs: a throw must not
+                // null handles that were already created successfully.
+                //
+                // PLACED BEFORE rr_diag DELIBERATELY. That group's note says it
+                // is "the LAST field created and the one most likely to fail...
+                // so if the cap exists, this is the field that finds it".
+                // Inserting cue_cfg after it would quietly take that role away
+                // from a field chosen for it; inserting before leaves the
+                // ordering argument exactly as it was. (That sentence is not
+                // literally true of startSession as a whole -- several
+                // createField calls follow it -- which is an existing
+                // inaccuracy this change neither relies on nor repairs; it is
+                // filed rather than folded in.)
+                //
+                // `:count` READS $.CUE_CFG_SLOTS AND MUST KEEP DOING SO. It is
+                // the same constant cueCfgArray sizes its array from, and a
+                // setData array longer than :count is an uncatchable System
+                // Error at save time that takes the whole activity with it
+                // (measured for ct_diag, simulator fr965 / SDK 9.2.0). Do not
+                // substitute a literal at either site.
+                //
+                // CREATED UNCONDITIONALLY. There is no configuration that would
+                // be better left unrecorded -- ct_diag's and rr_diag's argument,
+                // applied rather than repeated -- and a row with the default
+                // settings is exactly as much use to a later complaint as a
+                // configured one.
+                //
+                // No :scale/:offset, like rr_interval and ct_diag: every slot is
+                // an ordinary readable integer.
+                //
+                // WHAT IS NOT CLAIMED. No (:test) can obtain a Session, so
+                // nothing in the suite shows that this createField succeeds,
+                // that a six-slot session-scope UINT16 array is saved, or that
+                // any decoder renders it. 29 developer fields (after the
+                // in-flight gps_diag takes id 27) is past every field-count
+                // observation this repository has -- #77 measured eleven, #80
+                // twelve -- and #172 owns the question.
+                try {
+                    mFitCueCfg = mSession.createField(
+                        "cue_cfg", 28, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_SESSION, :units => "n",
+                          :count => $.CUE_CFG_SLOTS });
+                } catch (e) {
+                    mFitCueCfg = null;
+                }
                 // rr_diag: the R-R RECEIVE-PATH diagnostic (epic #59).
                 //
                 // ITS OWN try/catch, per #74 and for the reason every group
@@ -6702,7 +6780,7 @@ class StrongRowView extends Ui.View {
                 // this block and adds up their declared FIT types, and fails if
                 // the marked line disagrees with the code:
                 //
-                //   STEPFIELDS descs=4 rec_bytes=3 lap_bytes=3 total_fields=27
+                //   STEPFIELDS descs=4 rec_bytes=3 lap_bytes=3 total_fields=28
                 //
                 // It also fails if this block is ever moved inside a
                 // workout-enabled or erg-mode branch. That matters more than it
@@ -8825,8 +8903,14 @@ class StrongRowView extends Ui.View {
         var dispRate = outputRate();
         var cue;
         if (isWork) {
-            cue = cueStep(dispRate, mTgtLo, mTgtHi,
-                          mCueZone, mCueCand, mCueSince, nowMs());
+            // #210: the two windows come from the setting, resolved once in
+            // loadSettings. cueStepW and not cueStep -- the wrapper is the
+            // DEFAULT-preset entry point that the characterization pins and the
+            // Python mirror are written against, and a row on any other preset
+            // must not go through it.
+            cue = cueStepW(dispRate, mTgtLo, mTgtHi,
+                           mCueZone, mCueCand, mCueSince, nowMs(),
+                           mCueOutMs, mCueInMs);
         } else {
             // Off the WORK step nothing is being cued, so nothing is carried.
             // Parking at CUEZ_NONE rather than leaving the machine running is
