@@ -1,4 +1,5 @@
 using Toybox.Test;
+using Toybox.Graphics as Gfx;
 
 // Unit tests for issue #74: startSession() could fail and leave the watch
 // showing an ordinary recording row for a row that produced no FIT file.
@@ -316,6 +317,632 @@ module Foot {
             logger.error("pauseFlags(" + cfgs[i][0] + "," + cfgs[i][1] +
                          ",true) cleared an existing failure without the probe " +
                          "reporting live -- a fail-closed false is not evidence");
+            return false;
+        }
+    }
+    return true;
+}
+
+
+// ===========================================================================
+// #217: THE FOOTER'S WIDTH, MEASURED. c0 -- characterization only.
+// ===========================================================================
+//
+// THE FIELD REPORT, 2026-09-12, fenix 9 Pro 51 mm (466 px AMOLED), first row
+// on that watch: "some of the text on the bottom (in red) overflowed the
+// watch." The only red text on the bottom of this app is drawFoot's recording
+// footer. On the reported row it would have read "REC 43:45 0.03km 400wk".
+//
+// WHAT WAS NEVER MEASURED, and is measured here. drawFoot's own comment said
+// the widest form is "REC 199:59 12.35km 9999wk" and that this is "a CHARACTER
+// bound and not a clearance ... nothing here claims a measured margin". It did
+// not, and nothing else did either: the string's PIXEL width had never been put
+// beside the round chord at the row's y on any device.
+//
+// THE PROBE. dc.getTextWidthInPixels, dc.getTextDimensions, dc.getFontHeight,
+// Gfx.getFontAscent and Gfx.getFontDescent, called from a throwaway app under
+// SDK 9.2.0, once per device, on all NINETEEN products in manifest.xml -- the
+// same procedure that produced Hsi.pipDevices() (issue #209 states it step by
+// step). getTextWidthInPixels and getTextDimensions[0] agreed on every string
+// on every device. The run also re-read the five columns pipDevices() already
+// carries and reproduced all nineteen rows EXACTLY, and reproduced the 277 px
+// this repository records for "-:--/500m  12.5m/str" on the 454 px family.
+// That agreement is what makes these rows comparable to the committed ones;
+// test_foot_c0_theMeasuredFooterTableAgreesWithPipDevices re-checks it here.
+//
+// A SIZE-MATE IS NOT A FONT-MATE, and it cut both ways this time. The two
+// fenix 9 Pro Solar devices share a width with an older device and do NOT
+// share its metrics (260 px: fh 21 against 19; 280 px: fh 22 against 19), so
+// no row here is copied from a size-mate. The 466 px fenix9pro51mm DOES turn
+// out to be a font-mate of the 454 px family -- every string measures the same
+// number of pixels on both -- but that is MEASURED here, not assumed, and it
+// is why the 466 device is NOT the worst device in this table: it has 200.28
+// px of usable chord where the 454 family has 191.06.
+//
+// -- The measured table -------------------------------------------------------
+// [ name, w, h, FONT_XTINY height,
+//   then the FONT_XTINY pixel width of each footer form, in px:
+//   recRow   "REC 43:45 0.03km 400wk"      the reported row's own footer
+//   recMax   "REC 199:59 12.35km 9999wk"   the widest form drawFoot can build
+//   noKmMax  "REC 199:59 9999wk"           rung 2, widest
+//   noKm     "REC 43:45 400wk"             rung 2, the reported row
+//   timeMax  "REC 199:59"                  rung 3, widest
+//   time     "REC 43:45"                   rung 3, the reported row
+//   rec      "REC"                         rung 4, the floor
+//   pauseMax "PAUSED  9999wk"              paused rung 1, widest
+//   pause    "PAUSED"                      paused rung 2, the floor
+//   notRec   "NOT RECORDING"               safety state, never shortened
+//   noAccel  "NO ACCEL"                    safety state, never shortened
+//   startMax "START to record"             idle rung 1
+//   start    "START"                       idle rung 2, the floor
+// All values in pixels, SDK 9.2.0. Rows are kept per device, never collapsed
+// by width, for the reason pipDevices() gives.
+function footDevices() {
+    return [
+        [ "fr970",                454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fr965",                454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix847mm",           454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix843mm",           416,  416,   34,  326,  374,  255,  223,  147,  131,   53,  223,  108,  224,  137,  211,   88 ],
+        [ "fenix8pro47mm",        454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix7",               260,  260,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "fenix7pro",            260,  260,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "epix2pro47mm",         416,  416,   31,  261,  300,  204,  178,  118,  105,   40,  175,   83,  170,  103,  169,   71 ],
+        [ "fenix6",               260,  260,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "fenix6pro",            260,  260,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "fenix6spro",           240,  240,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        [ "fenix6xpro",           280,  280,   19,  165,  189,  128,  112,   74,   66,   26,  111,   53,  110,   67,  107,   45 ],
+        // fenix 9 family, same probe run, same SDK.
+        [ "fenix943mm",           416,  416,   34,  326,  374,  255,  223,  147,  131,   53,  223,  108,  224,  137,  211,   88 ],
+        [ "fenix947mm",           454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix9pro43mm",        416,  416,   34,  326,  374,  255,  223,  147,  131,   53,  223,  108,  224,  137,  211,   88 ],
+        [ "fenix9pro47mm",        454,  454,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix9pro51mm",        466,  466,   37,  349,  400,  273,  239,  158,  141,   57,  239,  116,  238,  146,  226,   95 ],
+        [ "fenix9prosolar47mm",   260,  260,   21,  183,  210,  143,  125,   83,   74,   29,  124,   60,  123,   75,  121,   51 ],
+        [ "fenix9prosolar51mm",   280,  280,   22,  198,  228,  155,  135,   90,   80,   31,  132,   63,  129,   78,  123,   52 ]
+    ];
+}
+
+// Column indices into a footDevices() row, so no case counts commas.
+const FD_NAME = 0;
+const FD_W = 1;
+const FD_H = 2;
+const FD_FH = 3;
+const FD_REC_ROW = 4;
+const FD_REC_MAX = 5;
+const FD_NOKM_MAX = 6;
+const FD_NOKM = 7;
+const FD_TIME_MAX = 8;
+const FD_TIME = 9;
+const FD_REC = 10;
+const FD_PAUSE_MAX = 11;
+const FD_PAUSE = 12;
+const FD_NOTREC = 13;
+const FD_NOACCEL = 14;
+const FD_START_MAX = 15;
+const FD_START = 16;
+
+// The bezel floor these rows are held to, per side. THE SAME 2.0 px the
+// status-row suite works to (Hsi.PIP_MIN_BEZEL_PX). scripts/check_foot_geometry.py
+// fails if this copy and the shipped StrongRowView.footBezelPx() drift apart.
+const FOOT_MIN_BEZEL_PX = 2.0;
+
+// -- c0: pins on symbols that already exist ----------------------------------
+
+// The distance cell of the reported row, through the SHIPPING formatter.
+// "0.03km" is what footDistStr produces for the 30 m the reported row had
+// covered, and it is the string whose width the table above records.
+(:test) function test_foot_c0_footDistStrRendersTheReportedFieldRow(logger) {
+    var got = StrongRowView.footDistStr(30.0, false);
+    if (!got.equals("0.03km")) {
+        logger.error("footDistStr(30.0, false) = " + got + ", expected " +
+                     "0.03km -- the measured width of the reported row's " +
+                     "footer is the width of the string containing THIS cell, " +
+                     "so if the cell changed the table no longer describes it");
+        return false;
+    }
+    if (!StrongRowView.footDistStr(12345.0, false).equals("12.35km")) {
+        logger.error("footDistStr(12345.0, false) = " +
+                     StrongRowView.footDistStr(12345.0, false) +
+                     ", expected 12.35km (the widest form's cell)");
+        return false;
+    }
+    if (!StrongRowView.footDistStr(null, false).equals("--")) {
+        logger.error("footDistStr(null, false) should be --");
+        return false;
+    }
+    if (!StrongRowView.footDistStr(0.0, true).equals("--")) {
+        logger.error("footDistStr(0.0, true) should be -- (the erg gate)");
+        return false;
+    }
+    return true;
+}
+
+// The two tables must have come from the same probe run, or the new rows are
+// not comparable to the committed ones. Checked here rather than asserted in
+// prose: every device in footDevices() must appear in Hsi.pipDevices() with
+// the SAME width, height and FONT_XTINY height, and both must cover all 19.
+(:test) function test_foot_c0_theMeasuredFooterTableAgreesWithPipDevices(logger) {
+    var fd = footDevices();
+    var pd = Hsi.pipDevices();
+    if (fd.size() != 19 || pd.size() != 19) {
+        logger.error("footDevices has " + fd.size() + " rows and pipDevices " +
+                     pd.size() + "; manifest.xml declares 19 products and both " +
+                     "tables are per-product");
+        return false;
+    }
+    for (var i = 0; i < fd.size(); i++) {
+        var name = fd[i][FD_NAME];
+        var found = false;
+        for (var j = 0; j < pd.size(); j++) {
+            if (pd[j][0].equals(name)) {
+                found = true;
+                if (pd[j][1] != fd[i][FD_W] || pd[j][2] != fd[i][FD_H] ||
+                        pd[j][3] != fd[i][FD_FH]) {
+                    logger.error(name + ": footDevices says w/h/fh = " +
+                                 fd[i][FD_W] + "/" + fd[i][FD_H] + "/" +
+                                 fd[i][FD_FH] + ", pipDevices says " +
+                                 pd[j][1] + "/" + pd[j][2] + "/" + pd[j][3] +
+                                 " -- the two tables are then measurements of " +
+                                 "different things and neither can be read " +
+                                 "against the other");
+                    return false;
+                }
+            }
+        }
+        if (!found) {
+            logger.error(name + " is in footDevices and not in pipDevices");
+            return false;
+        }
+        if (fd[i][FD_W] != fd[i][FD_H]) {
+            logger.error(name + ": w != h. Every chord figure in this suite " +
+                         "takes the display as the circle inscribed in w x h " +
+                         "with w == h, which the probe measured on all 19.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The ladder must be a LADDER: each rung strictly narrower than the one above
+// it, on every device. A rung no narrower than its predecessor could never be
+// selected, and everything below is built on the ordering being real.
+(:test) function test_foot_c0_theFooterLadderWidthsDecreaseOnEveryDevice(logger) {
+    var fd = footDevices();
+    var sets = [ [ FD_REC_MAX, FD_NOKM_MAX, FD_TIME_MAX, FD_REC ],
+                 [ FD_REC_ROW, FD_NOKM, FD_TIME, FD_REC ],
+                 [ FD_PAUSE_MAX, FD_PAUSE ],
+                 [ FD_START_MAX, FD_START ] ];
+    var names = [ "REC widest", "REC reported row", "PAUSED", "idle" ];
+    for (var i = 0; i < fd.size(); i++) {
+        for (var s = 0; s < sets.size(); s++) {
+            for (var k = 1; k < sets[s].size(); k++) {
+                var prev = fd[i][sets[s][k - 1]];
+                var cur  = fd[i][sets[s][k]];
+                if (cur >= prev) {
+                    logger.error(fd[i][FD_NAME] + ": the " + names[s] +
+                                 " ladder is not decreasing -- rung " + k +
+                                 " measures " + cur + " px against " + prev +
+                                 " px above it, so it could never be reached");
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+
+// -- c1: the seam, and green pins on it --------------------------------------
+//
+// DERIVED, not measured: the usable chord at the footer's text-box bottom on
+// each device, in px, with footBezelPx() already subtracted once per side. Kept
+// in its own table rather than folded into footDevices() because footDevices()
+// is probe output and this is arithmetic on it -- mixing the two is how a
+// derived figure starts reading as a measurement.
+//
+// These are the `avail` column of the FOOTGEOM rows in source/StrongRowView.mc,
+// and scripts/check_foot_geometry.py re-derives every one of them from the
+// shipped footRowYFrac(), footBezelPx() and footChordPx body. What the case
+// below adds is the other direction: that the SHIPPED footChordPx, executed on
+// a real device, actually returns them.
+function footAvailPx() {
+    return [
+        [ "fr970",                 191.06 ],
+        [ "fr965",                 191.06 ],
+        [ "fenix847mm",            191.06 ],
+        [ "fenix843mm",            174.33 ],
+        [ "fenix8pro47mm",         191.06 ],
+        [ "fenix7",                116.48 ],
+        [ "fenix7pro",             116.48 ],
+        [ "epix2pro47mm",          186.46 ],
+        [ "fenix6",                116.48 ],
+        [ "fenix6pro",             116.48 ],
+        [ "fenix6spro",            101.44 ],
+        [ "fenix6xpro",            131.19 ],
+        [ "fenix943mm",            174.33 ],
+        [ "fenix947mm",            191.06 ],
+        [ "fenix9pro43mm",         174.33 ],
+        [ "fenix9pro47mm",         191.06 ],
+        [ "fenix9pro51mm",         200.28 ],
+        [ "fenix9prosolar47mm",    108.50 ],
+        [ "fenix9prosolar51mm",    119.69 ]
+    ];
+}
+
+// The shipped chord formula must return the table every margin is derived from.
+// This is the case that makes footAvailPx() a pin rather than a comment: it
+// CALLS StrongRowView.footChordPx with the shipped constants and the measured
+// font height, on all 19 device geometries.
+(:test) function test_foot_c1_chordReproducesTheDerivedAvailColumn(logger) {
+    var fd = footDevices();
+    var av = footAvailPx();
+    if (fd.size() != av.size()) {
+        logger.error("footDevices has " + fd.size() + " rows and footAvailPx " +
+                     av.size() + " -- they are read positionally");
+        return false;
+    }
+    for (var i = 0; i < fd.size(); i++) {
+        if (!av[i][0].equals(fd[i][FD_NAME])) {
+            logger.error("row " + i + ": footAvailPx says " + av[i][0] +
+                         " and footDevices says " + fd[i][FD_NAME] +
+                         " -- the two tables are read positionally and have " +
+                         "gone out of step");
+            return false;
+        }
+        var got = StrongRowView.footChordPx(fd[i][FD_W], fd[i][FD_H],
+                                            StrongRowView.footRowYFrac(),
+                                            fd[i][FD_FH],
+                                            StrongRowView.footBezelPx());
+        var d = got - av[i][1];
+        if (d < 0) { d = -d; }
+        if (d > 0.01) {
+            logger.error(fd[i][FD_NAME] + ": footChordPx returns " + got +
+                         " px, the derived table says " + av[i][1] +
+                         " px. Every margin in this suite and in the FOOTGEOM " +
+                         "rows is (this number) minus a measured width, so a " +
+                         "disagreement here invalidates all of them.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The head of every ladder is the string drawFoot shipped before #217. This is
+// the characterization half of the refactor: footForms may add rungs BELOW the
+// widest form, and must not change the widest form itself.
+(:test) function test_foot_c1_everyLadderStartsWithTheShippedString(logger) {
+    var want = [ [ $.FOOT_NO_ACCEL, "NO ACCEL" ],
+                 [ $.FOOT_NO_REC,   "NOT RECORDING" ],
+                 [ $.FOOT_PAUSED,   "PAUSED  400wk" ],
+                 [ $.FOOT_REC,      "REC 43:45 0.03km 400wk" ],
+                 [ $.FOOT_IDLE,     "START to record" ] ];
+    for (var i = 0; i < want.size(); i++) {
+        var f = StrongRowView.footForms(want[i][0], "43:45", "0.03km", "400");
+        if (f.size() < 1) {
+            logger.error("state " + want[i][0] + ": footForms returned an " +
+                         "empty ladder; drawFoot indexes into it unconditionally");
+            return false;
+        }
+        if (!f[0].equals(want[i][1])) {
+            logger.error("state " + want[i][0] + ": the widest form is " + f[0] +
+                         ", it shipped as " + want[i][1] +
+                         " -- #217 changes which rung is DRAWN, never what the " +
+                         "widest rung says");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The two safety states have a ONE-RUNG ladder, so no chord can shorten them.
+// This is the pin on the decision recorded in drawFoot's block: NO ACCEL and
+// NOT RECORDING are never abbreviated and never suppressed.
+(:test) function test_foot_c1_theSafetyStatesHaveASingleRungLadder(logger) {
+    var a = StrongRowView.footForms($.FOOT_NO_ACCEL, "43:45", "0.03km", "400");
+    var n = StrongRowView.footForms($.FOOT_NO_REC,   "43:45", "0.03km", "400");
+    if (a.size() != 1 || !a[0].equals("NO ACCEL")) {
+        logger.error("the NO ACCEL ladder is " + a.size() + " rung(s) deep " +
+                     "starting " + a[0] + "; a safety state must have exactly " +
+                     "one rung so that footFit cannot shorten it");
+        return false;
+    }
+    if (n.size() != 1 || !n[0].equals("NOT RECORDING")) {
+        logger.error("the NOT RECORDING ladder is " + n.size() + " rung(s) " +
+                     "deep starting " + n[0] + "; a safety state must have " +
+                     "exactly one rung so that footFit cannot shorten it");
+        return false;
+    }
+    return true;
+}
+
+// NO ACCEL fits WHOLE on every device -- the one safety string the measurement
+// clears. Worst margin measured: 33.50 px (fenix9prosolar47mm).
+(:test) function test_foot_c1_noAccelFitsWholeOnEveryDevice(logger) {
+    var fd = footDevices();
+    for (var i = 0; i < fd.size(); i++) {
+        var room = StrongRowView.footChordPx(fd[i][FD_W], fd[i][FD_H],
+                                             StrongRowView.footRowYFrac(),
+                                             fd[i][FD_FH],
+                                             StrongRowView.footBezelPx());
+        if (fd[i][FD_NOACCEL] > room) {
+            logger.error(fd[i][FD_NAME] + ": NO ACCEL measures " +
+                         fd[i][FD_NOACCEL] + " px against " + room +
+                         " px of chord. It is the hard-failure footer and it " +
+                         "is never shortened, so it has to fit as it stands.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The FLOOR of every variable ladder fits on every device. This is what makes
+// "never draw a string wider than the chord" achievable at all: whatever the
+// elapsed time, the distance or the stroke count grow to, the last rung is a
+// fixed string that has been measured against every display.
+(:test) function test_foot_c1_everyLadderFloorFitsOnEveryDevice(logger) {
+    var fd = footDevices();
+    var floors = [ FD_REC, FD_PAUSE, FD_START ];
+    var names = [ "REC", "PAUSED", "START" ];
+    for (var i = 0; i < fd.size(); i++) {
+        var room = StrongRowView.footChordPx(fd[i][FD_W], fd[i][FD_H],
+                                             StrongRowView.footRowYFrac(),
+                                             fd[i][FD_FH],
+                                             StrongRowView.footBezelPx());
+        for (var k = 0; k < floors.size(); k++) {
+            if (fd[i][floors[k]] > room) {
+                logger.error(fd[i][FD_NAME] + ": the ladder floor " + names[k] +
+                             " measures " + fd[i][floors[k]] + " px against " +
+                             room + " px of chord. A floor that does not fit " +
+                             "leaves the footer with no form it can draw.");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// footFit must always name a rung that exists. True of the c1 body and of the
+// c3 one; a case that survives the fix rather than describing one side of it.
+(:test) function test_foot_c1_fitAlwaysNamesARungThatExists(logger) {
+    var ladders = [ [ 400, 239, 141, 57 ], [ 239, 116 ], [ 146 ], [ 226, 95 ] ];
+    var chords = [ -5.0, 0.0, 56.0, 57.0, 101.44, 191.06, 5000.0 ];
+    for (var i = 0; i < ladders.size(); i++) {
+        for (var c = 0; c < chords.size(); c++) {
+            var k = StrongRowView.footFit(ladders[i], chords[c]);
+            if (k < 0 || k >= ladders[i].size()) {
+                logger.error("footFit(ladder of " + ladders[i].size() +
+                             ", chord " + chords[c] + ") returned " + k +
+                             " -- drawFoot indexes the ladder with this, so an " +
+                             "out-of-range answer is a crash on the draw path");
+                return false;
+            }
+        }
+    }
+    if (StrongRowView.footFit([], 100.0) != 0) {
+        logger.error("footFit on an empty ladder must answer 0 rather than -1");
+        return false;
+    }
+    return true;
+}
+
+// The colours the five states shipped with, now that the mapping is its own
+// seam. Colour and layout only -- there is no alarm channel here to pin.
+(:test) function test_foot_c1_colourMapsEachStateToItsShippedColour(logger) {
+    var want = [ [ $.FOOT_NO_ACCEL, Gfx.COLOR_RED ],
+                 [ $.FOOT_NO_REC,   Gfx.COLOR_ORANGE ],
+                 [ $.FOOT_PAUSED,   Gfx.COLOR_YELLOW ],
+                 [ $.FOOT_REC,      Gfx.COLOR_RED ],
+                 [ $.FOOT_IDLE,     Gfx.COLOR_LT_GRAY ] ];
+    for (var i = 0; i < want.size(); i++) {
+        var got = StrongRowView.footColour(want[i][0]);
+        if (got != want[i][1]) {
+            logger.error("state " + want[i][0] + ": footColour returned " + got +
+                         ", it shipped as " + want[i][1] +
+                         ". NOT RECORDING is ORANGE and a healthy REC row is " +
+                         "RED precisely so the two are not confusable.");
+            return false;
+        }
+    }
+    return true;
+}
+
+
+// -- c2: the red differentials -----------------------------------------------
+//
+// EVERY CASE BELOW IS RED AT c1 AND GREEN AT c3, and nothing else in the tree
+// changes between them: c3 edits one function body, StrongRowView.footFit, and
+// no test file, no pin, no script and no workflow.
+//
+// The REC ladder is read from footDevices() as [recRow, noKm, time, rec] --
+// the reported row's own four rungs -- so these cases are about the string the
+// field report was about, not about a synthetic one.
+function footRecLadder(row) {
+    return [ row[FD_REC_ROW], row[FD_NOKM], row[FD_TIME], row[FD_REC] ];
+}
+
+function footRoomFor(row) {
+    return StrongRowView.footChordPx(row[FD_W], row[FD_H],
+                                     StrongRowView.footRowYFrac(),
+                                     row[FD_FH],
+                                     StrongRowView.footBezelPx());
+}
+
+function footRowNamed(name) {
+    var fd = footDevices();
+    for (var i = 0; i < fd.size(); i++) {
+        if (fd[i][FD_NAME].equals(name)) { return fd[i]; }
+    }
+    return null;
+}
+
+// THE REPORTED ROW, ON THE REPORTED WATCH. "REC 43:45 0.03km 400wk" is 349 px
+// on fenix9pro51mm against 200.28 px of chord; the seam must step down to
+// "REC 43:45" at 141 px, a margin of 59.28 px. Red at c1, where footFit answers
+// 0 and the drawn string overflows by 148.72 px.
+(:test) function test_foot_c2_theReportedRowStepsDownOnTheReportedDevice(logger) {
+    var row = footRowNamed("fenix9pro51mm");
+    if (row == null) {
+        logger.error("fenix9pro51mm is not in footDevices(); this case is " +
+                     "about the device the field report came from");
+        return false;
+    }
+    var ladder = footRecLadder(row);
+    var room = footRoomFor(row);
+    var k = StrongRowView.footFit(ladder, room);
+    if (k != 2) {
+        logger.error("on fenix9pro51mm the seam chose rung " + k + " (" +
+                     ladder[k] + " px) against " + room + " px of chord. The " +
+                     "longest rung that fits is rung 2 at " + ladder[2] +
+                     " px. Rung 0 is the string the field report was about: " +
+                     "349 px, over by 148.72.");
+        return false;
+    }
+    if (ladder[k] > room) {
+        logger.error("the chosen rung is " + ladder[k] + " px against " + room +
+                     " px of chord -- wider than the display at that height");
+        return false;
+    }
+    return true;
+}
+
+// AND ON ALL NINETEEN, because the reported device is not the worst one: the
+// 454 px family has 9.22 px LESS chord than the 466 px device that was
+// reported, and fenix6spro has 98.84 px less.
+(:test) function test_foot_c2_theRecLadderFitsOnEveryDevice(logger) {
+    var fd = footDevices();
+    for (var i = 0; i < fd.size(); i++) {
+        var ladder = footRecLadder(fd[i]);
+        var room = footRoomFor(fd[i]);
+        var k = StrongRowView.footFit(ladder, room);
+        if (ladder[k] > room) {
+            logger.error(fd[i][FD_NAME] + ": the seam chose rung " + k +
+                         " at " + ladder[k] + " px against " + room +
+                         " px of chord, over by " + (ladder[k] - room) +
+                         " px. The ladder's floor is " + ladder[3] +
+                         " px and fits on every device, so there is always an " +
+                         "answer that does not overflow.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The PAUSED and idle ladders are the same mechanism on two more states, and
+// both overflow on 13 of the 19 at their top rung.
+(:test) function test_foot_c2_thePausedAndIdleLaddersFitOnEveryDevice(logger) {
+    var fd = footDevices();
+    var sets = [ [ FD_PAUSE_MAX, FD_PAUSE ], [ FD_START_MAX, FD_START ] ];
+    var names = [ "PAUSED", "idle" ];
+    for (var i = 0; i < fd.size(); i++) {
+        var room = footRoomFor(fd[i]);
+        for (var s = 0; s < sets.size(); s++) {
+            var ladder = [ fd[i][sets[s][0]], fd[i][sets[s][1]] ];
+            var k = StrongRowView.footFit(ladder, room);
+            if (ladder[k] > room) {
+                logger.error(fd[i][FD_NAME] + ": the " + names[s] +
+                             " ladder chose rung " + k + " at " + ladder[k] +
+                             " px against " + room + " px of chord");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// LONGEST FITTING, not merely fitting. A seam that always answered with the
+// floor would satisfy the three cases above and would throw away the elapsed
+// time on every device that has room for it -- which is most of them.
+(:test) function test_foot_c2_fitPrefersTheLongestFittingRung(logger) {
+    var ladder = [ 400, 239, 141, 57 ];
+    var want = [ [ 500.0, 0 ], [ 400.0, 0 ], [ 300.0, 1 ], [ 239.0, 1 ],
+                 [ 200.0, 2 ], [ 141.0, 2 ], [ 100.0, 3 ], [ 57.0, 3 ] ];
+    for (var i = 0; i < want.size(); i++) {
+        var k = StrongRowView.footFit(ladder, want[i][0]);
+        if (k != want[i][1]) {
+            logger.error("footFit([400,239,141,57], " + want[i][0] +
+                         ") answered rung " + k + ", expected rung " +
+                         want[i][1] + ". The rule is the LONGEST rung whose " +
+                         "measured width is at most the chord, and the " +
+                         "boundary is inclusive: a rung exactly as wide as " +
+                         "the chord fits, because the bezel is already paid " +
+                         "inside the chord.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// When nothing fits, the floor is drawn rather than the widest -- the failure
+// direction matters. A one-rung safety ladder takes this path on the 13 devices
+// where NOT RECORDING is over the chord, and must still be returned whole.
+(:test) function test_foot_c2_fitFallsBackToTheFloorWhenNothingFits(logger) {
+    var k = StrongRowView.footFit([ 400, 300, 250 ], 100.0);
+    if (k != 2) {
+        logger.error("with no rung fitting, footFit answered rung " + k +
+                     "; the floor (rung 2, the narrowest) is the least wrong " +
+                     "answer and the one the row is laid out around");
+        return false;
+    }
+    var n = StrongRowView.footFit([ 238 ], 191.06);
+    if (n != 0) {
+        logger.error("a one-rung ladder must answer rung 0 whatever the " +
+                     "chord: that is what makes NO ACCEL and NOT RECORDING " +
+                     "unshortenable; got " + n);
+        return false;
+    }
+    return true;
+}
+
+// END TO END, THROUGH THE SHIPPING onUpdate, because the five cases above pin
+// footFit and not the screen. This one renders a live recording REST step into
+// a Dc of each device's geometry and asserts the invariant on what was actually
+// DRAWN: the footer string is never wider, by that same Dc's own metric, than
+// the chord drawFoot computed from that same Dc.
+//
+// THE WIDTH MODEL IS A MODEL AND THE CASE DOES NOT DEPEND ON ITS VALUES. No
+// (:test) can obtain a real font metric (#121), so HrGeoDc answers
+// getTextWidthInPixels from a per-character stand-in, set here wide enough that
+// the top rung cannot fit. The invariant is true of ANY width model, which is
+// exactly why it is the one worth asserting end to end; the per-device pixel
+// figures live in footDevices() and are asserted by the cases above.
+//
+// The footer is identified by its y -- h * footRowYFrac() -- rather than by its
+// text, so a case about the footer cannot silently become a case about some
+// other row that happens to start with the same word.
+(:test) function test_foot_c2_theDrawnFooterNeverExceedsTheChordItComputed(logger) {
+    var fd = footDevices();
+    for (var i = 0; i < fd.size(); i++) {
+        var w = fd[i][FD_W];
+        var h = fd[i][FD_H];
+        var d = new HrGeoDc(w, h);
+        d.setPerCharPx(fd[i][FD_FH] * 0.45);
+        var p = wlProbeAt(new HrProbe().kindRest());
+        p.runUpdate(d);
+
+        var room = StrongRowView.footChordPx(w, h, StrongRowView.footRowYFrac(),
+                                             d.getFontHeight(Gfx.FONT_XTINY),
+                                             StrongRowView.footBezelPx());
+        var footY = h * StrongRowView.footRowYFrac();
+        var seen = null;
+        for (var t = 0; t < d.texts.size(); t++) {
+            var dy = d.texts[t][1] - footY;
+            if (dy < 0) { dy = -dy; }
+            if (dy < 0.5) { seen = d.texts[t][3]; }
+        }
+        if (seen == null) {
+            logger.error(fd[i][FD_NAME] + ": nothing was drawn at the footer's " +
+                         "own y (h * " + StrongRowView.footRowYFrac() + "), so " +
+                         "this case would hold vacuously");
+            return false;
+        }
+        var drawn = d.getTextWidthInPixels(seen, Gfx.FONT_XTINY);
+        if (drawn > room) {
+            logger.error(fd[i][FD_NAME] + ": the footer drawn at h * " +
+                         StrongRowView.footRowYFrac() + " was '" + seen +
+                         "' at " + drawn + " px, against " + room +
+                         " px of chord -- over by " + (drawn - room) +
+                         " px. This is the field report: the ends of the row " +
+                         "fall outside the display.");
             return false;
         }
     }

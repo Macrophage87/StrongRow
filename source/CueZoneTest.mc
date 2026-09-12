@@ -147,10 +147,12 @@ module CueFix {
 
         function getWidth()  { return w; }
         function getHeight() { return h; }
-        // Never consulted by any assertion here: only drawSetGrid calls it, and
-        // no case in this file renders the #109 grid. Present so a future case
-        // that does reach it fails on its assertion rather than on a missing
-        // method.
+        // Consulted by the shipping draw path, not by any assertion here:
+        // drawFoot takes the footer's chord at h*0.87 + this height (#217), and
+        // the status row places the heat-strain pip from it (#80). No case in
+        // this file asserts on either, so the value is a stand-in; it is
+        // present so a case that reaches them fails on its assertion rather
+        // than on a missing method.
         function getFontHeight(f) { return h / 10; }
 
         function setColor(f, b) { fg = f; }
@@ -166,6 +168,38 @@ module CueFix {
         // keeps failing on its assertions.
         function drawCircle(x, y, r) { }
         function fillCircle(x, y, r) { }
+
+
+        // #217. drawFoot now ASKS the Dc how wide each candidate footer renders,
+        // so every duck-typed Dc that reaches the draw path needs this method or
+        // the render dies as a runtime ERROR rather than a readable assertion --
+        // which is exactly what 51 cases in this repository did when the seam
+        // landed without it.
+        //
+        // A STAND-IN, not a measurement, exactly like getFontHeight above. The real
+        // per-device widths are Foot.footDevices(), measured in a simulator; this
+        // linear model exists so cases that are ABOUT something else keep asserting
+        // about the widest footer form, which is what they asserted before #217.
+        // 0.0125h is deliberately narrow: at 454 px it makes the widest form this
+        // app can build 141.9 px against the 153.08 px of chord THIS fixture's
+        // getFontHeight (h/10, not HrDc's 0.0815h) produces, so the ladder never
+        // steps down here by accident. 11.2 px of headroom, not the 49.2 px the
+        // figure copied from the other two fixtures implied -- REVIEW ROUND 1
+        // (#220) caught the copy, and the 45 px font height it turns on was
+        // MEASURED rather than divided: `h / 10` on the Number this fixture is
+        // built with is INTEGER division, 45 and not 45.4, which moves the
+        // chord from 150.90 to 153.08.
+        //
+        // perCharPx overrides it, and the #217 cases use that: the invariant they
+        // pin -- the drawn string is never wider than the chord drawFoot computed
+        // from THIS Dc -- is true of any width model, so a case can widen the model
+        // until the top rung overflows and watch the seam step down.
+        var perCharPx;
+        function setPerCharPx(px) { perCharPx = px; }
+        function getTextWidthInPixels(s, font) {
+            var per = (perCharPx != null) ? perCharPx : (h * 0.0125);
+            return s.length() * per;
+        }
 
         function drawText(x, y, font, s, just) {
             strings.add(s);

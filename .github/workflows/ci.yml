@@ -200,6 +200,28 @@ jobs:
         # new job would be unrequired and could red for months without blocking
         # anything.
         run: python3 scripts/check_pip_geometry.py
+      - name: Foot-geometry checker self-test (runner-free RED/GREEN)
+        # Hermetic scratch trees only, same shape as the suites above. Its
+        # headline case reverts drawFoot's one draw call from
+        # forms[footFit(widths, room)] to forms[0] -- the pre-#217 footer, the
+        # one the field report was about -- with every pinned body untouched
+        # and every derived row still agreeing, and requires the checker to
+        # name it.
+        run: python3 scripts/test_check_foot_geometry.py
+      - name: Check the footer width table against the real tree
+        # #217: the recording footer shipped on 19 products with a CHARACTER
+        # bound and no clearance, and overflowed on all of them. The per-device
+        # widths are measured once and committed; this re-derives every margin
+        # from them, from the shipped footRowYFrac()/footBezelPx(), from the
+        # pinned footChordPx body and from drawFoot's own call site, and fails
+        # if prose and code disagree. It also fails if the ladder floor stops
+        # fitting on any device, which is the condition the fix rests on.
+        #
+        # In test-tooling rather than a job of its own, for the reason the
+        # ceiling check states: ci-required gates on a fixed needs: list, so a
+        # new job would be unrequired and could red for months without blocking
+        # anything.
+        run: python3 scripts/check_foot_geometry.py
       - name: Step-field checker self-test (runner-free RED/GREEN)
         # Hermetic scratch trees only, same shape as the two suites above. Its
         # headline cases reproduce the three defects review found in the
