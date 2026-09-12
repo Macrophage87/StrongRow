@@ -2020,6 +2020,7 @@ class StrongRowView extends Ui.View {
     hidden var mFitCtDiag;
     hidden var mFitRrDiag;   // rr_diag, session scope (epic #59)
     hidden var mFitCueCfg;   // cue_cfg, session scope (#191)
+    hidden var mFitGpsDiag;  // gps_diag, session scope (#211)
     hidden var mFitHsi;
     // #149's lock-state diagnostics, record scope, ids 20-22.
     hidden var mFitLockRate;
@@ -2121,6 +2122,7 @@ class StrongRowView extends Ui.View {
         // language default a reader has to know. Behaviour-identical.
         mTimer      = null;
         mSession    = null;
+        mFitGpsDiag = null;   // #211
         mFitRate    = null;
         mFitDps     = null;
         mFitRr      = null;
@@ -2566,6 +2568,12 @@ class StrongRowView extends Ui.View {
 
     function onTick() as Void {
         sampleHr();
+        // #211. UNCONDITIONAL, and deliberately not gated on mStarted: GPS is
+        // enabled from onLayout so a fix is ready before START, which means a
+        // stream that dies during the warm-up must be recoverable before the
+        // row begins. gpsWatchdog's own four refusals are the whole gate, and
+        // the interval bounds the risk (see gpsRearmDue).
+        gpsWatchdog();
         // #109: fold the reading into the current work interval. Gated on the
         // SAME freshness test the arc uses, so a dropout contributes nothing
         // rather than dragging the mean toward a stale value -- and gated on
@@ -3016,15 +3024,51 @@ class StrongRowView extends Ui.View {
     // GPS on for the whole app lifetime, so a fix is ready before START and
     // the recording session logs position / speed / distance.
     //
-    // c1 ROUTES THE ONE LEGACY CALL THROUGH gpsEnable, and that is
-    // behaviour-preserving rather than cosmetic: gpsEnable's FORM_LEGACY branch
-    // makes exactly this call inside exactly this try/catch. What it buys is
-    // that a (:test) probe overriding gpsEnable intercepts it, so no case in
-    // the suite can arm real positioning in the simulator -- which the existing
-    // probes achieve by neutralising startGps entirely, and which a case about
-    // the LADDER cannot do because the ladder is what it drives.
+    // EVERY CALL GOES THROUGH gpsEnable, which is behaviour-preserving for the
+    // legacy rung -- that branch makes exactly the call this function used to
+    // make, inside exactly the same try/catch. What it buys is that a (:test)
+    // probe overriding gpsEnable intercepts it, so no case in the suite can arm
+    // real positioning in the simulator; the existing probes achieve that by
+    // neutralising startGps entirely, which a case about the LADDER cannot do
+    // because the ladder is what it drives.
+    //
+    // #211: THE LADDER. Most specific rung first, falling through on a throw,
+    // and RECORDING which rung succeeded. What motivates it is that of the 19
+    // manifest products the seven fenix9* device definitions are the only ones
+    // whose simulator.json constellationConfiguration lists nothing but SatIQ
+    // modes; every other product declares explicit GPS L1 / GLONASS / GALILEO
+    // L1 entries (read from the SDK 9.2.0 device files).
+    //
+    // THAT IS NOT A CAUSE CLAIM, and the distinction matters enough to state at
+    // the call site. Why i185890690's GNSS stream stopped after 17 s is NOT
+    // established -- the legacy form on a configuration-driven chipset is one
+    // candidate among several, and the fenix 6 family ran the legacy call for
+    // months without this. Slot I_FORM exists so the next row says which form
+    // was actually used instead of a reader inferring it.
+    //
+    // THE FLAGS ARE WRITTEN BEFORE THE LADDER RUNS, so a row whose every rung
+    // threw still reports what the device claimed it could do. They survive the
+    // session reset with I_FORM, for the reason $.GpsDiag.resetSession states.
     hidden function startGps() {
-        gpsEnable($.GpsDiag.FORM_LEGACY);
+        var satIq = gpsCapSatIq();
+        var cons  = gpsCapConstellations();
+        var f = 0;
+        if (gpsCapConfigApi()) { f |= $.GpsDiag.F_CFG_API; }
+        if (satIq)             { f |= $.GpsDiag.F_SATIQ_OK; }
+        if (cons)              { f |= $.GpsDiag.F_CONST_API; }
+        mGpsDiag[$.GpsDiag.I_FLAGS] = f;
+        var form = $.GpsDiag.chooseForm(satIq, cons);
+        while (form != $.GpsDiag.FORM_NONE) {
+            if (gpsEnable(form)) {
+                mGpsDiag[$.GpsDiag.I_FORM] = form;
+                return;
+            }
+            mGpsDiag[$.GpsDiag.I_ENABLE_THROW] += 1;
+            form = $.GpsDiag.nextFormFrom(form, cons);
+        }
+        // Every rung threw. FORM_NONE rather than the last one tried: naming a
+        // form that did not work would be worse than saying nothing.
+        mGpsDiag[$.GpsDiag.I_FORM] = $.GpsDiag.FORM_NONE;
     }
 
     // #211. The two CAPABILITY READS, each in its own method so a (:test) probe
@@ -3044,8 +3088,17 @@ class StrongRowView extends Ui.View {
     // THE CALL ITSELF IS WRAPPED: hasConfigurationSupport is a platform call
     // and a throw from it must degrade to "cannot use the configuration form",
     // not take onLayout down.
+    // ITS OWN METHOD so that "the API is absent" and "the API said no" are two
+    // separately drivable answers. They are two flag bits for the same reason:
+    // conflating them is precisely the discrimination the fenix 9 question
+    // needs. A (:test) that read `Position has :hasConfigurationSupport`
+    // directly would pin the device the suite happens to run on.
+    hidden function gpsCapConfigApi() {
+        return Position has :hasConfigurationSupport;
+    }
+
     hidden function gpsCapSatIq() {
-        if (!(Position has :hasConfigurationSupport)) { return false; }
+        if (!gpsCapConfigApi())                       { return false; }
         if (!(Position has :CONFIGURATION_SAT_IQ))    { return false; }
         try {
             return Position.hasConfigurationSupport(Position.CONFIGURATION_SAT_IQ);
@@ -3121,10 +3174,25 @@ class StrongRowView extends Ui.View {
         }
     }
 
+    // #211. The quality latch is UNCHANGED -- a null accuracy still leaves the
+    // previous reading alone, which test_gps_c0_onPositionIgnoresANullAccuracy
+    // pins. What is added is the bookkeeping the shipped view did not do: the
+    // arrival stamp that lets the pip go stale, and the counters that let the
+    // next row say whether the stream lived.
+    //
+    // gpsNote RUNS FOR EVERY CALLBACK, including one carrying no accuracy at
+    // all. That a callback arrived is the fact this field exists to record;
+    // i185890690's question is whether they stopped, not whether they were
+    // good.
+    //
+    // nowMs() rather than System.getTimer(): it is the overridable clock seam,
+    // so a case is deterministic on a simulator of any age (FACTS.md 3.5).
     function onPosition(info as Position.Info) as Void {
-        if (info != null && info.accuracy != null) {
-            mGpsQual = info.accuracy;
+        var acc = (info == null) ? null : info.accuracy;
+        if (acc != null) {
+            mGpsQual = acc;
         }
+        gpsNote(acc, nowMs());
     }
 
     // #211. Fold ONE position callback into the receive-path state: the
@@ -6966,6 +7034,54 @@ class StrongRowView extends Ui.View {
                 // slots take a running max so it is sticky for the row. The
                 // reset therefore takes both, in one call.
                 rrDiagSessionReset(nowMs());
+                // gps_diag: the POSITIONING receive-path diagnostic (#211).
+                //
+                // ITS OWN try/catch, per #74 and for the reason every group
+                // here gives for theirs: a throw must not null handles that
+                // were already created successfully. It is deliberately created
+                // AFTER rr_diag, which makes it the field most likely to fail
+                // if a cap exists -- 28 developer fields is past every
+                // field-count observation this repository has (#77 measured
+                // eleven, #80 twelve; #172 owns the question and its title
+                // figure of twenty-six is older still). If the cap exists, this
+                // is the field that finds it, and every field above survives.
+                //
+                // CREATED UNCONDITIONALLY, and that is the point rather than an
+                // oversight. A row where positioning never delivered a single
+                // callback is exactly the row this field exists to explain: it
+                // reports I_CB_TOTAL zero with I_FORM and I_FLAGS saying what
+                // was asked for and what the device claimed, which is the
+                // answer. Gating it on anything would delete the diagnostic
+                // precisely where it is needed.
+                //
+                // `:count` READS $.GpsDiag.SLOTS AND MUST KEEP DOING SO. It is
+                // the same constant gpsDiagSnapshot sizes its array from, and a
+                // setData array longer than :count is an uncatchable System
+                // Error at save time that takes the whole activity with it
+                // (measured for ct_diag, simulator fr965 / SDK 9.2.0). Do not
+                // substitute a literal at either site.
+                //
+                // No :scale/:offset, like rr_diag and ct_diag: every slot is an
+                // ordinary readable integer.
+                try {
+                    mFitGpsDiag = mSession.createField(
+                        "gps_diag", 27, Fit.DATA_TYPE_UINT16,
+                        { :mesgType => Fit.MESG_TYPE_SESSION, :units => "n",
+                          :count => $.GpsDiag.SLOTS });
+                } catch (e) {
+                    mFitGpsDiag = null;
+                }
+                // The positioning counters are SESSION-scoped for the ct_diag
+                // reason: startGps and onPosition both run from onLayout
+                // onward, so without this reset a long dwell before START --
+                // acquiring a fix on the dock, which is the normal case -- would
+                // be reported as part of the row. The gap baseline is taken
+                // here too, and in the same call, because the arrival stamp
+                // deliberately SURVIVES the boundary and a silence that
+                // straddled START would otherwise be loaded whole into
+                // I_MAXGAP_S. What this does NOT reset is I_FORM,
+                // I_ENABLE_THROW and I_FLAGS; $.GpsDiag.resetSession says why.
+                gpsDiagSessionReset(nowMs());
                 // boat-handling workload: blade movements the drive detector
                 // correctly ignores (steering taps, corrections)
                 try {
@@ -7122,7 +7238,7 @@ class StrongRowView extends Ui.View {
                 // this block and adds up their declared FIT types, and fails if
                 // the marked line disagrees with the code:
                 //
-                //   STEPFIELDS descs=4 rec_bytes=3 lap_bytes=3 total_fields=28
+                //   STEPFIELDS descs=4 rec_bytes=3 lap_bytes=3 total_fields=29
                 //
                 // It also fails if this block is ever moved inside a
                 // workout-enabled or erg-mode branch. That matters more than it
@@ -8010,6 +8126,16 @@ class StrongRowView extends Ui.View {
             // have moved since START (reloadSettings refuses while mStarted),
             // so "at save" and "at start" record the same configuration.
             cueCfgWrite();
+            // gps_diag (#211). Unguarded by value, like rr_diag and ct_diag
+            // above and for the identical reason: a row where positioning
+            // delivered nothing is exactly the case this field exists to
+            // explain, so there is no reading here that would be better left
+            // unwritten. A row with no callbacks at all still reports which
+            // enable form succeeded and what the device claimed it could do,
+            // which is the half a reader needs most.
+            if (mFitGpsDiag != null) {
+                mFitGpsDiag.setData(gpsDiagSnapshot());
+            }
             // ERG: the session's total work, in kilojoules.
             //
             // GUARDED BY THE PRESENCE FLAG AND NEVER BY `> 0.0`. A `> 0.0`
@@ -8314,11 +8440,10 @@ class StrongRowView extends Ui.View {
     // grading half is the static gpsColour and the freshness half is the static
     // gpsHave, so the only thing here is which fields feed them.
     hidden function gpsPipColour() {
-        // c1 passes `true` -- today's implicit "there is always data", which is
-        // exactly the defect. c3 replaces it with the freshness test; keeping
-        // the call shape identical is what lets the c2 differential name this
-        // method.
-        return gpsColour(true, mGpsQual);
+        // nowMs() rather than System.getTimer(), so a render case is
+        // deterministic on a simulator of any age (FACTS.md 3.5).
+        return gpsColour(gpsHave(mLastGpsMs, nowMs(), $.GpsDiag.GPS_FRESH_MS),
+                         mGpsQual);
     }
 
     hidden function drawGps(dc, w, h) {

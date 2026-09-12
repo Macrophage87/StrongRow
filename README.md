@@ -113,7 +113,7 @@ laps.)
   `core_temperature` and `skin_temperature` (°C) and `heat_strain_index`
   (a.u.) per record, plus session-level `avg_rmssd` (ms),
   `total_corrective_strokes`, `max_core_temperature`, `ct_diag`, `rr_diag` and
-  `cue_cfg`.
+  `cue_cfg` and `gps_diag`.
 - `cue_cfg` is a session-level record of **the configuration the row was
   coloured against**: six UINT16 slots, `[layout version, target low, target
   high, cue response preset (0–3), out-of-band latch ms, re-entry latch ms]`. It
@@ -137,6 +137,29 @@ laps.)
   It is not a training metric; the slot-by-slot key lives with the constants in
   [`source/RrDiag.mc`](source/RrDiag.mc), and slot 0 carries a layout version so
   an older file stays readable.
+- `gps_diag` is a session-level **diagnostic** array of 11 counters describing
+  what the app's own positioning path did — how many `onPosition` callbacks
+  arrived, how many carried a usable or a good fix, how long after the start of
+  the row the last one was, the longest silence between two of them, how many
+  times the watchdog re-enabled positioning, which enable form the app actually
+  got (legacy, constellation list, or SatIQ configuration), how many enable
+  attempts threw, the last accuracy value, and what the device said it could do
+  when asked. It exists so that a row which logged no position can be told
+  apart from one where positioning was never enabled in the first place, and so
+  that "the stream stopped" and "the stream was never usable" are different
+  readings rather than the same silence. It is not a training metric; the
+  slot-by-slot key lives with the constants in
+  [`source/GpsDiag.mc`](source/GpsDiag.mc), and slot 0 carries a layout version
+  so an older file stays readable. Its counters saturate at **65534**, one
+  below the UINT16 invalid value, so a saturated slot cannot be mistaken for an
+  unwritten one.
+- The **GPS indicator now goes grey** when no position callback has arrived for
+  five seconds, instead of holding the last colour indefinitely. Green, yellow
+  and red still mean what they meant — a usable fix, a poor one, and no fix —
+  but they now mean it about a *current* reading. Grey means the app is not
+  hearing from the receiver, which is a different thing from hearing that the
+  fix is bad. If that state persists for a minute the app re-enables
+  positioning, at most once a minute, and records how often it had to.
 - `ct_diag` is a session-level **diagnostic** array of counters describing what
   the app's own ANT channel did — opens attempted and succeeded, messages and
   broadcast frames received, page numbers seen, and the reason any frame was

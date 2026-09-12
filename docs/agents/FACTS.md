@@ -452,19 +452,19 @@ deleting a function *and* its pin line together still passes (#52).
 
 ### 5.3 The developer-field id map
 
-28 developer fields, ids unique, and **one id (27) deliberately
-reserved and unused**. Parsed from the `createField`
+29 developer fields, ids unique, **none unused**. Parsed from the `createField`
 calls in `source/StrongRowView.mc`. The table below was taken at `211f106`,
 when there were 26 fields and **id 19 was the one free id**; epic #59 took 19
 for `rr_diag`, which made the id set contiguous at 0 to 26.
 
-**The set is NOT contiguous now, and the hole is deliberate.** `cue_cfg` (#191)
-takes **28**, not 27, because **27 is reserved for `gps_diag`** on the in-flight
-branch `claude/gps-fenix9`; two branches taking the same id would silently
-re-label a field at the point they landed. Until that branch lands the id set
-is 0-26 plus 28, with 27 unused. `scripts/check_step_fields.py` pins the count
-and uniqueness; **nothing pins contiguity**, and nothing should — a reserved id
-is a coordination fact, not a code property.
+**The reservation held and the hole is now closed.** `cue_cfg` (#191) took
+**28** rather than 27 because 27 was reserved for `gps_diag` on the then
+in-flight branch `claude/gps-fenix9`; two branches taking the same id would
+silently re-label a field at the point they landed. Both have now landed, so
+the id set is CONTIGUOUS again — 0 to 28 inclusive, no holes — and the next
+field added takes 29. `scripts/check_step_fields.py` pins the count and
+uniqueness; **nothing pins contiguity**, and nothing should — a reserved id is
+a coordination fact, not a code property.
 
 | id | name | type | id | name | type |
 |---:|---|---|---:|---|---|
@@ -481,26 +481,31 @@ is a coordination fact, not a code property.
 | 9 | `max_core_temperature` | FLOAT | 24 | `rate_base` | FLOAT |
 | 10 | `ct_diag` | UINT16 | 25 | `lap_step_type` | UINT8 |
 | 11 | `heat_strain_index` | FLOAT | 26 | `lap_interval_num` | UINT16 |
-| 12 | `erg_power` | FLOAT | 28 | `cue_cfg` | UINT16 |
-| 13 | `erg_joules_per_stroke` | FLOAT | | (27 reserved, `gps_diag`) | |
+| 12 | `erg_power` | FLOAT | 27 | `gps_diag` | UINT16 |
+| 13 | `erg_joules_per_stroke` | FLOAT | 28 | `cue_cfg` | UINT16 |
 
 **A developer field id is unique per `field_description`**, which is why the
 lap copies (25, 26) could not reuse 17 and 18 — a collision silently re-labels
 a field. `scripts/check_step_fields.py` already pins the count and the
-uniqueness (`STEPFIELDS … total_fields=26`); the **id→name** binding above is
+uniqueness (`STEPFIELDS … total_fields=29`, re-derived on every run); the
+**id→name** binding above is
 pinned by `scripts/check_agent_facts.py` and was not pinned by anything before
 this file existed.
 
 **Twenty-six was two different counts, and they were never related.** There are
-28 developer fields today (this table, machine-checked; it was 26 at `211f106`
-and 27 at `9ece925`) **and** there were 26 device parts in the exported `.iq`
-(§5.5, prose only) — across what were then **12** manifest products (§1.4).
-Three numbers, one coincidence, and the coincidence has now broken three times
-over: the field count moved to 27 and then 28, and the manifest to **19**
-products. Say which one you mean; open
-issue #172's title uses the field figure. Checking *what a figure is measured
-against* rather than just that it is right is this repository's "wrong pair"
-defect class (§6).
+**29** developer fields today (this table, machine-checked; it was 26 at
+`211f106`, 27 at `9ece925` and 28 at `a0b1fc9`) **and** there were 26 device
+parts in the exported `.iq` (§5.5, prose only) — across what were then **12**
+manifest products (§1.4). Three numbers, one coincidence, and the coincidence
+has now broken four times over: the field count moved to 27, 28 and then 29,
+and the manifest to **19** products. Say which one you mean; open issue #172's
+title uses the field figure, at the value it had when it was filed. Checking
+*what a figure is measured against* rather than just that it is right is this
+repository's "wrong pair" defect class (§6).
+
+**Whether any device caps developer fields at all is UNMEASURED**, at 27, at 28
+or at 29. #77 observed eleven and #80 twelve; neither was a cap. #172 owns the
+question.
 
 ### 5.4 Backlog size
 
@@ -646,6 +651,7 @@ prose above is the explanation.
     AGENTFACT devfield 24 rate_base
     AGENTFACT devfield 25 lap_step_type
     AGENTFACT devfield 26 lap_interval_num
+    AGENTFACT devfield 27 gps_diag
     AGENTFACT devfield 28 cue_cfg
 
 The `CEILING` line in §5.1 is additionally checked by
