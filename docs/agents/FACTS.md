@@ -442,7 +442,8 @@ deleting a function *and* its pin line together still passes (#52).
 
 ### 5.3 The developer-field id map
 
-28 developer fields, ids unique, **none unused**. Parsed from the `createField`
+28 developer fields, ids unique, and **one id (27) deliberately
+reserved and unused**. Parsed from the `createField`
 calls in `source/StrongRowView.mc`. The table below was taken at `211f106`,
 when there were 26 fields and **id 19 was the one free id**; epic #59 took 19
 for `rr_diag`, which made the id set contiguous at 0 to 26.

@@ -234,10 +234,10 @@ cue must hold, the second how long a change back into the band must:
 
 | | latch | what it costs |
 |---|---|---|
-| Steady | 4000/1000 ms | the least flicker, ~1.7 s mean lag before the colour adopts a change |
-| **Balanced** (default) | 2000/500 ms | the shipped compromise, ~0.9 s |
-| Twitchy | 1000/250 ms | ~0.45 s, at more flicker than the default's own rule admits |
-| Instant | 0/0 ms | ~0.15 s, the deadband and the sign-reversal fast path only |
+| Steady | 4000/1000 ms | the least flicker; mean 1.73 s before the colour adopts a change on the calm row, 0.54–1.73 s across the four recorded rows |
+| **Balanced** (default) | 2000/500 ms | the shipped compromise; 0.91 s on the calm row, 0.39–0.91 s across the four |
+| Twitchy | 1000/250 ms | 0.46 s on the calm row, 0.21–0.46 s across the four, at more flicker than the default's own rule admits |
+| Instant | 0/0 ms | 0.18 s on the calm row, 0.10–0.18 s across the four; the deadband and the sign-reversal fast path only |
 
 Two honest caveats. **Twitchy and Instant sit outside the flicker bound the
 default was chosen by** (measured on the recorded rows; they are offered because

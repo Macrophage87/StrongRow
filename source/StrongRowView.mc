@@ -6815,9 +6815,15 @@ class StrongRowView extends Ui.View {
                 // than contradicted elsewhere: this paragraph used to end
                 // "and leaves 19 free". 19 is NO LONGER FREE -- epic #59 took
                 // it for the session-scope rr_diag field, which is exactly what
-                // a lone free id is for. The allocation is now CONTIGUOUS --
+                // a lone free id is for. The allocation WAS then CONTIGUOUS --
                 // every id from 0 to 26 inclusive, 27 field_descriptions with
-                // no holes -- and the next field added takes 27.
+                // no holes. IT IS NOT NOW: #191's cue_cfg takes 28, because 27
+                // is reserved for gps_diag on the in-flight branch
+                // claude/gps-fenix9, so this file now declares 28
+                // field_descriptions over ids 0-26 plus 28, with a deliberate
+                // hole at 27. scripts/check_step_fields.py pins the count and
+                // the uniqueness; nothing pins contiguity and nothing should --
+                // a reserved id is a coordination fact, not a code property.
                 //
                 // MESG_TYPE_LAP IS AVAILABLE AND THAT WAS CHECKED, NOT ASSUMED.
                 // Compiled for fr965 and fenix6 under SDK 9.2.0, and its value
