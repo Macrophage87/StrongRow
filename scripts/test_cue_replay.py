@@ -902,20 +902,22 @@ def _():
             [True, True, True, True]]
 
 
-@case("E7 preset 3 adopts on the frame the candidate appears, deadband intact")
+@case("E7 preset 3 adopts a PENDING candidate at once, deadband intact")
 def _():
-    # 0/0 IS NOT "NO CUE". The deadband lives in cue_target and the sign
-    # reversal in cue_step_w's third branch, neither of which is a window, so
-    # at 0/0 the display still refuses to move for a tenth of a spm over the
-    # edge. The Monkey C twin of this case drives the same claim through the
+    # 0/0 IS NOT "NO CUE", AND IT IS NOT ZERO LATENCY EITHER. The deadband
+    # lives in cue_target and the sign reversal in cue_step_w's third branch,
+    # neither of which is a window; and the "a DIFFERENT candidate starts its
+    # own clock" branch runs before any window arithmetic, so the frame a new
+    # candidate first appears only registers it. At the 250 ms display tick
+    # that residual tick is the candidate rule, not the latch, and no preset
+    # removes it. The Monkey C twin drives the same two frames through the
     # shipping draw path.
     out, in_ms = R.cue_preset_windows(3)
-    # (a) an out-of-band candidate is taken on the frame it appears --
-    #     `now - since >= 0` is true at since == now.
+    # (a) a PENDING candidate (want == cand) is taken at once, because
+    #     `now - since >= 0` is true even at since == now.
     a = R.cue_step_w(19.5, LO, HI, IN, ABOVE, 1000, 1000, out, in_ms)
-    # (b) the same reading one frame earlier, before it is the candidate,
-    #     starts the clock instead of being adopted -- the candidate rule is
-    #     untouched by the window being zero.
+    # (b) the frame that candidate first appears does NOT adopt: it starts its
+    #     own clock, whatever the window is.
     b = R.cue_step_w(19.5, LO, HI, IN, IN, 1000, 1000, out, in_ms)
     # (c) THE DEADBAND SURVIVES. 18.5 is over hi and inside hi + CUE_DEADBAND,
     #     so from a displayed IN it is still IN at every preset.
