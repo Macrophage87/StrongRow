@@ -8794,62 +8794,252 @@ class StrongRowView extends Ui.View {
                     Gfx.TEXT_JUSTIFY_CENTER);
     }
 
+    // ======================= #217: THE FOOTER'S WIDTH ======================
+    //
+    // THE ROW IS NARROWER THAN THE STRING, AND NOW THAT IS MEASURED. A field
+    // report on 2026-09-12 (fenix 9 Pro 51 mm, 466 px AMOLED, the first row on
+    // that watch) said "some of the text on the bottom (in red) overflowed the
+    // watch". The red bottom text is this footer.
+    //
+    // RETRACTION, at the sentence that made the claim rather than beside it.
+    // The paragraph on the "wk" token below used to end:
+    //
+    //     "That is a CHARACTER bound and not a clearance: no (:test) that runs
+    //      in CI can obtain a font metric (#121), so nothing here claims a
+    //      measured margin -- only that this row cannot have become the binding
+    //      constraint by this edit."
+    //
+    // Every clause of that was true and the conclusion drawn from it in
+    // practice -- that the row was therefore fine -- was never checked. It was
+    // not fine. MEASURED, SDK 9.2.0, all 19 manifest products, FONT_XTINY:
+    // "REC 43:45 0.03km 400wk" is 349 px on the 454 px family and on the 466 px
+    // fenix9pro51mm, against 191.06 px and 200.28 px of usable chord. The
+    // widest form this app can build, "REC 199:59 12.35km 9999wk", is 400 px.
+    // The per-device widths are Foot.footDevices() in source/FootStateTest.mc;
+    // the margins below are re-derived from them by
+    // scripts/check_foot_geometry.py on every CI run.
+    //
+    // A font metric is still out of a (:test)'s reach (#121 stands). What
+    // changed is that a real Dc HAS one at draw time, and this function now
+    // asks it instead of counting characters.
+    //
+    // WHERE THE CHORD IS TAKEN, because the wrong choice here is a whole
+    // defect class ("the wrong pair"). The text box spans h*footRowYFrac() to
+    // h*footRowYFrac() + getFontHeight(FONT_XTINY). This row is on the LOWER
+    // half of a round display, so the chord is narrowest at the box BOTTOM, and
+    // that is the edge every figure below is measured to. Taking it at the box
+    // top would overstate the room by 108-113 px on the 454/466 family.
+    //
+    // THE 466 px DEVICE IS NOT THE WORST DEVICE. It was reported there because
+    // that is the watch the maintainer had; measured, fenix9pro51mm is a
+    // FONT-MATE of the 454 px family (every footer string is the same number of
+    // pixels on both) and, being 12 px wider, has 9.22 px MORE chord. The
+    // footer overflowed on all nineteen products, the 454 px family worst.
+    //
+    // WHY THE ROW IS NOT SIMPLY MOVED UP, as a listed decision. For the widest
+    // form to fit with the 2.0 px bezel the status row works to, the box bottom
+    // would have to rise to y <= 0.6270h (binding device fenix843mm, derived
+    // from the same table). That band is occupied: drawSetGrid's second value
+    // row sits at 0.749h at FONT_TINY, whose measured worst vertical clearance
+    // to this footer is already 2.46 px, and the sub row sits at 0.78h at
+    // FONT_XTINY. Even keeping only "NOT RECORDING" whole needs y <= 0.8365h,
+    // which is inside both. So the row stays at 0.87h and the STRING gives.
+    //
+    // WHAT GIVES, in order, and why "REC " is the last thing dropped rather
+    // than the first: REC is the whole point of the footer. #108 already
+    // removed the recording assurance from the WORK screen, and this row is
+    // what is left of it, so the ladder sheds the distance first, then the
+    // stroke count, then the clock, and keeps the word itself to the end.
+    //
+    //   rung 1  "REC 43:45 0.03km 400wk"   everything
+    //   rung 2  "REC 43:45 400wk"          distance dropped
+    //   rung 3  "REC 43:45"                stroke count dropped
+    //   rung 4  "REC"                      the floor -- fits on all 19
+    //
+    // THE TWO SAFETY STATES ARE NEVER SHORTENED AND NEVER SUPPRESSED. NO ACCEL
+    // and NOT RECORDING each have a one-rung ladder, so footFit returns them
+    // unchanged whatever the chord says. NO ACCEL fits on all nineteen devices
+    // (33.50 px of margin at worst). NOT RECORDING does NOT: it exceeds the
+    // box-bottom chord on 13 of the 19, by up to 49.67 px. That is recorded
+    // here as an ACCEPTED, NAMED exception and is tracked by its own issue,
+    // not quietly rendered as a pass -- abbreviating a warning into a token the
+    // athlete has never seen, or dropping it, are both worse than the ends of a
+    // known word being clipped, and moving it is the layout rework above.
+    //
+    // WHAT THE FIGURES ARE AND ARE NOT. They are FONT-BOX extents against a
+    // chord, the convention drawSetGrid, the #110 arc and the PIPGEOM rows all
+    // use. Nothing in this repository can measure where a glyph's ink starts
+    // inside its box, so a negative margin here does not by itself prove a lit
+    // pixel was lost, and a positive one does not prove the row reads well.
+    // MEASURED, same run: FONT_XTINY ascent + descent == getFontHeight on all
+    // nineteen devices (29+8=37, 27+7=34, 24+7=31, 18+4=22, 17+4=21, 15+4=19),
+    // so between the strictest reading (box bottom) and the loosest (box top)
+    // there is one descent of slack. "REC 43:45 0.03km 400wk" overflows under
+    // BOTH readings on the reported device (-148.72 px at the box bottom,
+    // -39.57 px at the box top), which is why the reported defect is not a
+    // question of which edge is chosen.
+    //
+    //   avail   = chord at the text-box bottom, MINUS footBezelPx() per side.
+    //             The bezel is already paid here, so "fits" is margin >= 0 and
+    //             there is no second 2.0 to add. Reading it twice is how a
+    //             clearance gets counted against the wrong reference.
+    //   pre     = avail - width("REC 43:45 0.03km 400wk"), the reported row as
+    //             it shipped
+    //   post    = avail - width(the longest rung of that ladder that fits).
+    //             A property of the ladder and the chord; that footFit picks
+    //             that rung is pinned by the Foot.* cases, not by this table.
+    //   floor   = avail - width("REC"), the rung that must fit everywhere
+    //   notrec  = avail - width("NOT RECORDING")
+    //   noaccel = avail - width("NO ACCEL")
+    //
+    //   FOOTGEOM fr970               w=454 fh=37 avail=191.06 pre=-157.94 post=50.06 floor=134.06 notrec=-46.94 noaccel=45.06
+    //   FOOTGEOM fr965               w=454 fh=37 avail=191.06 pre=-157.94 post=50.06 floor=134.06 notrec=-46.94 noaccel=45.06
+    //   FOOTGEOM fenix847mm          w=454 fh=37 avail=191.06 pre=-157.94 post=50.06 floor=134.06 notrec=-46.94 noaccel=45.06
+    //   FOOTGEOM fenix843mm          w=416 fh=34 avail=174.33 pre=-151.67 post=43.33 floor=121.33 notrec=-49.67 noaccel=37.33
+    //   FOOTGEOM fenix8pro47mm       w=454 fh=37 avail=191.06 pre=-157.94 post=50.06 floor=134.06 notrec=-46.94 noaccel=45.06
+    //   FOOTGEOM fenix7              w=260 fh=19 avail=116.48 pre=-48.52 post=4.48 floor=90.48 notrec=6.48 noaccel=49.48
+    //   FOOTGEOM fenix7pro           w=260 fh=19 avail=116.48 pre=-48.52 post=4.48 floor=90.48 notrec=6.48 noaccel=49.48
+    //   FOOTGEOM epix2pro47mm        w=416 fh=31 avail=186.46 pre=-74.54 post=8.46 floor=146.46 notrec=16.46 noaccel=83.46
+    //   FOOTGEOM fenix6              w=260 fh=19 avail=116.48 pre=-48.52 post=4.48 floor=90.48 notrec=6.48 noaccel=49.48
+    //   FOOTGEOM fenix6pro           w=260 fh=19 avail=116.48 pre=-48.52 post=4.48 floor=90.48 notrec=6.48 noaccel=49.48
+    //   FOOTGEOM fenix6spro          w=240 fh=19 avail=101.44 pre=-63.56 post=35.44 floor=75.44 notrec=-8.56 noaccel=34.44
+    //   FOOTGEOM fenix6xpro          w=280 fh=19 avail=131.19 pre=-33.81 post=19.19 floor=105.19 notrec=21.19 noaccel=64.19
+    //   FOOTGEOM fenix943mm          w=416 fh=34 avail=174.33 pre=-151.67 post=43.33 floor=121.33 notrec=-49.67 noaccel=37.33
+    //   FOOTGEOM fenix947mm          w=454 fh=37 avail=191.06 pre=-157.94 post=50.06 floor=134.06 notrec=-46.94 noaccel=45.06
+    //   FOOTGEOM fenix9pro43mm       w=416 fh=34 avail=174.33 pre=-151.67 post=43.33 floor=121.33 notrec=-49.67 noaccel=37.33
+    //   FOOTGEOM fenix9pro47mm       w=454 fh=37 avail=191.06 pre=-157.94 post=50.06 floor=134.06 notrec=-46.94 noaccel=45.06
+    //   FOOTGEOM fenix9pro51mm       w=466 fh=37 avail=200.28 pre=-148.72 post=59.28 floor=143.28 notrec=-37.72 noaccel=54.28
+    //   FOOTGEOM fenix9prosolar47mm  w=260 fh=21 avail=108.50 pre=-74.50 post=34.50 floor=79.50 notrec=-14.50 noaccel=33.50
+    //   FOOTGEOM fenix9prosolar51mm  w=280 fh=22 avail=119.69 pre=-78.31 post=39.69 floor=88.69 notrec=-9.31 noaccel=41.69
+    //   FOOTGEOM-RANGE avail_lo=101.44 avail_hi=200.28 pre_lo=-157.94 pre_hi=-33.81 post_lo=4.48 post_hi=59.28 floor_lo=75.44 floor_hi=146.46 notrec_lo=-49.67 notrec_hi=21.19 noaccel_lo=33.50 noaccel_hi=83.46
+    //   FOOTGEOM-COUNT pre_over=19 post_over=0 floor_over=0 notrec_over=13 noaccel_over=0 of=19
+    //
+    // WHICH DEVICES THE COUNT LINE NAMES. notrec_over is fenix9pro51mm, the six
+    // 454 px products, the three 416 px fenix 8/9 products, both fenix 9 Pro
+    // Solar products and fenix6spro. The six where NOT RECORDING does fit are
+    // epix2pro47mm, fenix6xpro, fenix7, fenix7pro, fenix6 and fenix6pro.
+
+    // Top of the footer's text box, in h. 0.87 is where the row has always
+    // been; it is a named accessor so scripts/check_foot_geometry.py derives
+    // the table from the shipped value instead of from a transcription of it,
+    // and so a (:test) reads the same one the draw path does.
+    //
+    // A FUNCTION RATHER THAN A `const`, and the reason is the fenix6 ceiling
+    // (FACTS.md 5.1, four slots free): a file-scope const costs one `globals`
+    // member each, a class-scope one is not reachable from a (:test) at all
+    // (measured: "Cannot find symbol ':FOOT_ROW_Y_FRAC' on class definition"),
+    // and a class-scope static function costs nothing and is reachable.
+    static function footRowYFrac() { return 0.87; }
+
+    // Bezel floor, per side, in px. THE SAME 2.0 px Hsi.PIP_MIN_BEZEL_PX holds
+    // the status row to; the checker fails if the two copies drift.
+    static function footBezelPx() { return 2.0; }
+
+    // Pure: the footer forms for a state, WIDEST FIRST.
+    //
+    // Takes already-rendered strings rather than the view's fields so it is
+    // reachable from a (:test) -- the same seam shape footState, rateColour and
+    // coreFieldsWanted use. The colour is footColour's, deliberately separate:
+    // a state's colour and its text are two decisions and neither should be
+    // able to change the other by accident.
+    static function footForms(fs, elapsed, km, wk) {
+        if (fs == $.FOOT_NO_ACCEL) { return [ "NO ACCEL" ]; }
+        if (fs == $.FOOT_NO_REC)   { return [ "NOT RECORDING" ]; }
+        if (fs == $.FOOT_PAUSED)   { return [ "PAUSED  " + wk + "wk", "PAUSED" ]; }
+        if (fs == $.FOOT_REC) {
+            return [ "REC " + elapsed + " " + km + " " + wk + "wk",
+                     "REC " + elapsed + " " + wk + "wk",
+                     "REC " + elapsed,
+                     "REC" ];
+        }
+        return [ "START to record", "START" ];
+    }
+
+    // Pure: the footer colour for a state. ORANGE for NOT RECORDING, not red:
+    // red is what a healthy REC row shows and the two must not be confusable at
+    // a glance. Colour and layout only -- no tone, no vibration, no flash.
+    static function footColour(fs) {
+        if (fs == $.FOOT_NO_ACCEL) { return Gfx.COLOR_RED; }
+        if (fs == $.FOOT_NO_REC)   { return Gfx.COLOR_ORANGE; }
+        if (fs == $.FOOT_PAUSED)   { return Gfx.COLOR_YELLOW; }
+        if (fs == $.FOOT_REC)      { return Gfx.COLOR_RED; }
+        return Gfx.COLOR_LT_GRAY;
+    }
+
+    // Pure: the horizontal room a centred text box has at `yFrac`, in px.
+    //
+    // The display is the circle inscribed in w x h (SCREEN_SHAPE_ROUND with
+    // w == h on all nineteen, measured device by device in the same probe run
+    // as the widths, not extrapolated). `boxH` is the text box's own height, so
+    // the chord is taken at the box BOTTOM -- correct on the lower half of the
+    // display, where that edge is the narrow one. footBezelPx() is subtracted
+    // ONCE PER SIDE here, which is why every margin derived from this is a
+    // plain `>= 0` test.
+    //
+    // This body is mirrored in Python by scripts/check_foot_geometry.py and
+    // pinned there: editing it fails that check by name rather than silently
+    // invalidating the table above.
+    static function footChordPx(w, h, yFrac, boxH, bezelPx) {
+        var r = (w < h) ? w / 2.0 : h / 2.0;
+        var dy = yFrac * h + boxH - h / 2.0;
+        if (dy < 0) { dy = -dy; }
+        if (dy >= r) { return 0.0; }
+        return 2.0 * Math.sqrt(r * r - dy * dy) - 2.0 * bezelPx;
+    }
+
+    // Pure: which rung of a widest-first ladder to draw, given each rung's
+    // MEASURED width and the room available.
+    //
+    // c1 NOTE, and it is deliberate: this body returns 0 unconditionally, which
+    // is exactly what drawFoot did before this refactor -- always the widest
+    // form. The refactor is behaviour-preserving on purpose so that the c2
+    // differentials have something to be red against. c3 replaces the body.
+    static function footFit(widths, chordPx) {
+        if (widths == null || widths.size() == 0) { return 0; }
+        return 0;
+    }
+
     // #108: `fs` is now a PARAMETER rather than computed here, and the reason is
     // that onUpdate has to make a decision about it before it can decide whether
     // to call this at all -- the work view draws the footer only for a hard
     // failure. Computing footState in both places would let the gate and the
     // rendered claim be derived from two evaluations; passing it makes them one
     // by construction. Behaviour is identical everywhere the footer is drawn.
+    //
+    // #125: THE STROKE FIGURE IS mWorkStrokes, NOT mStrokeCount, and the token
+    // says so. The rule is on strokeCounts; the short version is that the
+    // strokes taken before the first interval are positioning strokes --
+    // "quicker and lower force", in the maintainer's words -- and rest
+    // paddling is the same, so a session count of every stroke biases the
+    // figure UP and hardest on the short sessions. "wk" rather than "str",
+    // because a label that no longer describes its number is worse than no
+    // label. BOTH the paused and the recording form carry it, deliberately: a
+    // paused footer reporting one set of strokes and a recording footer
+    // reporting another would be a defect the athlete meets on the same screen
+    // seconds apart.
+    //
+    // #217: the string is now chosen by MEASURED width against the chord, by
+    // the seams above. See the block on footRowYFrac() for the measurement,
+    // the ladder and what the numbers do not say.
     hidden function drawFoot(dc, w, h, dist, fs) {
-        var foot;
-        var fcol = Gfx.COLOR_LT_GRAY;
         // THROUGH footDistStr, and gated on ERG MODE alone rather than on
         // useWorkUnits: see that function. This was the one distance string on
         // screen that the unit switch did not reach.
         var km = footDistStr(dist, mErgMode);
         // #74: the chain that used to live here was gated on mStarted alone and
         // never consulted whether a session exists. It is now the pure
-        // footState(), pinned in FootStateTest.mc; this switch only maps a state
-        // to text and colour.
-        if (fs == $.FOOT_NO_ACCEL) {
-            foot = "NO ACCEL"; fcol = Gfx.COLOR_RED;
-        } else if (fs == $.FOOT_NO_REC) {
-            // ORANGE, not red: red is what a healthy REC row shows, and the two
-            // must not be confusable at a glance. Colour and layout only -- no
-            // tone, no vibration, no flash (#114).
-            foot = "NOT RECORDING"; fcol = Gfx.COLOR_ORANGE;
-        // #125: THE FIGURE IS mWorkStrokes, NOT mStrokeCount, and the token
-        // says so. The rule is on strokeCounts; the short version is that the
-        // strokes taken before the first interval are positioning strokes --
-        // "quicker and lower force", in the maintainer's words -- and rest
-        // paddling is the same, so a session count of every stroke biases the
-        // figure UP and hardest on the short sessions.
-        //
-        // "wk" RATHER THAN "str", because the number's meaning changed and a
-        // label that no longer describes its number is worse than no label --
-        // the rule drawSetGrid states for the metres cells, applied here.
-        // Two characters where three stood, so the widest footer this app
-        // COULD draw before this edit ("REC 199:59 12.35km 9999str") got
-        // NARROWER by one character. The widest form it draws now is
-        // "REC 199:59 12.35km 9999wk".
-        // That is a CHARACTER bound and not a clearance: no (:test) that runs
-        // in CI can obtain a font metric (#121), so nothing here claims a
-        // measured margin -- only that this row cannot have become the binding
-        // constraint by this edit.
-        //
-        // BOTH FORMS, deliberately. A paused footer reporting one set of
-        // strokes and a recording footer reporting another would be a defect
-        // the athlete meets on the same screen seconds apart.
-        } else if (fs == $.FOOT_PAUSED) {
-            foot = "PAUSED  " + mWorkStrokes.toString() + "wk"; fcol = Gfx.COLOR_YELLOW;
-        } else if (fs == $.FOOT_REC) {
-            foot = "REC " + totalElapsed() + " " + km + " " + mWorkStrokes.toString() + "wk";
-            fcol = Gfx.COLOR_RED;
-        } else {
-            foot = "START to record";
+        // footState(), pinned in FootStateTest.mc; footForms and footColour map
+        // that state to text and colour and nothing else decides either.
+        var forms = footForms(fs, totalElapsed(), km, mWorkStrokes.toString());
+        var widths = new [forms.size()];
+        for (var i = 0; i < forms.size(); i++) {
+            widths[i] = dc.getTextWidthInPixels(forms[i], Gfx.FONT_XTINY);
         }
-        dc.setColor(fcol, Gfx.COLOR_TRANSPARENT);
-        dc.drawText(w / 2, h * 0.87, Gfx.FONT_XTINY, foot, Gfx.TEXT_JUSTIFY_CENTER);
+        var room = footChordPx(w, h, footRowYFrac(),
+                               dc.getFontHeight(Gfx.FONT_XTINY), footBezelPx());
+        dc.setColor(footColour(fs), Gfx.COLOR_TRANSPARENT);
+        dc.drawText(w / 2, h * footRowYFrac(), Gfx.FONT_XTINY,
+                    forms[footFit(widths, room)], Gfx.TEXT_JUSTIFY_CENTER);
     }
 
     // #110: one radial line segment at `deg`, from radius r0 to radius r1.

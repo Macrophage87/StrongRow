@@ -1,4 +1,5 @@
 using Toybox.Test;
+using Toybox.Graphics as Gfx;
 
 // Unit tests for issue #74: startSession() could fail and leave the watch
 // showing an ordinary recording row for a row that produced no FIT file.
@@ -422,7 +423,7 @@ const FD_START = 16;
 
 // The bezel floor these rows are held to, per side. THE SAME 2.0 px the
 // status-row suite works to (Hsi.PIP_MIN_BEZEL_PX). scripts/check_foot_geometry.py
-// fails if this copy and the shipped StrongRowView.FOOT_BEZEL_PX drift apart.
+// fails if this copy and the shipped StrongRowView.footBezelPx() drift apart.
 const FOOT_MIN_BEZEL_PX = 2.0;
 
 // -- c0: pins on symbols that already exist ----------------------------------
@@ -525,6 +526,221 @@ const FOOT_MIN_BEZEL_PX = 2.0;
                     return false;
                 }
             }
+        }
+    }
+    return true;
+}
+
+
+// -- c1: the seam, and green pins on it --------------------------------------
+//
+// DERIVED, not measured: the usable chord at the footer's text-box bottom on
+// each device, in px, with footBezelPx() already subtracted once per side. Kept
+// in its own table rather than folded into footDevices() because footDevices()
+// is probe output and this is arithmetic on it -- mixing the two is how a
+// derived figure starts reading as a measurement.
+//
+// These are the `avail` column of the FOOTGEOM rows in source/StrongRowView.mc,
+// and scripts/check_foot_geometry.py re-derives every one of them from the
+// shipped footRowYFrac(), footBezelPx() and footChordPx body. What the case
+// below adds is the other direction: that the SHIPPED footChordPx, executed on
+// a real device, actually returns them.
+function footAvailPx() {
+    return [
+        [ "fr970",                 191.06 ],
+        [ "fr965",                 191.06 ],
+        [ "fenix847mm",            191.06 ],
+        [ "fenix843mm",            174.33 ],
+        [ "fenix8pro47mm",         191.06 ],
+        [ "fenix7",                116.48 ],
+        [ "fenix7pro",             116.48 ],
+        [ "epix2pro47mm",          186.46 ],
+        [ "fenix6",                116.48 ],
+        [ "fenix6pro",             116.48 ],
+        [ "fenix6spro",            101.44 ],
+        [ "fenix6xpro",            131.19 ],
+        [ "fenix943mm",            174.33 ],
+        [ "fenix947mm",            191.06 ],
+        [ "fenix9pro43mm",         174.33 ],
+        [ "fenix9pro47mm",         191.06 ],
+        [ "fenix9pro51mm",         200.28 ],
+        [ "fenix9prosolar47mm",    108.50 ],
+        [ "fenix9prosolar51mm",    119.69 ]
+    ];
+}
+
+// The shipped chord formula must return the table every margin is derived from.
+// This is the case that makes footAvailPx() a pin rather than a comment: it
+// CALLS StrongRowView.footChordPx with the shipped constants and the measured
+// font height, on all 19 device geometries.
+(:test) function test_foot_c1_chordReproducesTheDerivedAvailColumn(logger) {
+    var fd = footDevices();
+    var av = footAvailPx();
+    if (fd.size() != av.size()) {
+        logger.error("footDevices has " + fd.size() + " rows and footAvailPx " +
+                     av.size() + " -- they are read positionally");
+        return false;
+    }
+    for (var i = 0; i < fd.size(); i++) {
+        if (!av[i][0].equals(fd[i][FD_NAME])) {
+            logger.error("row " + i + ": footAvailPx says " + av[i][0] +
+                         " and footDevices says " + fd[i][FD_NAME] +
+                         " -- the two tables are read positionally and have " +
+                         "gone out of step");
+            return false;
+        }
+        var got = StrongRowView.footChordPx(fd[i][FD_W], fd[i][FD_H],
+                                            StrongRowView.footRowYFrac(),
+                                            fd[i][FD_FH],
+                                            StrongRowView.footBezelPx());
+        var d = got - av[i][1];
+        if (d < 0) { d = -d; }
+        if (d > 0.01) {
+            logger.error(fd[i][FD_NAME] + ": footChordPx returns " + got +
+                         " px, the derived table says " + av[i][1] +
+                         " px. Every margin in this suite and in the FOOTGEOM " +
+                         "rows is (this number) minus a measured width, so a " +
+                         "disagreement here invalidates all of them.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The head of every ladder is the string drawFoot shipped before #217. This is
+// the characterization half of the refactor: footForms may add rungs BELOW the
+// widest form, and must not change the widest form itself.
+(:test) function test_foot_c1_everyLadderStartsWithTheShippedString(logger) {
+    var want = [ [ $.FOOT_NO_ACCEL, "NO ACCEL" ],
+                 [ $.FOOT_NO_REC,   "NOT RECORDING" ],
+                 [ $.FOOT_PAUSED,   "PAUSED  400wk" ],
+                 [ $.FOOT_REC,      "REC 43:45 0.03km 400wk" ],
+                 [ $.FOOT_IDLE,     "START to record" ] ];
+    for (var i = 0; i < want.size(); i++) {
+        var f = StrongRowView.footForms(want[i][0], "43:45", "0.03km", "400");
+        if (f.size() < 1) {
+            logger.error("state " + want[i][0] + ": footForms returned an " +
+                         "empty ladder; drawFoot indexes into it unconditionally");
+            return false;
+        }
+        if (!f[0].equals(want[i][1])) {
+            logger.error("state " + want[i][0] + ": the widest form is " + f[0] +
+                         ", it shipped as " + want[i][1] +
+                         " -- #217 changes which rung is DRAWN, never what the " +
+                         "widest rung says");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The two safety states have a ONE-RUNG ladder, so no chord can shorten them.
+// This is the pin on the decision recorded in drawFoot's block: NO ACCEL and
+// NOT RECORDING are never abbreviated and never suppressed.
+(:test) function test_foot_c1_theSafetyStatesHaveASingleRungLadder(logger) {
+    var a = StrongRowView.footForms($.FOOT_NO_ACCEL, "43:45", "0.03km", "400");
+    var n = StrongRowView.footForms($.FOOT_NO_REC,   "43:45", "0.03km", "400");
+    if (a.size() != 1 || !a[0].equals("NO ACCEL")) {
+        logger.error("the NO ACCEL ladder is " + a.size() + " rung(s) deep " +
+                     "starting " + a[0] + "; a safety state must have exactly " +
+                     "one rung so that footFit cannot shorten it");
+        return false;
+    }
+    if (n.size() != 1 || !n[0].equals("NOT RECORDING")) {
+        logger.error("the NOT RECORDING ladder is " + n.size() + " rung(s) " +
+                     "deep starting " + n[0] + "; a safety state must have " +
+                     "exactly one rung so that footFit cannot shorten it");
+        return false;
+    }
+    return true;
+}
+
+// NO ACCEL fits WHOLE on every device -- the one safety string the measurement
+// clears. Worst margin measured: 33.50 px (fenix9prosolar47mm).
+(:test) function test_foot_c1_noAccelFitsWholeOnEveryDevice(logger) {
+    var fd = footDevices();
+    for (var i = 0; i < fd.size(); i++) {
+        var room = StrongRowView.footChordPx(fd[i][FD_W], fd[i][FD_H],
+                                             StrongRowView.footRowYFrac(),
+                                             fd[i][FD_FH],
+                                             StrongRowView.footBezelPx());
+        if (fd[i][FD_NOACCEL] > room) {
+            logger.error(fd[i][FD_NAME] + ": NO ACCEL measures " +
+                         fd[i][FD_NOACCEL] + " px against " + room +
+                         " px of chord. It is the hard-failure footer and it " +
+                         "is never shortened, so it has to fit as it stands.");
+            return false;
+        }
+    }
+    return true;
+}
+
+// The FLOOR of every variable ladder fits on every device. This is what makes
+// "never draw a string wider than the chord" achievable at all: whatever the
+// elapsed time, the distance or the stroke count grow to, the last rung is a
+// fixed string that has been measured against every display.
+(:test) function test_foot_c1_everyLadderFloorFitsOnEveryDevice(logger) {
+    var fd = footDevices();
+    var floors = [ FD_REC, FD_PAUSE, FD_START ];
+    var names = [ "REC", "PAUSED", "START" ];
+    for (var i = 0; i < fd.size(); i++) {
+        var room = StrongRowView.footChordPx(fd[i][FD_W], fd[i][FD_H],
+                                             StrongRowView.footRowYFrac(),
+                                             fd[i][FD_FH],
+                                             StrongRowView.footBezelPx());
+        for (var k = 0; k < floors.size(); k++) {
+            if (fd[i][floors[k]] > room) {
+                logger.error(fd[i][FD_NAME] + ": the ladder floor " + names[k] +
+                             " measures " + fd[i][floors[k]] + " px against " +
+                             room + " px of chord. A floor that does not fit " +
+                             "leaves the footer with no form it can draw.");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// footFit must always name a rung that exists. True of the c1 body and of the
+// c3 one; a case that survives the fix rather than describing one side of it.
+(:test) function test_foot_c1_fitAlwaysNamesARungThatExists(logger) {
+    var ladders = [ [ 400, 239, 141, 57 ], [ 239, 116 ], [ 146 ], [ 226, 95 ] ];
+    var chords = [ -5.0, 0.0, 56.0, 57.0, 101.44, 191.06, 5000.0 ];
+    for (var i = 0; i < ladders.size(); i++) {
+        for (var c = 0; c < chords.size(); c++) {
+            var k = StrongRowView.footFit(ladders[i], chords[c]);
+            if (k < 0 || k >= ladders[i].size()) {
+                logger.error("footFit(ladder of " + ladders[i].size() +
+                             ", chord " + chords[c] + ") returned " + k +
+                             " -- drawFoot indexes the ladder with this, so an " +
+                             "out-of-range answer is a crash on the draw path");
+                return false;
+            }
+        }
+    }
+    if (StrongRowView.footFit([], 100.0) != 0) {
+        logger.error("footFit on an empty ladder must answer 0 rather than -1");
+        return false;
+    }
+    return true;
+}
+
+// The colours the five states shipped with, now that the mapping is its own
+// seam. Colour and layout only -- there is no alarm channel here to pin.
+(:test) function test_foot_c1_colourMapsEachStateToItsShippedColour(logger) {
+    var want = [ [ $.FOOT_NO_ACCEL, Gfx.COLOR_RED ],
+                 [ $.FOOT_NO_REC,   Gfx.COLOR_ORANGE ],
+                 [ $.FOOT_PAUSED,   Gfx.COLOR_YELLOW ],
+                 [ $.FOOT_REC,      Gfx.COLOR_RED ],
+                 [ $.FOOT_IDLE,     Gfx.COLOR_LT_GRAY ] ];
+    for (var i = 0; i < want.size(); i++) {
+        var got = StrongRowView.footColour(want[i][0]);
+        if (got != want[i][1]) {
+            logger.error("state " + want[i][0] + ": footColour returned " + got +
+                         ", it shipped as " + want[i][1] +
+                         ". NOT RECORDING is ORANGE and a healthy REC row is " +
+                         "RED precisely so the two are not confusable.");
+            return false;
         }
     }
     return true;
