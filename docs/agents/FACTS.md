@@ -412,16 +412,17 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**423** `(:test)` functions under `source/`, matching
+**428** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/cue-twitchiness` branch at its c2 commit: "OK: 423 (:test)
+run on the `claude/gps-fenix9` branch at its c0 commit: "OK: 428 (:test)
 function(s) under source/ match scripts/expected_tests.txt exactly."). It was
-**412** at `9ece925` (`origin/main`, v0.9.2, the merge of #208), **362** at
-`211f106`, **385** at `d2cd8a6` (v0.9, epic #59's merge), **397** at `367929a`
-(#70's merge) and **408** at `db4ffcc` (#195's merge). The **net** diff on
-`scripts/expected_tests.txt` is the thing to check, not the arithmetic on
-additions and retirements separately — #193 added five in
-`source/LockGuardTest.mc` and retired one, which is a net `+4 / -0`.
+**423** at `a0b1fc9` (`origin/main`, the merge of #213), **412** at `9ece925`
+(v0.9.2, the merge of #208), **362** at `211f106`, **385** at `d2cd8a6`
+(v0.9, epic #59's merge), **397** at `367929a` (#70's merge) and **408** at
+`db4ffcc` (#195's merge). The **net** diff on `scripts/expected_tests.txt` is
+the thing to check, not the arithmetic on additions and retirements
+separately — #193 added five in `source/LockGuardTest.mc` and retired one,
+which is a net `+4 / -0`.
 
 **THE COUNT WAS RE-DERIVED ON THE REBASED TREE, never added up.** Two branches
 in flight both moved this number, and 385 + 11 + 4 was carried in a review
@@ -607,7 +608,7 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
     AGENTFACT manifest-devices 19
-    AGENTFACT pinned-tests 423
+    AGENTFACT pinned-tests 428
     AGENTFACT ceiling hrv-correctness 249 253 4
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke
