@@ -1151,6 +1151,100 @@ const CUE_DEADBAND = 1.0;         // spm, paid on EXIT from the band only
 const CUE_PERSIST_OUT_MS = 2000;  // ms a change to an out-of-band cue must hold
 const CUE_PERSIST_IN_MS  = 500;   // ms a change back into the band must hold
 
+// ---- #210: the two windows are a SETTING, and these are its presets --------
+//
+// THE ASK. After the first row on v0.9.2 the rower said "the stroke rate is
+// better, though part of me would want it even twitchier" (#210). The previous
+// answer to "the cue is slow" was to pick a faster pair of numbers and ship
+// them; the block above spends a page explaining why the pair it picked is the
+// one the sweep chose. Picking a THIRD pair by the same argument would be the
+// same move a second time, and the block above already warns whoever comes to
+// shorten these windows again that most of the residue is the DEADBAND and not
+// the latch. So the numbers become configuration and the athlete chooses.
+//
+// THE PRESETS, AND WHAT EACH ONE COSTS. Measured by
+// `python3 scripts/cue_replay.py --presets` over the four committed rows, and
+// pinned by scripts/test_cue_replay.py section E. flips/min is the flicker the
+// latch exists to suppress; `ratio` is that against the memoryless machine's,
+// which is the quantity the default's own admissibility rule is stated in;
+// `adopt` is the mean seconds from cueTarget changing its answer to the display
+// taking it, which is the responsiveness the rower is asking for.
+//
+//   preset            calm         choppy       reversal     latched (i185890690)
+//                 flips ratio   flips ratio   flips ratio   flips ratio
+//   0 Steady   4000/1000
+//                  1.20 0.419    1.17 0.509    1.77 0.667    1.79 0.494
+//   1 Balanced 2000/500  (DEFAULT, unchanged)
+//                  1.37 0.479    1.25 0.545    1.86 0.698    2.00 0.553
+//   2 Twitchy  1000/250
+//                  1.46 0.509    1.38 0.600    1.99 0.746    2.09 0.576
+//   3 Instant  0/0
+//                  1.46 0.509    1.38 0.600    1.99 0.746    2.09 0.576
+//   raw (no latch at all)
+//                  2.87 1.000    2.30 1.000    2.66 1.000    3.62 1.000
+//
+//   preset        mean adopt lag s            mean edge lag s / followed
+//               calm chop revs latch    calm      choppy    revers   latched
+//   0 Steady    1.73 1.65 0.98 0.54    7.22/132  10.00/49  5.17/53  3.36/64
+//   1 Balanced  0.91 0.85 0.52 0.39    6.34/138   7.73/49  2.91/53  3.69/68
+//   2 Twitchy   0.46 0.42 0.28 0.21    6.99/143   7.00/51  3.76/55  3.41/68
+//   3 Instant   0.18 0.17 0.12 0.10    7.19/144   6.57/51  3.44/55  3.19/68
+//   (max adopt lag is the window itself: 4.00 / 2.00 / 1.00 / 0.25 s. The edge
+//   denominators are 165 / 54 / 60 / 82 crossings.)
+//
+// TWO THINGS THAT TABLE SAYS AND MUST NOT BE READ PAST.
+//
+//   PRESETS 2 AND 3 ARE OUTSIDE THE RULE THE DEFAULT IS CHOSEN BY. The block
+//   above admits a setting only if its flips/min stays at or below 0.70x the
+//   memoryless machine's on EVERY row; both reach 0.746 on the reversal row.
+//   They are offered, not recommended, and the default does not move.
+//
+//   NO COMMITTED FIXTURE CAN TELL PRESET 2 FROM PRESET 3 ON FLICKER. Their
+//   flips/min are identical on all four rows, to every digit printed. That is a
+//   property of the MEASUREMENT, not of the machine: the fixtures carry one
+//   row_stroke_rate per SECOND, so a replay cannot see a zone that appears and
+//   disappears inside one second, which is the whole of the difference between
+//   a 250 ms window and none. What separates them here is adopt lag and the
+//   ambiguous-value fraction. Whether 0/0 flickers on a wrist at the real 4 Hz
+//   estimator rate is UNMEASURED and belongs to a [Local] session.
+//
+// EDGE LAG MEANS ARE OVER DIFFERENT POPULATIONS and the denominator is printed
+// beside each one for the reason the block above gives at length: a faster
+// machine follows MORE of the slow crossings and so raises its own mean. Do not
+// subtract two of them.
+const CUE_PRESET_MIN = 0;
+const CUE_PRESET_MAX = 3;
+const CUE_PRESET_DEF = 1;         // Balanced -- the 2000/500 that shipped
+
+// ---- #191: the configuration the row was actually coloured against ---------
+//
+// cue_cfg, a session-scope UINT16 array. #191 is the defect that a colour
+// complaint cannot be checked after the row because the FIT records neither the
+// target band nor the latch: "blue at 20 spm" could not be confirmed or
+// dismissed, and scripts/fixtures/cue_reversal_row.txt still carries a header
+// paragraph saying the 16-18 band it is scored at is an ASSUMPTION. With this
+// field a future row answers that question out of its own file.
+//
+//   slot  0  CUE_CFG_VERSION -- the layout version, bumped for ANY change to
+//            the slot numbering, the slot count, or what a slot holds. Slot
+//            indices ARE the wire format; renumbering one without bumping this
+//            silently re-keys every file already recorded (the lesson ct_diag
+//            and rr_diag both carry).
+//   slot  1  targetLo, spm, as loadSettings left it (clamped and swapped)
+//   slot  2  targetHi, spm, same
+//   slot  3  the cue preset, 0..3, AFTER the clamp -- the preset the row
+//            actually ran on, never the raw property
+//   slot  4  the out-of-band persistence window, ms
+//   slot  5  the re-entry persistence window, ms
+//
+// SLOTS 4 AND 5 ARE NOT DERIVABLE FROM SLOT 3 BY A READER, and that is why they
+// are written rather than left implied. A file records what the app did; if a
+// later version retunes what preset 2 means, a reader holding only the preset
+// number would silently mis-date every older row.
+const CUE_CFG_VERSION = 1;
+const CUE_CFG_SLOTS   = 6;
+const CUE_CFG_MAXV    = 65535;    // the UINT16 ceiling this array is clamped to
+
 // ---- #80: the status row and the heat-strain pip ----------------------------
 //
 // MEASURED FIRST, because the design that #80's own text proposed does not
@@ -1799,6 +1893,26 @@ class StrongRowView extends Ui.View {
     hidden var mCueCand;
     hidden var mCueSince;
 
+    // #210: the cue RESPONSE, as loadSettings resolved it.
+    //
+    //   mCuePreset  the preset AFTER the clamp, 0..3 -- never the raw property
+    //   mCueOutMs   the out-of-band persistence window this row runs on, ms
+    //   mCueInMs    the re-entry persistence window this row runs on, ms
+    //
+    // THE WINDOWS ARE RESOLVED ONCE, at load, and not recomputed per frame.
+    // onUpdate runs at 4 Hz; resolving a table lookup there would be work for
+    // nothing, and it would make the pair readable only through the table
+    // rather than through the state the row is actually running on -- which is
+    // the thing cue_cfg records.
+    //
+    // THEY CANNOT MOVE MID-ROW, and test_cue_c0_aSettingsReloadIsRefusedMidRow
+    // pins the reason: reloadSettings returns early while mStarted is raised.
+    // A session-scope field claiming a configuration the second half of the row
+    // did not run on would be worse than recording nothing.
+    hidden var mCuePreset;
+    hidden var mCueOutMs;
+    hidden var mCueInMs;
+
     // R-R / HRV state. ONE MEANING PER FIELD -- the table at handleRrAt is the
     // model and these declarations implement it. The three *Ms stamps below
     // answer three different questions and are paired one-to-one with the three
@@ -1876,6 +1990,7 @@ class StrongRowView extends Ui.View {
     hidden var mFitMaxCore;
     hidden var mFitCtDiag;
     hidden var mFitRrDiag;   // rr_diag, session scope (epic #59)
+    hidden var mFitCueCfg;   // cue_cfg, session scope (#191)
     hidden var mFitHsi;
     // #149's lock-state diagnostics, record scope, ids 20-22.
     hidden var mFitLockRate;
@@ -1982,6 +2097,7 @@ class StrongRowView extends Ui.View {
         mFitMaxCore = null;
         mFitCtDiag  = null;
         mFitRrDiag  = null;
+        mFitCueCfg  = null;
         mFitHsi     = null;
         mFitLockRate = null;
         mFitLockConf = null;
@@ -2006,6 +2122,14 @@ class StrongRowView extends Ui.View {
         mCueZone    = $.CUEZ_NONE;
         mCueCand    = $.CUEZ_NONE;
         mCueSince   = 0;
+        // #210. Seeded with the DEFAULT preset rather than left null, because
+        // onUpdate can render before loadSettings has run to completion and a
+        // null window would take the draw path down at 4 Hz. loadSettings
+        // overwrites all three a few lines further on in this same constructor.
+        mCuePreset  = $.CUE_PRESET_DEF;
+        var cueDefW = cuePresetWindows($.CUE_PRESET_DEF);
+        mCueOutMs   = cueDefW[0];
+        mCueInMs    = cueDefW[1];
         mRrOk       = false;
         mLastRrMs   = 0;
         mLastBeatMs = 0;
@@ -3670,7 +3794,20 @@ class StrongRowView extends Ui.View {
     // survives for IN <-> either side, which is every transition the sentence
     // was actually measured on; it does not survive for a sign reversal, which
     // the body below now adopts at once.
-    static function cueStep(rate, lo, hi, cur, cand, since, now) {
+    //
+    // THE TWO WINDOWS ARE ARGUMENTS, NOT CONSTANTS (#210), and that is the only
+    // thing about this machine that changed when the presets landed. The state
+    // machine, the deadband, the fast path, the backwards-clock guard and the
+    // candidate rule are untouched; `need` reads its two values from the
+    // parameter list instead of from module scope. cueStep below is the
+    // DEFAULT-PRESET entry point, kept because a dozen (:test) cases and the
+    // Python mirror are written against the seven-argument form.
+    //
+    // WHY A PARAMETER RATHER THAN A MEMBER READ. The whole value of this seam is
+    // that it is reachable from a (:test) with plain numbers -- no Dc, no
+    // Session, no view. A machine that read mCueOutMs would be reachable only
+    // through a built view, which is the property this function exists to have.
+    static function cueStepW(rate, lo, hi, cur, cand, since, now, outMs, inMs) {
         var want = cueTarget(rate, lo, hi, cur);
 
         // Already showing what the rate asks for: nothing is pending, and the
@@ -3783,10 +3920,117 @@ class StrongRowView extends Ui.View {
         // -2147483648, and the -1 -> 0 transition is forwards.
         if (now < since) { return [cur, want, now]; }
 
-        var need = (want == $.CUEZ_IN) ? $.CUE_PERSIST_IN_MS
-                                       : $.CUE_PERSIST_OUT_MS;
+        var need = (want == $.CUEZ_IN) ? inMs : outMs;
         if ((now - since) >= need) { return [want, want, now]; }
         return [cur, cand, since];
+    }
+
+    // Pure: cueStepW at the DEFAULT preset's windows.
+    //
+    // WHAT IT IS FOR. Every characterization pin in source/CueZoneTest.mc and
+    // the line-for-line mirror in scripts/cue_replay.py are written against this
+    // seven-argument form, and "the default is exactly today's behaviour" is the
+    // one promise #210 must keep -- so the form that means "today's machine"
+    // stays, spelled with the constants rather than with 2000 and 500.
+    //
+    // NOT THE SHIPPING CALL SITE. onUpdate calls cueStepW with the windows
+    // loadSettings resolved, so a reader must not take a green pin on this
+    // wrapper as evidence about a row running any preset but the default. What
+    // the wrapper does buy is that a mutation anywhere in cueStepW reds those
+    // pins, because they reach the same body through it.
+    static function cueStep(rate, lo, hi, cur, cand, since, now) {
+        return cueStepW(rate, lo, hi, cur, cand, since, now,
+                        $.CUE_PERSIST_OUT_MS, $.CUE_PERSIST_IN_MS);
+    }
+
+    // Pure: the (out, in) persistence windows a preset selects, in ms.
+    //
+    // THE TABLE, AND IT IS THE ONLY COPY OF IT IN THE MONKEY C. The measured
+    // cost of each row is at the CUE_PRESET_* constants above;
+    // scripts/cue_replay.py carries the same four pairs for the replay, and
+    // scripts/test_cue_replay.py case E3 EXTRACTS this function's body from this
+    // file and reds if the two disagree -- because a transcription that drifts
+    // from its original is this repository's named "wrong pair" defect, and the
+    // last time a cue figure was published from an uncommitted copy of the rule
+    // it described a machine that never shipped.
+    //
+    // PRESET 1 RETURNS THE CONSTANTS, never a literal 2000/500. The default is
+    // defined to be today's behaviour, so the two cannot be allowed to disagree
+    // by an edit to one of them.
+    //
+    // PRESET 3 IS 0/0, which is not "no cue": the deadband and the sign-reversal
+    // fast path are in cueTarget and cueStepW's third branch, not in the
+    // windows, so at 0/0 the display still refuses to change for a tenth of a
+    // spm over the edge. `now - since >= 0` is true on the frame the candidate
+    // appears, so the change is taken on that frame.
+    //
+    // CLAMPS ITS OWN ARGUMENT so there is no unguarded path into the table; the
+    // clamp is idempotent, and loadSettings clamps first anyway because the
+    // value it STORES is the one cue_cfg records.
+    static function cuePresetWindows(preset) {
+        var p = cueClampPreset(preset);
+        if (p == 0) { return [4000, 1000]; }
+        if (p == 1) { return [$.CUE_PERSIST_OUT_MS, $.CUE_PERSIST_IN_MS]; }
+        if (p == 2) { return [1000, 250]; }
+        return [0, 0];
+    }
+
+    // Pure: a cue-response property, clamped to a preset this code understands.
+    //
+    // AN `instanceof` TEST BEFORE ANY COMPARISON, and that is ergFlag's measured
+    // reason rather than a stylistic echo: `0 == false` evaluates TRUE in Monkey
+    // C (MEASURED on SDK 9.2.0 in the CI container's fr965 simulator; see
+    // ergFlag). A clamp written as a chain of value comparisons would therefore
+    // accept a Boolean `false` as preset 0 -- Steady, the SLOWEST setting --
+    // from a property that says nothing of the kind.
+    //
+    // A Float is refused too, and deliberately. The setting is a list and
+    // Connect IQ stores it as a Number; a Float arriving here is evidence the
+    // property is not what this code thinks it is, and the declared default is
+    // the honest answer to that. This is #21's finding applied rather than
+    // restated: a range declared in settings.xml binds the Garmin Connect UI
+    // and nothing else -- Properties survive an app update and a sideloaded
+    // .set file is not re-clamped on load.
+    static function cueClampPreset(v) {
+        if (v == null) { return $.CUE_PRESET_DEF; }
+        if (!(v instanceof Lang.Number)) { return $.CUE_PRESET_DEF; }
+        if (v < $.CUE_PRESET_MIN || v > $.CUE_PRESET_MAX) {
+            return $.CUE_PRESET_DEF;
+        }
+        return v;
+    }
+
+    // Pure: one slot of cue_cfg, coerced into the UINT16 the field declares.
+    //
+    // A setData array whose elements do not fit the declared base type is not a
+    // hazard this repository has measured, but an array LONGER than `:count` is
+    // -- an uncatchable System Error at save time that takes the whole activity
+    // with it (measured for ct_diag, fr965 / SDK 9.2.0). The same care is spent
+    // here on the values: targetLo and targetHi are NOT range-clamped by
+    // loadSettings (it only swaps an inverted pair), so a sideloaded negative
+    // band would otherwise reach a UINT16.
+    static function cueCfgU16(v) {
+        if (v == null) { return 0; }
+        if (!(v instanceof Lang.Number)) { return 0; }
+        if (v < 0) { return 0; }
+        if (v > $.CUE_CFG_MAXV) { return $.CUE_CFG_MAXV; }
+        return v;
+    }
+
+    // Pure: the cue_cfg array, in the slot order the constants document.
+    //
+    // SIZED FROM $.CUE_CFG_SLOTS, never from a literal, and the createField
+    // `:count` reads the same constant -- the rule rr_diag states at its own
+    // createField and for the same measured reason.
+    static function cueCfgArray(lo, hi, preset, outMs, inMs) {
+        var a = new [$.CUE_CFG_SLOTS];
+        a[0] = $.CUE_CFG_VERSION;
+        a[1] = cueCfgU16(lo);
+        a[2] = cueCfgU16(hi);
+        a[3] = cueCfgU16(preset);
+        a[4] = cueCfgU16(outMs);
+        a[5] = cueCfgU16(inMs);
+        return a;
     }
 
     // Pure: the colour for a cue zone.
@@ -5449,6 +5693,28 @@ class StrongRowView extends Ui.View {
         if (mRrClockNeg) { f |= $.RrDiag.F_CLOCK_NEG; }   // #70, latched at START
         a[$.RrDiag.I_FLAGS] = f;
         return a;
+    }
+
+    // #191: hand cue_cfg the configuration THIS row ran on.
+    //
+    // A METHOD AND NOT AN INLINE setData, for the reason jouleClampBench's note
+    // records at length: no (:test) can obtain a Session, so the createField
+    // call and everything written inline beside it is unreachable from the
+    // suite. A probe can install a recording stand-in on mFitCueCfg and call
+    // this, so what is pinned is the argument the shipping code hands to
+    // setData -- which is as far as any in-process case can see. What lands in
+    // the file's bytes and what a decoder renders are two further claims and
+    // belong to a [Local] decode.
+    //
+    // GUARDED ON THE HANDLE ONLY, never on a value. Every field the createField
+    // group may have failed to create is null, and a null handle is the one
+    // thing that must not be written to; there is no CONFIGURATION that would
+    // be better left unrecorded, which is ct_diag's and rr_diag's argument
+    // applied rather than repeated.
+    hidden function cueCfgWrite() {
+        if (mFitCueCfg == null) { return; }
+        mFitCueCfg.setData(cueCfgArray(mTgtLo, mTgtHi, mCuePreset,
+                                       mCueOutMs, mCueInMs));
     }
 
     hidden function recomputeRmssd() {
@@ -7311,6 +7577,13 @@ class StrongRowView extends Ui.View {
             if (mFitRrDiag != null) {
                 mFitRrDiag.setData(rrDiagSnapshot());
             }
+            // #191: the band and the latch this row was coloured against.
+            // Written here rather than at createField time for one reason --
+            // this is where every other session-scope field is written, and a
+            // second write site is a second thing to forget. The value cannot
+            // have moved since START (reloadSettings refuses while mStarted),
+            // so "at save" and "at start" record the same configuration.
+            cueCfgWrite();
             // ERG: the session's total work, in kilojoules.
             //
             // GUARDED BY THE PRESENCE FLAG AND NEVER BY `> 0.0`. A `> 0.0`
@@ -7351,6 +7624,7 @@ class StrongRowView extends Ui.View {
             mFitCorr = null;
             mFitCorrTotal = null;
             mFitRrDiag = null;
+            mFitCueCfg = null;
             mFitCore = null;
             mFitSkin = null;
             mFitMaxCore = null;

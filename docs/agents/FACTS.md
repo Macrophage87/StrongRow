@@ -412,9 +412,9 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**414** `(:test)` functions under `source/`, matching
+**419** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/cue-twitchiness` branch at its c0 commit: "OK: 414 (:test)
+run on the `claude/cue-twitchiness` branch at its c1 commit: "OK: 419 (:test)
 function(s) under source/ match scripts/expected_tests.txt exactly."). It was
 **412** at `9ece925` (`origin/main`, v0.9.2, the merge of #208), **362** at
 `211f106`, **385** at `d2cd8a6` (v0.9, epic #59's merge), **397** at `367929a`
@@ -598,7 +598,7 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
     AGENTFACT manifest-devices 19
-    AGENTFACT pinned-tests 414
+    AGENTFACT pinned-tests 419
     AGENTFACT ceiling hrv-correctness 249 253 4
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke

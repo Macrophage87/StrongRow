@@ -273,6 +273,19 @@ module CueFix {
         function reloadThroughSettings() {
             try { reloadSettings(); } catch (e) { }
         }
+
+        // The cue response, as loadSettings resolved it. Read-only: a case that
+        // wants to change them scripts the property and reloads, so the clamp
+        // and the table stay on the path under test.
+        function viewCuePreset() { return mCuePreset; }
+        function viewCueOutMs()  { return mCueOutMs; }
+        function viewCueInMs()   { return mCueInMs; }
+
+        // #191. Stand the cue_cfg handle up without a Session -- no (:test) can
+        // obtain one -- and drive the SHIPPING guarded write. What this can see
+        // is the argument handed to setData and nothing beyond it.
+        function installFitCueCfg(f) { mFitCueCfg = f; }
+        function runCueCfgWrite()    { cueCfgWrite(); }
     }
 
     // The big stroke-rate numeral, located BY ITS FONT rather than by its
@@ -1557,6 +1570,324 @@ module CueFix {
                      "session-scope record of the configuration depends on " +
                      "this being true for the whole row");
         return false;
+    }
+    return true;
+}
+
+// -- c1: the pure seams ------------------------------------------------------
+// New symbols, green on the commit that introduces them. None of them is wired
+// to anything yet: loadSettings does not read the property and onUpdate still
+// calls the seven-argument cueStep, which is what makes c2's differentials red.
+
+// THE PRESET TABLE IS THE FOUR MEASURED PAIRS, AND PRESET 1 IS THE CONSTANTS.
+//
+// The second half is the load-bearing one. #210's whole promise is "the default
+// is today's behaviour", and the only way to keep a promise like that across
+// future edits is to make the two impossible to disagree: cuePresetWindows(1)
+// returns $.CUE_PERSIST_OUT_MS / $.CUE_PERSIST_IN_MS by reference, and this
+// case asserts the IDENTITY rather than the numbers 2000 and 500. A retune of
+// the constants therefore moves the default preset with it, by construction.
+//
+// The other three rows ARE asserted as literals, because for them the numbers
+// are the claim: they are what the setting's titles promise the athlete and
+// what scripts/cue_replay.py replays. scripts/test_cue_replay.py E3 reads this
+// function's body out of StrongRowView.mc and reds if the Python copy of the
+// table has drifted from it.
+(:test) function test_cue_c1_thePresetTableIsTheFourMeasuredPairs(logger) {
+    var w0 = StrongRowView.cuePresetWindows(0);
+    var w1 = StrongRowView.cuePresetWindows(1);
+    var w2 = StrongRowView.cuePresetWindows(2);
+    var w3 = StrongRowView.cuePresetWindows(3);
+
+    if (w0[0] != 4000 || w0[1] != 1000) {
+        logger.error("preset 0 (Steady) must be 4000/1000, the pair that " +
+                     "shipped before v0.9.1; got " + w0[0] + "/" + w0[1]);
+        return false;
+    }
+    if (w1[0] != $.CUE_PERSIST_OUT_MS || w1[1] != $.CUE_PERSIST_IN_MS) {
+        logger.error("preset 1 (Balanced) is DEFINED as today's behaviour and " +
+                     "must return the two constants themselves, not a copy of " +
+                     "their current values; got " + w1[0] + "/" + w1[1] +
+                     ", constants are " + $.CUE_PERSIST_OUT_MS + "/" +
+                     $.CUE_PERSIST_IN_MS);
+        return false;
+    }
+    if (w2[0] != 1000 || w2[1] != 250) {
+        logger.error("preset 2 (Twitchy) must be 1000/250; got " + w2[0] +
+                     "/" + w2[1]);
+        return false;
+    }
+    if (w3[0] != 0 || w3[1] != 0) {
+        logger.error("preset 3 (Instant) must be 0/0 -- the deadband and the " +
+                     "sign-reversal fast path only; got " + w3[0] + "/" + w3[1]);
+        return false;
+    }
+
+    // THE ORDER IS PART OF THE TABLE. The presets are offered to the athlete as
+    // a scale from steady to instant, so a permutation of two rows would leave
+    // every assertion above true of SOME preset while making the setting's
+    // titles lie. Asserted as a monotone decrease, both windows, which no
+    // permutation of these four pairs survives.
+    var ws = [w0, w1, w2, w3];
+    for (var i = 1; i < 4; i++) {
+        if (!(ws[i][0] < ws[i - 1][0]) || !(ws[i][1] < ws[i - 1][1])) {
+            logger.error("preset " + i + " (" + ws[i][0] + "/" + ws[i][1] +
+                         ") must be strictly faster than preset " + (i - 1) +
+                         " (" + ws[i - 1][0] + "/" + ws[i - 1][1] + ") in " +
+                         "BOTH windows: the presets are a scale and the " +
+                         "setting's titles say so");
+            return false;
+        }
+        // Leaving the band stays the expensive claim at every preset, which is
+        // the invariant test_cue_c0_theLatchGovernsEverySameSideChange asserts
+        // of the constants. 0/0 is the one row where the two are equal.
+        if (ws[i][0] < ws[i][1]) {
+            logger.error("preset " + i + " has an out-of-band window (" +
+                         ws[i][0] + ") shorter than its re-entry window (" +
+                         ws[i][1] + "): asserting an out-of-band instruction " +
+                         "must never be cheaper than withdrawing one");
+            return false;
+        }
+    }
+    return true;
+}
+
+// THE CLAMP REFUSES EVERYTHING THAT IS NOT A PRESET, AND `false` IS NOT ZERO.
+//
+// The trap this case exists for is measured and already has a receipt in this
+// repository: `0 == false` evaluates TRUE in Monkey C (SDK 9.2.0, fr965, see
+// the note at StrongRowView.ergFlag, which was written after a clamp built out
+// of value comparisons silently accepted a Number 0 as a set toggle). Here the
+// direction is the mirror -- a clamp built that way would accept a Boolean
+// `false` as preset 0, which is STEADY, the SLOWEST setting, from a property
+// that never said so. An athlete who asked for twitchier would get the opposite
+// of what they asked for, silently, on a corrupted property.
+(:test) function test_cue_c1_theClampRefusesEverythingButZeroToThree(logger) {
+    // In range: returned unchanged. A clamp that returned the default for
+    // everything would pass every rejection assertion below.
+    for (var p = 0; p <= 3; p++) {
+        if (StrongRowView.cueClampPreset(p) != p) {
+            logger.error("preset " + p + " is in range and must be returned " +
+                         "unchanged; got " + StrongRowView.cueClampPreset(p));
+            return false;
+        }
+    }
+
+    // Out of range, either end, including the two adjacent values a fencepost
+    // error would admit.
+    var bad = [-100, -1, 4, 5, 100, 65535];
+    for (var i = 0; i < bad.size(); i++) {
+        if (StrongRowView.cueClampPreset(bad[i]) != $.CUE_PRESET_DEF) {
+            logger.error("out-of-range preset " + bad[i] + " must clamp to " +
+                         "the default (" + $.CUE_PRESET_DEF + "); got " +
+                         StrongRowView.cueClampPreset(bad[i]));
+            return false;
+        }
+    }
+
+    // NOT A NUMBER AT ALL. Each of these is what a Connect IQ property can
+    // actually hold after an app update, a settings-schema change or a
+    // sideloaded .set file.
+    if (StrongRowView.cueClampPreset(false) != $.CUE_PRESET_DEF) {
+        logger.error("a Boolean false must clamp to the default (" +
+                     $.CUE_PRESET_DEF + ") and NOT to preset 0: `0 == false` " +
+                     "is TRUE in Monkey C, so a clamp written as value " +
+                     "comparisons would read it as Steady -- the slowest " +
+                     "setting -- and the athlete would never be told. Got " +
+                     StrongRowView.cueClampPreset(false));
+        return false;
+    }
+    if (StrongRowView.cueClampPreset(true) != $.CUE_PRESET_DEF) {
+        logger.error("a Boolean true must clamp to the default, not to " +
+                     "preset 1 by coincidence of value; got " +
+                     StrongRowView.cueClampPreset(true));
+        return false;
+    }
+    if (StrongRowView.cueClampPreset(2.0) != $.CUE_PRESET_DEF) {
+        logger.error("a Float must clamp to the default: the setting is a " +
+                     "list and Connect IQ stores it as a Number, so a Float " +
+                     "here is evidence the property is not what this code " +
+                     "thinks it is; got " + StrongRowView.cueClampPreset(2.0));
+        return false;
+    }
+    if (StrongRowView.cueClampPreset("2") != $.CUE_PRESET_DEF) {
+        logger.error("a String must clamp to the default rather than being " +
+                     "coerced; got " + StrongRowView.cueClampPreset("2"));
+        return false;
+    }
+    if (StrongRowView.cueClampPreset(null) != $.CUE_PRESET_DEF) {
+        logger.error("null must clamp to the default; got " +
+                     StrongRowView.cueClampPreset(null));
+        return false;
+    }
+
+    // The table refuses the same things, because it clamps its own argument.
+    // Without this, a caller reaching cuePresetWindows directly with junk would
+    // fall through the if-chain to the 0/0 row -- the FASTEST setting -- which
+    // is the mirror of the `false` defect above.
+    var junk = StrongRowView.cuePresetWindows(false);
+    var dflt = StrongRowView.cuePresetWindows($.CUE_PRESET_DEF);
+    if (junk[0] != dflt[0] || junk[1] != dflt[1]) {
+        logger.error("cuePresetWindows must clamp its own argument: junk gave " +
+                     junk[0] + "/" + junk[1] + ", the default preset gives " +
+                     dflt[0] + "/" + dflt[1]);
+        return false;
+    }
+    return true;
+}
+
+// THE WINDOWED STEP IS THE SAME MACHINE, AT THE DEFAULT PAIR.
+//
+// cueStepW is cueStep's body with the two windows lifted into the parameter
+// list. This sweeps the two against each other over every ordered pair of
+// zones, a rate on each side of the band, and stamps either side of both
+// windows -- the same shape scripts/test_cue_replay.py D1 uses on the Python
+// side, so the two suites make the same statement about the same split.
+//
+// It is NOT a proof of equivalence: two implementations agreeing on a finite
+// vector set agree on that set. What it closes is the specific drift that would
+// make every c0 pin above meaningless -- cueStep quietly becoming a different
+// machine from the one the shipping draw path will call.
+(:test) function test_cue_c1_theWindowedStepIsTheSameMachineAtTheDefaults(logger) {
+    var zs = [$.CUEZ_NONE, $.CUEZ_BELOW, $.CUEZ_IN, $.CUEZ_ABOVE];
+    var rates = [0.0, 7.0, 14.5, 16.0, 17.0, 18.0, 19.5, 25.0];
+    var stamps = [0, 1, $.CUE_PERSIST_IN_MS - 1, $.CUE_PERSIST_IN_MS,
+                  $.CUE_PERSIST_OUT_MS - 1, $.CUE_PERSIST_OUT_MS,
+                  $.CUE_PERSIST_OUT_MS + 1];
+    for (var r = 0; r < rates.size(); r++) {
+        for (var c = 0; c < zs.size(); c++) {
+            for (var d = 0; d < zs.size(); d++) {
+                for (var t = 0; t < stamps.size(); t++) {
+                    var a = StrongRowView.cueStep(
+                        rates[r], CueFix.LO, CueFix.HI, zs[c], zs[d], 0,
+                        stamps[t]);
+                    var b = StrongRowView.cueStepW(
+                        rates[r], CueFix.LO, CueFix.HI, zs[c], zs[d], 0,
+                        stamps[t], $.CUE_PERSIST_OUT_MS, $.CUE_PERSIST_IN_MS);
+                    if (a[0] != b[0] || a[1] != b[1] || a[2] != b[2]) {
+                        logger.error("cueStep and cueStepW part company at " +
+                                     "rate " + rates[r] + ", cur " + zs[c] +
+                                     ", cand " + zs[d] + ", now " + stamps[t] +
+                                     ": [" + a[0] + "," + a[1] + "," + a[2] +
+                                     "] against [" + b[0] + "," + b[1] + "," +
+                                     b[2] + "]. cueStep is what every " +
+                                     "characterization pin in this file " +
+                                     "calls; cueStepW is what the draw path " +
+                                     "will call");
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// THE cue_cfg ARRAY IS THE SLOT MAP ITS CONSTANTS DOCUMENT.
+//
+// Slot indices ARE the wire format: renumbering one without bumping
+// CUE_CFG_VERSION silently re-keys every file already recorded. Every index is
+// nailed to its literal number here for exactly the reason RrDiag's slot-key
+// case gives -- ct_diag shipped three versions with only a prefix of its
+// indices pinned, and a permutation confined to the unpinned tail would have
+// re-keyed three slots of every file with the whole suite green.
+//
+// WHAT THIS DOES NOT SAY. No (:test) can obtain a Session, so nothing here
+// shows that a six-slot session-scope UINT16 array is accepted by createField,
+// saved, or decodable. That is a [Local] question and #172 owns the field-count
+// half of it.
+(:test) function test_cue_c1_theCueCfgArrayIsTheSlotMapItDocuments(logger) {
+    var a = StrongRowView.cueCfgArray(16, 18, 2, 1000, 250);
+    if (a.size() != $.CUE_CFG_SLOTS) {
+        logger.error("cue_cfg must be exactly $.CUE_CFG_SLOTS (" +
+                     $.CUE_CFG_SLOTS + ") long -- the createField `:count` " +
+                     "reads the same constant, and a setData array longer " +
+                     "than :count is an uncatchable System Error at save time " +
+                     "that takes the whole activity with it; got " + a.size());
+        return false;
+    }
+    var want = [$.CUE_CFG_VERSION, 16, 18, 2, 1000, 250];
+    for (var i = 0; i < want.size(); i++) {
+        if (a[i] != want[i]) {
+            logger.error("cue_cfg slot " + i + " is " + a[i] + ", expected " +
+                         want[i] + " ([VERSION, targetLo, targetHi, preset, " +
+                         "outMs, inMs])");
+            return false;
+        }
+    }
+
+    // THE UINT16 COERCION, which is not decoration: loadSettings swaps an
+    // inverted target band but does not range-clamp it, so a sideloaded
+    // negative targetLo would otherwise reach a UINT16 field.
+    var lowered = StrongRowView.cueCfgArray(-5, 70000, 1, 2000, 500);
+    if (lowered[1] != 0) {
+        logger.error("a negative targetLo must land as 0 in a UINT16 slot; " +
+                     "got " + lowered[1]);
+        return false;
+    }
+    if (lowered[2] != $.CUE_CFG_MAXV) {
+        logger.error("a targetHi past the UINT16 ceiling must clamp to " +
+                     $.CUE_CFG_MAXV + "; got " + lowered[2]);
+        return false;
+    }
+    var nulled = StrongRowView.cueCfgArray(null, null, null, null, null);
+    for (var j = 1; j < $.CUE_CFG_SLOTS; j++) {
+        if (nulled[j] != 0) {
+            logger.error("a null slot input must land as 0, never as null: " +
+                         "slot " + j + " is " + nulled[j]);
+            return false;
+        }
+    }
+    if (nulled[0] != $.CUE_CFG_VERSION) {
+        logger.error("slot 0 is the layout version and does not depend on any " +
+                     "input; got " + nulled[0]);
+        return false;
+    }
+    return true;
+}
+
+// THE SHIPPING WRITE HANDS setData THE ARRAY, AND IS GUARDED ON ITS HANDLE.
+//
+// Drives StrongRowView.cueCfgWrite itself rather than a copy of it, which is
+// the whole point: the write, its guard and the array it builds are what a row
+// records, and a case asserting a locally-built array would pin nothing (this
+// repository's named "a test that re-implements logic" failure, which landed on
+// exactly a settings clamp).
+//
+// SCOPE. This observes the ARGUMENT of an in-app setData call. It says nothing
+// about what lands in the file's bytes and nothing about what a decoder
+// renders; both need a [Local] session.
+(:test) function test_cue_c1_theCueCfgWriteIsGuardedOnItsHandle(logger) {
+    // No handle: createField may have thrown, and a write to null must not
+    // take the save path down. Nothing to assert but that it returns.
+    var q = CueFix.workProbe();
+    q.runCueCfgWrite();
+
+    var p = CueFix.cueProbe(null);          // the declared default, unscripted
+    var f = new CueFix.Field();
+    p.installFitCueCfg(f);
+    p.runCueCfgWrite();
+    var got = f.last();
+    if (got == null) {
+        logger.error("with a handle installed, cueCfgWrite must hand the " +
+                     "field an array; nothing was written");
+        return false;
+    }
+    var want = [$.CUE_CFG_VERSION, CueFix.LO, CueFix.HI, $.CUE_PRESET_DEF,
+                $.CUE_PERSIST_OUT_MS, $.CUE_PERSIST_IN_MS];
+    if (got.size() != want.size()) {
+        logger.error("cue_cfg was written with " + got.size() +
+                     " slots, expected " + want.size());
+        return false;
+    }
+    for (var i = 0; i < want.size(); i++) {
+        if (got[i] != want[i]) {
+            logger.error("on an unconfigured row cue_cfg slot " + i + " is " +
+                         got[i] + ", expected " + want[i] + " -- the declared " +
+                         "defaults, which is what a row with no cueResponse " +
+                         "property set actually runs on");
+            return false;
+        }
     }
     return true;
 }

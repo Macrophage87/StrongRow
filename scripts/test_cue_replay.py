@@ -430,12 +430,41 @@ def _():
 #    quotes.
 # ===========================================================================
 
-@case("D1 the explorer reproduces the mirror exactly at the shipped setting")
+@case("D1 the explorer reproduces the mirror at EVERY window pair in the sweep")
 def _():
-    # THE DEFECT THIS KILLS: cue_step_tuned drifting from cue_step, which would
-    # let the sweep publish a table for a machine the mirror does not describe.
-    # Swept over every ordered pair of zones and a rate on each side of the
-    # band, at stamps either side of both windows.
+    # THE DEFECT THIS KILLS: cue_step_tuned drifting from the mirror, which
+    # would let the sweep publish a table for a machine the mirror does not
+    # describe. Swept over every ordered pair of zones and a rate on each side
+    # of the band, at stamps either side of both windows.
+    #
+    # WIDENED WITH #210, and the widening is the point. The mirror is now
+    # cue_step_w, which takes the two windows exactly as StrongRowView.cueStepW
+    # does, so the comparison is no longer confined to the shipped pair -- it
+    # runs at every pair in SWEEP, which is every pair the presets and the
+    # selection rule can reach. A `reversal` term leaking into the explorer's
+    # window arithmetic at some OTHER tuning would have survived the old case.
+    zs = (NONE, BELOW, IN, ABOVE)
+    got, want = [], []
+    for out_ms, in_ms in R.SWEEP:
+        stamps = (0, 1, in_ms - 1, in_ms, out_ms - 1, out_ms, out_ms + 1)
+        for rate in (0.0, 7.0, 14.5, 16.0, 17.0, 18.0, 19.5, 25.0):
+            for cur in zs:
+                for cand in zs:
+                    for now in stamps:
+                        want.append(R.cue_step_w(rate, LO, HI, cur, cand, 0,
+                                                 now, out_ms, in_ms))
+                        got.append(R.cue_step_tuned(
+                            rate, LO, HI, cur, cand, 0, now,
+                            out_ms, in_ms, R.CUE_REVERSAL_FAST))
+    return got, want
+
+
+@case("D1b the seven-argument mirror is cue_step_w at the default preset")
+def _():
+    # The Monkey C wrapper's counterpart. Every published figure in cue_replay.py
+    # and every A-section vector goes through cue_step, so what it delegates to
+    # is load-bearing: this asserts the delegation rather than trusting the one
+    # line that performs it.
     zs = (NONE, BELOW, IN, ABOVE)
     got, want = [], []
     for rate in (0.0, 7.0, 14.5, 16.0, 17.0, 18.0, 19.5, 25.0):
@@ -444,11 +473,10 @@ def _():
                 for now in (0, 1, R.CUE_PERSIST_IN_MS - 1, R.CUE_PERSIST_IN_MS,
                             R.CUE_PERSIST_OUT_MS - 1, R.CUE_PERSIST_OUT_MS,
                             R.CUE_PERSIST_OUT_MS + 1):
-                    want.append(R.cue_step(rate, LO, HI, cur, cand, 0, now))
-                    got.append(R.cue_step_tuned(
+                    got.append(R.cue_step(rate, LO, HI, cur, cand, 0, now))
+                    want.append(R.cue_step_w(
                         rate, LO, HI, cur, cand, 0, now,
-                        R.CUE_PERSIST_OUT_MS, R.CUE_PERSIST_IN_MS,
-                        R.CUE_REVERSAL_FAST))
+                        R.CUE_PERSIST_OUT_MS, R.CUE_PERSIST_IN_MS))
     return got, want
 
 
@@ -725,6 +753,223 @@ def _():
     return [on, off], \
            [[(9, 2000, 0), (2, None, 0), (14, 2000, 0)],
             [(5, 4000, 0), (2, None, 0), (5, 4000, 0)]]
+
+
+# ===========================================================================
+# E. THE PRESETS (#210) AND THE ROW RECORDED ON THE SHIPPED LATCH.
+#
+#    Section letter E and not D2 because these are pinned against a FOURTH row
+#    -- the first one rowed under 2000/500 -- and against a table that did not
+#    exist before the cue response became a setting. D's figures belong to the
+#    row that reported the reversal defect; C's are what the CUE_* comment
+#    block quotes. The three sets must not be mixed.
+# ===========================================================================
+
+@case("E1 the latched fixture is the eight work intervals its header claims")
+def _():
+    rows = R.load_fixture(R.LATCHED_FIXTURE)
+    got = [(k, lo, hi, len(laps), sum(len(s) for s in laps),
+            [len(s) for s in laps])
+           for k, lo, hi, _label, laps in rows]
+    return got, [("latched", 16, 18, 8, 1440,
+                  [180, 180, 180, 180, 180, 180, 180, 180])]
+
+
+@case("E2 the latched row's interval medians, no-data counts and extremes")
+def _():
+    # The cross-checks its header offers a reader with a FIT decoder. A reader
+    # who reproduces 1448 seconds cut on lap messages instead of 1440 cut on
+    # step_type will see these move, which is exactly what the header's "both
+    # counts are recorded so a reader knows which convention they used"
+    # sentence is for.
+    _k, _lo, _hi, _l, laps = R.load_fixture(R.LATCHED_FIXTURE)[0]
+    meds = ["%.1f" % m for m in R.lap_medians(laps)]
+    zeros = [sum(1 for v in s if v == 0.0) for s in laps]
+    allnz = [v for s in laps for v in s if v > 0.0]
+    return [meds, zeros, "%.2f" % R.statistics.median(allnz), len(allnz),
+            "%.1f" % max(allnz), "%.1f" % min(allnz)], \
+           [["17.6", "18.1", "17.1", "18.3", "18.3", "18.1", "17.4", "20.4"],
+            [3, 0, 0, 4, 13, 4, 2, 6], "17.86", 1408, "39.5", "6.8"]
+
+
+@case("E3 the Python preset table IS the Monkey C's, read out of the source")
+def _():
+    # THE ANTI-DRIFT CASE, and the reason the harness parses source/
+    # StrongRowView.mc instead of carrying a comment that says the two agree.
+    # A second copy of a table is the "wrong pair" defect waiting to happen;
+    # this makes the copy checkable in one command.
+    #
+    # THE THREE THINGS ASSERTED, and each closes a different way to get it
+    # wrong:
+    #   * the four pairs, in order, against the Monkey C's own return lines --
+    #     so a retune or a permutation on either side reds;
+    #   * preset 1 is the two CONSTANTS, which is #210's promise that the
+    #     default is today's behaviour;
+    #   * every preset pair is a row of SWEEP, so the sweep table a reader is
+    #     pointed at actually contains the settings the athlete can select.
+    return [R.monkeyc_preset_table(),
+            R.CUE_PRESETS[R.CUE_PRESET_DEF],
+            tuple(p in R.SWEEP for p in R.CUE_PRESETS)], \
+           [((4000, 1000), (2000, 500), (1000, 250), (0, 0)),
+            (R.CUE_PERSIST_OUT_MS, R.CUE_PERSIST_IN_MS),
+            (True, True, True, True)]
+
+
+@case("E4 the preset cost table, every row x every preset")
+def _():
+    # EVERY FIGURE THE SETTING SHIPS WITH. These are quoted at the
+    # CUE_PRESET_* constants in source/StrongRowView.mc and in the pull
+    # request, and `python3 scripts/cue_replay.py --presets` prints them from
+    # the same function this case calls -- so a figure cannot be published that
+    # the tool does not produce, which is the failure this harness exists for.
+    #
+    # THE EDGE-LAG DENOMINATOR IS PART OF THE PIN (followed / crossings). A
+    # faster preset follows MORE of the slow crossings, so its own mean rises;
+    # publishing 6.34 against 7.22 without 138/165 against 132/165 beside it
+    # would be this repository's "wrong pair" defect.
+    out = []
+    for key, lo, hi, _label, laps in R.load_every():
+        for p in range(len(R.CUE_PRESETS)):
+            d = R.preset_row(laps, lo, hi, p)
+            out.append((key, p,
+                        "%.2f" % d["flips_per_min"], "%.3f" % d["ratio"],
+                        "%.2f" % d["adopt_mean_s"], "%.2f" % d["adopt_max_s"],
+                        "%.2f" % d["edge_mean_s"], d["edge_followed"],
+                        d["edge_crossings"], d["opposite"], d["disagree"],
+                        "%.1f" % d["ambiguous_pct"]))
+    return out, [
+        ('calm', 0, '1.20', '0.419', '1.73', '4.00', '7.22', 132, 165, 0, 685, '87.2'),
+        ('calm', 1, '1.37', '0.479', '0.91', '2.00', '6.34', 138, 165, 0, 562, '46.8'),
+        ('calm', 2, '1.46', '0.509', '0.46', '1.00', '6.99', 143, 165, 0, 505, '45.5'),
+        ('calm', 3, '1.46', '0.509', '0.18', '0.25', '7.19', 144, 165, 0, 469, '19.8'),
+        ('choppy', 0, '1.17', '0.509', '1.65', '4.00', '10.00', 49, 54, 0, 292, '55.3'),
+        ('choppy', 1, '1.25', '0.545', '0.85', '2.00', '7.73', 49, 54, 0, 216, '31.3'),
+        ('choppy', 2, '1.38', '0.600', '0.42', '1.00', '7.00', 51, 54, 0, 169, '34.0'),
+        ('choppy', 3, '1.38', '0.600', '0.17', '0.25', '6.57', 51, 54, 0, 155, '15.9'),
+        ('reversal', 0, '1.77', '0.667', '0.98', '4.00', '5.17', 53, 60, 0, 165, '48.8'),
+        ('reversal', 1, '1.86', '0.698', '0.52', '2.00', '2.91', 53, 60, 0, 127, '26.7'),
+        ('reversal', 2, '1.99', '0.746', '0.28', '1.00', '3.76', 55, 60, 0, 113, '26.8'),
+        ('reversal', 3, '1.99', '0.746', '0.12', '0.25', '3.44', 55, 60, 0, 99, '12.3'),
+        ('latched', 0, '1.79', '0.494', '0.54', '4.00', '3.36', 64, 82, 0, 355, '59.7'),
+        ('latched', 1, '2.00', '0.553', '0.39', '2.00', '3.69', 68, 82, 0, 311, '33.1'),
+        ('latched', 2, '2.09', '0.576', '0.21', '1.00', '3.41', 68, 82, 0, 301, '33.2'),
+        ('latched', 3, '2.09', '0.576', '0.10', '0.25', '3.19', 68, 82, 0, 291, '25.4'),
+    ]
+
+
+@case("E5 presets 2 and 3 are OUTSIDE the bound the default is chosen by")
+def _():
+    # STATED AS A MEASUREMENT, NOT AS A PREFERENCE. The rule in D6 admits a
+    # setting only if its flips/min stays at or below FLICKER_BOUND x the
+    # memoryless machine's on EVERY row; 1000/250 and 0/0 both reach 0.746 on
+    # the reversal row, which is why the SWEEP's own selection block prints
+    # "no" beside them and why the default does not move. They are offered
+    # because the athlete asked for them, and the setting's own comment says
+    # they are outside the bound.
+    worst = []
+    for p in range(len(R.CUE_PRESETS)):
+        w = max(R.preset_row(laps, lo, hi, p)["ratio"]
+                for _k, lo, hi, _l, laps in R.load_every())
+        worst.append(("%.3f" % w, w <= R.FLICKER_BOUND))
+    return worst, [("0.667", True), ("0.698", True),
+                   ("0.746", False), ("0.746", False)]
+
+
+@case("E6 NO committed fixture can tell preset 3 from preset 2 on flicker")
+def _():
+    # THE HONEST LIMIT OF THE MEASUREMENT, pinned so it cannot be quietly
+    # dropped from the recommendation it qualifies. The fixtures carry ONE
+    # row_stroke_rate per SECOND, so a replay cannot see a zone that appears
+    # and disappears inside one second -- which is the whole of the difference
+    # between a 250 ms window and no window at all. The flips/min of presets 2
+    # and 3 are therefore identical on every row, and that is a fact about the
+    # fixtures and not about the machine.
+    #
+    # THE SECOND HALF IS WHAT STOPS THIS BEING READ AS "THEY ARE THE SAME":
+    # they differ on adopt lag and on disagreement seconds, both strictly, on
+    # every row. Whether 0/0 flickers on a wrist at the real 4 Hz estimator
+    # rate is UNMEASURED and needs a [Local] session.
+    same_flips, faster, fewer_dis = [], [], []
+    for _k, lo, hi, _l, laps in R.load_every():
+        a = R.preset_row(laps, lo, hi, 2)
+        b = R.preset_row(laps, lo, hi, 3)
+        same_flips.append(a["flips_per_min"] == b["flips_per_min"])
+        faster.append(b["adopt_mean_s"] < a["adopt_mean_s"])
+        fewer_dis.append(b["disagree"] < a["disagree"])
+    return [same_flips, faster, fewer_dis], \
+           [[True, True, True, True],
+            [True, True, True, True],
+            [True, True, True, True]]
+
+
+@case("E7 preset 3 adopts on the frame the candidate appears, deadband intact")
+def _():
+    # 0/0 IS NOT "NO CUE". The deadband lives in cue_target and the sign
+    # reversal in cue_step_w's third branch, neither of which is a window, so
+    # at 0/0 the display still refuses to move for a tenth of a spm over the
+    # edge. The Monkey C twin of this case drives the same claim through the
+    # shipping draw path.
+    out, in_ms = R.cue_preset_windows(3)
+    # (a) an out-of-band candidate is taken on the frame it appears --
+    #     `now - since >= 0` is true at since == now.
+    a = R.cue_step_w(19.5, LO, HI, IN, ABOVE, 1000, 1000, out, in_ms)
+    # (b) the same reading one frame earlier, before it is the candidate,
+    #     starts the clock instead of being adopted -- the candidate rule is
+    #     untouched by the window being zero.
+    b = R.cue_step_w(19.5, LO, HI, IN, IN, 1000, 1000, out, in_ms)
+    # (c) THE DEADBAND SURVIVES. 18.5 is over hi and inside hi + CUE_DEADBAND,
+    #     so from a displayed IN it is still IN at every preset.
+    c = R.cue_step_w(18.5, LO, HI, IN, ABOVE, 1000, 5000, out, in_ms)
+    # (d) and the same 18.5 from a displayed ABOVE is ABOVE, because the
+    #     deadband is keyed on the zone ON SCREEN and not on the candidate.
+    d = R.cue_step_w(18.5, LO, HI, ABOVE, ABOVE, 1000, 5000, out, in_ms)
+    return [(out, in_ms), a[0], b[0], c[0], d[0]], \
+           [(0, 0), ABOVE, IN, IN, ABOVE]
+
+
+@case("E8 the latched row does not change the window the sweep selects")
+def _():
+    # THE CIRCULARITY, MEASURED RATHER THAN ARGUED. The latched row is kept out
+    # of the selection population because it was rowed under the very windows
+    # the rule selects. This reports what the rule WOULD have chosen with it
+    # in: the same pair. That is not a licence to include it -- the argument
+    # for excluding it is about what the series IS, not about what it would
+    # have changed -- but it does mean the exclusion is not hiding a different
+    # answer.
+    def choose(rs):
+        best, best_lag = None, None
+        for out_ms, in_ms in R.SWEEP:
+            st = R.tuned(out_ms, in_ms, True)
+            ratios, lags = [], []
+            for _k, lo, hi, _l, laps in rs:
+                ratios.append(
+                    R.score(laps, lo, hi, st)["flips_per_min"]
+                    / R.score(laps, lo, hi, R.zones_raw)["flips_per_min"])
+                lags.append(R.adopt_lag(laps, lo, hi, out_ms, in_ms,
+                                        True)["mean_s"])
+            if max(ratios) > R.FLICKER_BOUND:
+                continue
+            mean_lag = sum(lags) / len(lags)
+            if best_lag is None or mean_lag < best_lag:
+                best, best_lag = (out_ms, in_ms), mean_lag
+        return best
+    return [choose(R.load_all()), choose(R.load_every()),
+            len(R.load_all()), len(R.load_every())], \
+           [(2000, 500), (2000, 500), 3, 4]
+
+
+@case("E9 the clamp refuses everything that is not a preset, `False` included")
+def _():
+    # The Python twin of
+    # CueFix.test_cue_c1_theClampRefusesEverythingButZeroToThree. `False` is
+    # the row that matters on both sides: in Monkey C `0 == false` is TRUE, and
+    # in Python `isinstance(True, int)` is True, so both languages will read a
+    # Boolean as a preset number unless the type is tested first. Preset 0 is
+    # Steady -- the SLOWEST setting -- so getting this wrong hands an athlete
+    # who asked for twitchier the exact opposite, silently.
+    vals = (0, 1, 2, 3, -1, 4, 100, None, True, False, 2.0, "2")
+    return [R.cue_clamp_preset(v) for v in vals], \
+           [0, 1, 2, 3, 1, 1, 1, 1, 1, 1, 1, 1]
 
 
 def main():

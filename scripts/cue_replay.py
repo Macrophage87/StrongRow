@@ -11,6 +11,7 @@ repository, so the table can be checked in one command instead of taken on trust
 
     python3 scripts/cue_replay.py
     python3 scripts/cue_replay.py --sweep
+    python3 scripts/cue_replay.py --presets
 
 WHAT IT IS NOT. This is a PYTHON TRANSCRIPTION of the Monkey C decision, not the
 Monkey C itself -- an offline replay cannot call into a .prg. A transcription
@@ -28,14 +29,24 @@ repository has fallen into before, so the drift is closed from both ends:
 It still says nothing about what a watch displays. It is a decision function fed
 recorded numbers.
 
-TWO FIXTURES, SCORED SEPARATELY AND NEVER POOLED. scripts/fixtures/
+THREE FIXTURES, SCORED SEPARATELY AND NEVER POOLED. scripts/fixtures/
 cue_work_laps.txt holds the two rows the cue was originally chosen against and
 is the source of every figure the CUE_* comment quotes. scripts/fixtures/
 cue_reversal_row.txt holds one later row, the one that reported the colour
-pointing the OPPOSITE WAY from the number beside it. They are separate files
-with separate provenance because their boundary conventions differ (that row has
-a step_type developer field and the older two do not) and because pooling them
-would make every published figure depend on which rows happen to be in the pile.
+pointing the OPPOSITE WAY from the number beside it. scripts/fixtures/
+cue_latched_row.txt holds the first row recorded ON the shipped 2000/500 latch
+(#210). They are separate files with separate provenance because their boundary
+conventions differ (the later two have a step_type developer field and the
+oldest two do not) and because pooling them would make every published figure
+depend on which rows happen to be in the pile.
+
+TWO POPULATIONS, AND THE DIFFERENCE IS NOT COSMETIC. load_all() is the three
+rows recorded on the OLD machine and is what every published figure and the
+window SELECTION RULE run over. load_every() adds the latched row and is used
+for the PRESET COST table only. Letting a row that was rowed under 2000/500
+participate in choosing 2000/500 would be circular -- the series is what an
+athlete did while reacting to that cue -- so the selection block says which
+population it used, every time it prints.
 
 THE THIRD FAMILY OF FIGURES, added with that row: what the athlete sees is a
 NUMBER and a COLOUR side by side, and until this harness scored the PAIR it
@@ -51,6 +62,7 @@ and what the denominators are. See SCORING, below.
 """
 
 import os
+import re
 import statistics
 import sys
 
@@ -64,10 +76,30 @@ CUEZ_ABOVE = 2
 
 ZNAME = {CUEZ_NONE: "--", CUEZ_BELOW: "BELOW", CUEZ_IN: "IN", CUEZ_ABOVE: "ABOVE"}
 
-# The three tunables, same values as the consts they mirror.
+# The three tunables, same values as the consts they mirror. The two windows are
+# the DEFAULT PRESET's pair (#210); they are still constants here because the
+# Monkey C still declares them as constants and preset 1 returns them by
+# reference.
 CUE_DEADBAND = 1.0
 CUE_PERSIST_OUT_MS = 2000
 CUE_PERSIST_IN_MS = 500
+
+# ---------------------------------------------------------------------------
+# THE PRESET TABLE (#210). Same four pairs as StrongRowView.cuePresetWindows,
+# in preset order.
+#
+# THIS IS A SECOND COPY OF A TABLE AND THAT IS THE THING TO WORRY ABOUT. A
+# transcription that drifts from its original pins nothing -- the defect this
+# whole file exists to close, one level down. So it is not left to review:
+# monkeyc_preset_table() below EXTRACTS the table out of source/StrongRowView.mc
+# and scripts/test_cue_replay.py E3 asserts the two are equal. Edit either side
+# alone and that case reds, naming the pair that moved.
+CUE_PRESETS = ((4000, 1000), (2000, 500), (1000, 250), (0, 0))
+CUE_PRESET_MIN = 0
+CUE_PRESET_MAX = 3
+CUE_PRESET_DEF = 1
+
+PRESET_NAMES = ("0 Steady", "1 Balanced", "2 Twitchy", "3 Instant")
 
 # Whether cueStep has the SIGN-REVERSAL fast path: a candidate on the opposite
 # side of the band from the zone on screen is adopted without waiting out the
@@ -104,8 +136,12 @@ def cue_target(rate, lo, hi, cur):
     return cue_band_zone(rate, lo, hi)
 
 
-def cue_step(rate, lo, hi, cur, cand, since, now):
-    """Mirrors StrongRowView.cueStep. Returns [zone, candidate, since].
+def cue_step_w(rate, lo, hi, cur, cand, since, now, out_ms, in_ms):
+    """Mirrors StrongRowView.cueStepW. Returns [zone, candidate, since].
+
+    THE TWO WINDOWS ARE ARGUMENTS ON BOTH SIDES (#210). They became a setting,
+    so the mirror took the same shape rather than keeping a copy of the old one;
+    a mirror of a function that no longer exists mirrors nothing.
 
     Note the three things that separate it from the sample-counting machine the
     superseded analysis replayed:
@@ -129,24 +165,126 @@ def cue_step(rate, lo, hi, cur, cand, since, now):
         return [cur, want, now]
     if now < since:
         return [cur, want, now]
-    need = CUE_PERSIST_IN_MS if want == CUEZ_IN else CUE_PERSIST_OUT_MS
+    need = in_ms if want == CUEZ_IN else out_ms
     if (now - since) >= need:
         return [want, want, now]
     return [cur, cand, since]
 
 
+def cue_step(rate, lo, hi, cur, cand, since, now):
+    """Mirrors StrongRowView.cueStep: cue_step_w at the DEFAULT preset.
+
+    A ONE-LINE DELEGATION ON BOTH SIDES. The Monkey C wrapper exists because a
+    dozen (:test) cases and this mirror are written against the seven-argument
+    form, and "the default is exactly today's behaviour" is #210's one promise;
+    the mirror is a delegation for the same reason and by the same route.
+
+    This is NOT the function the shipping draw path calls -- that is cue_step_w
+    with the windows loadSettings resolved. Every published figure in this file
+    is scored through it because every published figure describes the DEFAULT.
+    """
+    return cue_step_w(rate, lo, hi, cur, cand, since, now,
+                      CUE_PERSIST_OUT_MS, CUE_PERSIST_IN_MS)
+
+
+def cue_preset_windows(preset):
+    """Mirrors StrongRowView.cuePresetWindows: the (out, in) pair, in ms.
+
+    An index where the Monkey C is an if-chain, because a four-row table and a
+    four-arm chain are the same function and Python has the better spelling.
+    What keeps the two honest is not the shape but E3, which reads the Monkey C
+    table out of the source and compares it with CUE_PRESETS.
+    """
+    return CUE_PRESETS[cue_clamp_preset(preset)]
+
+
+def cue_clamp_preset(v):
+    """Mirrors StrongRowView.cueClampPreset.
+
+    THE BOOLEAN ARM IS NOT PYTHON PEDANTRY. In Monkey C `0 == false` evaluates
+    TRUE (measured, SDK 9.2.0, fr965 -- see the note at StrongRowView.ergFlag),
+    so a clamp written as value comparisons would read a Boolean `false` as
+    preset 0, the SLOWEST setting. Python has the same trap wearing different
+    clothes -- `True == 1` and `isinstance(True, int)` is True -- so the
+    `isinstance(v, bool)` arm mirrors the Monkey C's `instanceof Lang.Number`
+    test faithfully rather than by accident.
+
+    The Float arm has no Python equivalent worth writing (a Python float is not
+    an int, so it falls out of the isinstance test); the Monkey C side pins that
+    case directly, in CueFix.test_cue_c1_theClampRefusesEverythingButZeroToThree.
+    """
+    if v is None:
+        return CUE_PRESET_DEF
+    if isinstance(v, bool) or not isinstance(v, int):
+        return CUE_PRESET_DEF
+    if v < CUE_PRESET_MIN or v > CUE_PRESET_MAX:
+        return CUE_PRESET_DEF
+    return v
+
+
 # ---------------------------------------------------------------------------
-# THE EXPLORER. cue_step above is the MIRROR and takes no options; this takes
-# the three settings as arguments so a sweep can ask what a different tuning
-# would have done. It is deliberately a SECOND function rather than parameters
-# bolted onto the mirror: a mirror with knobs is no longer a mirror, and the
-# whole value of the mirror is that its body can be read line for line against
-# the Monkey C.
+# THE ANTI-DRIFT READ. The preset table above is a second copy of a table that
+# lives in Monkey C, and this is what stops the two diverging silently: the
+# Monkey C is the original, so it is read rather than restated.
 #
-# The two are pinned to each other at the SHIPPED POINT by
-# scripts/test_cue_replay.py, which sweeps
-# cue_step_tuned(..., CUE_PERSIST_OUT_MS, CUE_PERSIST_IN_MS, CUE_REVERSAL_FAST)
-# against cue_step(...) over a vector set. Change one and that case reds.
+# WHAT IS PARSED, and it is deliberately the FUNCTION BODY and not a comment: a
+# comment cannot be red by any test (comments are stripped from the build, so
+# the compiler never objects -- this repository has scripts/check_source_refs.py
+# because a source comment named a guard that was never written). The `return
+# [a, b];` lines of cuePresetWindows, in order, with `$.CUE_PERSIST_*` resolved
+# through the `const` declarations in the same file.
+MC_SOURCE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "source", "StrongRowView.mc")
+
+_MC_CONST = re.compile(r"^const\s+(CUE_[A-Z_0-9]+)\s*=\s*(-?\d+)\s*;", re.M)
+_MC_FN = re.compile(
+    r"static function cuePresetWindows\(\s*\w+\s*\)\s*\{(.*?)\n    \}", re.S)
+_MC_RET = re.compile(r"return\s*\[\s*([^,\]]+?)\s*,\s*([^,\]]+?)\s*\]\s*;")
+
+
+def _mc_token(tok, consts):
+    tok = tok.strip()
+    if tok.startswith("$."):
+        tok = tok[2:]
+    if tok in consts:
+        return consts[tok]
+    return int(tok)
+
+
+def monkeyc_preset_table(path=MC_SOURCE):
+    """The preset table AS THE MONKEY C DECLARES IT, as a tuple of pairs."""
+    with open(path, "r") as fh:
+        src = fh.read()
+    consts = dict((m.group(1), int(m.group(2)))
+                  for m in _MC_CONST.finditer(src))
+    m = _MC_FN.search(src)
+    if m is None:
+        raise ValueError("cuePresetWindows not found in " + path +
+                         " -- the preset table cannot be cross-checked, which "
+                         "is a failure and not a reason to skip the check")
+    body = "\n".join(line.split("//")[0] for line in m.group(1).splitlines())
+    return tuple(tuple(_mc_token(t, consts) for t in (r.group(1), r.group(2)))
+                 for r in _MC_RET.finditer(body))
+
+
+# ---------------------------------------------------------------------------
+# THE EXPLORER. cue_step_w above is the MIRROR: its body is the Monkey C's body,
+# line for line, and the only knobs it has are the two the Monkey C has. This
+# one carries a THIRD knob -- `reversal` -- which no shipping function has, so
+# the sweep can ask what the machine WITHOUT the sign-reversal fast path would
+# have done.
+#
+# IT IS STILL A SECOND FUNCTION AND NOT A FLAG ON THE MIRROR, and the reason is
+# unchanged by #210: a mirror with a knob the original does not have is no
+# longer a mirror, and the whole value of the mirror is that its body can be
+# read line for line against the Monkey C. What changed is WHICH knobs count as
+# the original's -- the two windows now are, because the Monkey C takes them.
+#
+# The two are pinned to each other by scripts/test_cue_replay.py D1, which
+# sweeps cue_step_tuned(..., out, in, CUE_REVERSAL_FAST) against
+# cue_step_w(..., out, in) over a vector set at EVERY window pair in SWEEP, not
+# just the shipped one. Change one and that case reds.
 def cue_step_tuned(rate, lo, hi, cur, cand, since, now,
                    out_ms, in_ms, reversal):
     want = cue_target(rate, lo, hi, cur)
@@ -647,17 +785,38 @@ def score(laps, lo, hi, strategy):
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "cue_work_laps.txt")
 
-# The later row, in its own file. See the "TWO FIXTURES" note in the module
+# The later row, in its own file. See the "THREE FIXTURES" note in the module
 # docstring for why it is not a third ROW in the file above.
 REVERSAL_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "fixtures", "cue_reversal_row.txt")
 
+# #210: the first row recorded ON the shipped 2000/500 latch. Its own file for
+# the same reason, and OUTSIDE load_all() for a further one -- see load_every().
+LATCHED_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "fixtures", "cue_latched_row.txt")
+
 
 def load_all():
-    """Both fixtures, in a stable order: the two chosen-against rows, then the
-    reported row. Every consumer here iterates this rather than reaching for a
-    path, so adding a fixture is one edit."""
+    """The three rows recorded on the OLD machine, in a stable order: the two
+    chosen-against rows, then the reported row.
+
+    THIS IS THE PUBLISHED POPULATION. Every figure the CUE_* comment block
+    quotes, and the window selection rule, run over exactly these three. The
+    latched row is deliberately NOT here: see load_every().
+    """
     return load_fixture(FIXTURE) + load_fixture(REVERSAL_FIXTURE)
+
+
+def load_every():
+    """Every committed row, the latched one last.
+
+    USED FOR THE PRESET COST TABLE AND NEVER FOR THE SELECTION RULE. The latched
+    row was rowed under 2000/500, so it is a record of an athlete reacting to
+    that cue; letting it help choose that cue would be circular. What it CAN do
+    is say what each preset would have cost on a row rowed under the machine
+    that actually ships, which is the question #210 asks.
+    """
+    return load_all() + load_fixture(LATCHED_FIXTURE)
 
 
 def load_fixture(path=FIXTURE):
@@ -712,7 +871,94 @@ SWEEP = ((4000, 1000), (3000, 1000), (3000, 750), (2000, 1000), (2000, 500),
 FLICKER_BOUND = 0.70
 
 
-def sweep(rows):
+def preset_row(laps, lo, hi, preset):
+    """Every figure the preset table publishes, for one row at one preset.
+
+    ONE FUNCTION, SO THE TABLE AND ITS PIN CANNOT DISAGREE. presets() prints
+    what this returns and scripts/test_cue_replay.py E4 asserts what this
+    returns; a figure computed twice is a figure that can be published wrong
+    once.
+    """
+    out_ms, in_ms = cue_preset_windows(preset)
+    st = tuned(out_ms, in_ms, CUE_REVERSAL_FAST)
+    sc = score(laps, lo, hi, st)
+    raw = score(laps, lo, hi, zones_raw)
+    co = coherence(laps, lo, hi, st)
+    el = edge_lag(laps, lo, hi, st)
+    al = adopt_lag(laps, lo, hi, out_ms, in_ms, CUE_REVERSAL_FAST)
+    return {
+        "preset": preset,
+        "out_ms": out_ms,
+        "in_ms": in_ms,
+        "flips_per_min": sc["flips_per_min"],
+        "ratio": sc["flips_per_min"] / raw["flips_per_min"],
+        "adopt_mean_s": al["mean_s"],
+        "adopt_max_s": al["max_s"],
+        "edge_mean_s": el["mean_s"],
+        "edge_followed": el["followed"],
+        "edge_crossings": el["crossings"],
+        "opposite": co["opposite"],
+        "disagree": co["disagree"],
+        "ambiguous_pct": co["ambiguous_pct"],
+        "false_high": sc["false_high"],
+        "false_low": sc["false_low"],
+        "missed_high": sc["missed_high"],
+    }
+
+
+def presets(rows):
+    """#210: what each preset would have cost, on every committed row.
+
+    THE TABLE THE SETTING SHIPS WITH. Its figures are quoted at the
+    CUE_PRESET_* constants in source/StrongRowView.mc and in the setting's own
+    pull request, and they come off this command rather than out of a scratch
+    script -- which is the whole reason this harness exists.
+    """
+    print("PRESET COST -- every committed row, the sign-reversal fast path ON.")
+    print("`ratio` is flips/min against the memoryless machine's on THAT row;")
+    print("`adopt` is the latch alone (mean, and max = the window itself);")
+    print("`edge` is the number crossing a band edge to the colour following")
+    print("it, with its denominator, because a faster machine follows MORE of")
+    print("the slow crossings and so raises its own mean -- two edge means at")
+    print("different presets are over DIFFERENT populations and must not be")
+    print("subtracted. `opp` is opposite-side seconds; its target is zero and")
+    print("the fast path, not the latch, is what holds it there; the `raw` row")
+    print("is 0 there by construction, being the number's own zone.")
+    print()
+    for key, lo, hi, label, laps in rows:
+        print("=== %s: %s -- target %d-%d spm" % (key, label, lo, hi))
+        print("    %-12s %-10s %6s %6s %6s %6s %18s %5s %6s %6s"
+              % ("preset", "latch ms", "flips", "ratio", "adptM", "adptX",
+                 "edge mean/followed", "opp", "dis", "amb%"))
+        for p in range(len(CUE_PRESETS)):
+            r = preset_row(laps, lo, hi, p)
+            print("    %-12s %-10s %6.2f %6.3f %6.2f %6.2f %10.2f/%-7s %5d %6d %6.1f"
+                  % (PRESET_NAMES[p], "%d/%d" % (r["out_ms"], r["in_ms"]),
+                     r["flips_per_min"], r["ratio"], r["adopt_mean_s"],
+                     r["adopt_max_s"], r["edge_mean_s"],
+                     "%d/%d" % (r["edge_followed"], r["edge_crossings"]),
+                     r["opposite"], r["disagree"], r["ambiguous_pct"]))
+        rawsc = score(laps, lo, hi, zones_raw)
+        rawco = coherence(laps, lo, hi, zones_raw)
+        print("    %-12s %-10s %6.2f %6.3f %6s %6s %18s %5d %6d %6.1f"
+              % ("raw", "none", rawsc["flips_per_min"], 1.0, "-", "-", "-",
+                 rawco["opposite"], rawco["disagree"],
+                 rawco["ambiguous_pct"]))
+        print()
+    print("THE FLICKER BOUND THE DEFAULT IS CHOSEN BY is %.2f x raw on EVERY"
+          % FLICKER_BOUND)
+    print("row (see sweep()). Presets outside it are offered, not recommended:")
+    for p in range(len(CUE_PRESETS)):
+        worst = max(preset_row(laps, lo, hi, p)["ratio"]
+                    for _k, lo, hi, _l, laps in rows)
+        print("    %-12s worst ratio %.3f  %s"
+              % (PRESET_NAMES[p], worst,
+                 "within the bound" if worst <= FLICKER_BOUND
+                 else "OUTSIDE the bound"))
+    return 0
+
+
+def sweep(rows, select_rows=None):
     print("LATCH SWEEP -- design (a), the sign-reversal fast path ON in every")
     print("row below. `opp` is opposite-side seconds, `dis` disagreement")
     print("seconds, `amb%` the ambiguous-value fraction; `edge` is the number")
@@ -758,7 +1004,19 @@ def sweep(rows):
     # were computed only inside test_cue_replay.py D6 for one round, and a
     # figure derived from the sweep but not printed by it is how "0.665 of raw"
     # -- a division of two ROUNDED numbers -- reached a shipping comment.
-    print("THE SELECTION RULE, over every row at once. Admissible = worst ratio")
+    #
+    # THE POPULATION IS NAMED EVERY TIME IT PRINTS (#210). The rows scored
+    # above are load_every(); the rule below runs over load_all() -- the three
+    # rows recorded on the OLD machine -- because a row rowed under 2000/500
+    # cannot help choose 2000/500 without circularity. Stating which set a
+    # figure was computed over is this repository's "wrong pair" rule applied
+    # to a population instead of to a ratio.
+    if select_rows is None:
+        select_rows = rows
+    print("THE SELECTION RULE, over the %d row(s) the windows were CHOSEN"
+          % len(select_rows))
+    print("against (%s). Admissible = worst ratio"
+          % ", ".join(k for k, _lo, _hi, _l, _laps in select_rows))
     print("at or below %.2f; chosen = smallest mean adopt lag among those."
           % FLICKER_BOUND)
     print("    %-11s %11s %11s  %s" % ("latch ms", "worst ratio", "mean adopt",
@@ -767,7 +1025,7 @@ def sweep(rows):
     for out_ms, in_ms in SWEEP:
         st = tuned(out_ms, in_ms, True)
         ratios, lags = [], []
-        for _k, lo, hi, _l, laps in rows:
+        for _k, lo, hi, _l, laps in select_rows:
             ratios.append(score(laps, lo, hi, st)["flips_per_min"]
                           / score(laps, lo, hi, zones_raw)["flips_per_min"])
             lags.append(adopt_lag(laps, lo, hi, out_ms, in_ms, True)["mean_s"])
@@ -785,9 +1043,16 @@ def sweep(rows):
 
 
 def main(argv):
-    rows = load_all()
     if "--sweep" in argv:
-        return sweep(rows)
+        # Per-row tables over EVERY committed row; the selection rule over the
+        # three the windows were chosen against. See load_every().
+        return sweep(load_every(), load_all())
+    if "--presets" in argv:
+        return presets(load_every())
+    # The plain run stays on load_all(): every figure it prints is one the
+    # CUE_* comment block quotes, and those name three rows. The latched row's
+    # figures are on --presets.
+    rows = load_all()
     for key, lo, hi, label, laps in rows:
         secs = sum(len(s) for s in laps)
         print("=== %s: %s -- target %d-%d spm" % (key, label, lo, hi))
