@@ -162,6 +162,7 @@ class GpsDc extends HrDc {
 class GpsProbe extends HrProbe {
     // The enable ladder's three inputs and its transcript. Set by a case before
     // it calls realStartGps(); read afterwards.
+    var capCfgApi;    // what gpsCapConfigApi() should report (c3 onward)
     var capSatIq;     // what gpsCapSatIq() should report
     var capConst;     // what gpsCapConstellations() should report
     var failForms;    // the FORM_* values gpsEnable() should report as throwing
@@ -171,6 +172,7 @@ class GpsProbe extends HrProbe {
 
     function initialize() {
         HrProbe.initialize();
+        capCfgApi = false;
         capSatIq = false;
         capConst = false;
         failForms = [];
@@ -197,6 +199,13 @@ class GpsProbe extends HrProbe {
         if (runRealStart) { StrongRowView.startGps(); }
     }
 
+    // OVERRIDES AN ABSENT METHOD AT c1 AND c2, deliberately: gpsCapConfigApi is
+    // added by c3, so until then this is an unused probe method and after it
+    // the override takes effect. It exists so that ALL THREE flag bits are
+    // driven by the case rather than by whichever device the suite happens to
+    // run on -- `Position has :hasConfigurationSupport` is true on fr965, so a
+    // case that read it directly would pin the runner, not the code.
+    hidden function gpsCapConfigApi()      { return capCfgApi; }
     hidden function gpsCapSatIq()          { return capSatIq; }
     hidden function gpsCapConstellations() { return capConst; }
 
@@ -638,9 +647,9 @@ function arrEq(got, exp, logger, what) {
 // gpsNote, called directly: the stamp, the three counters, the ever-latch and
 // the gap slot.
 //
-// IN ISOLATION ONLY. Nothing here says onPosition calls it; the c2 section
-// below owns that, and this case would stay green if the call site were
-// deleted.
+// IN ISOLATION ONLY. Nothing here says onPosition calls it -- that is
+// test_gps_c2_onPositionStampsAndCountsTheCallback, and this case would stay
+// green if the call site were deleted.
 (:test) function test_gps_c1_theCallbackNoteCountsAndStamps(logger) {
     var p = new GpsProbe();
     p.sessionReset(100000);
@@ -704,8 +713,9 @@ function arrEq(got, exp, logger, what) {
 
 // The watchdog seam, called directly: one re-arm per window and no more.
 //
-// IN ISOLATION ONLY. Nothing here says onTick calls it; the c2 section below
-// owns that, and this case would stay green if the call site were deleted.
+// IN ISOLATION ONLY. Nothing here says onTick calls it -- that is
+// test_gps_c2_theTickRearmsAStaleStream, and this case would stay green if the
+// call site were deleted.
 (:test) function test_gps_c1_theWatchdogSeamRearmsAtMostOncePerWindow(logger) {
     var R = $.GpsDiag.GPS_REARM_MS;
     var p = new GpsProbe();
@@ -795,6 +805,255 @@ function arrEq(got, exp, logger, what) {
     if (a[$.GpsDiag.I_FORM] != $.GpsDiag.FORM_CONFIG) {
         logger.error("the enable answer reaches the snapshot; got " +
                      a[$.GpsDiag.I_FORM]);
+        ok = false;
+    }
+    return ok;
+}
+
+// ===========================================================================
+// c2 -- RED DIFFERENTIALS ONLY. Every case below FAILS on the commit that
+// precedes it and passes once the fix lands. Each one drives a SHIPPING ENTRY
+// POINT that already exists at c1 -- onPosition, onTick, startGps,
+// gpsPipColour -- so what it measures is that the WIRING is absent, not that a
+// symbol is missing.
+// ===========================================================================
+
+// THE DEFECT THE ROWER SAW. A usable fix, then silence, then a pip that still
+// says green.
+//
+// Three renders, because two of them are the boundary and the third is the
+// field's own shape. The first stays green in every epoch (it is the c0
+// colouring, one millisecond inside the window); the second and third are the
+// change.
+(:test) function test_gps_c2_thePipGoesStaleAfterTheFreshnessWindow(logger) {
+    var F = $.GpsDiag.GPS_FRESH_MS;
+    var ok = true;
+    var p = new GpsProbe();
+    p.setNowMs(500000);
+    p.feed(4);
+    var fresh = gpsRender(p, p.kindWarm(), 500000 + F - 1);
+    if (fresh.colourOf("GPS") != Gfx.COLOR_GREEN) {
+        logger.error("one ms inside the window the pip is still green; got " +
+                     fresh.colourOf("GPS"));
+        ok = false;
+    }
+    var q = new GpsProbe();
+    q.setNowMs(500000);
+    q.feed(4);
+    var edge = gpsRender(q, q.kindWarm(), 500000 + F);
+    if (edge.colourOf("GPS") != Gfx.COLOR_DK_GRAY) {
+        logger.error("at exactly GPS_FRESH_MS the pip must carry the no-data " +
+                     "colour, not the last accuracy; got " + edge.colourOf("GPS"));
+        ok = false;
+    }
+    // i185890690's shape: one good fix and then 43 minutes of nothing.
+    var r = new GpsProbe();
+    r.setNowMs(500000);
+    r.feed(4);
+    var dead = gpsRender(r, r.kindWarm(), 500000 + 2628000);
+    if (dead.colourOf("GPS") != Gfx.COLOR_DK_GRAY) {
+        logger.error("after 43.8 min of silence the pip must not still report " +
+                     "the last fix; got " + dead.colourOf("GPS"));
+        ok = false;
+    }
+    return ok;
+}
+
+// onPosition must do the bookkeeping, not just latch the accuracy.
+//
+// DRIVEN THROUGH onPosition, the platform's own entry point, so this cannot
+// pass against a gpsNote that nothing calls -- which is exactly the state at
+// c1, where test_gps_c1_theCallbackNoteCountsAndStamps is green and this is
+// red.
+(:test) function test_gps_c2_onPositionStampsAndCountsTheCallback(logger) {
+    var p = new GpsProbe();
+    p.sessionReset(100000);
+    p.setNowMs(101000); p.feed(4);
+    p.setNowMs(104000); p.feed(3);
+    p.setNowMs(124000); p.feed(null);
+    var ok = true;
+    if (p.lastGpsMs() != 124000) {
+        logger.error("onPosition must stamp the arrival; mLastGpsMs=" +
+                     p.lastGpsMs());
+        ok = false;
+    }
+    if (!p.everSeen()) {
+        logger.error("a usable fix reached onPosition, so the ever-latch must be set");
+        ok = false;
+    }
+    var want = [[$.GpsDiag.I_CB_TOTAL,  3, "every callback counts"],
+                [$.GpsDiag.I_CB_USABLE, 2, "accuracy >= 3"],
+                [$.GpsDiag.I_CB_GOOD,   1, "accuracy == 4"],
+                [$.GpsDiag.I_LAST_ACC,  3, "the last GRADED accuracy"],
+                [$.GpsDiag.I_MAXGAP_S, 20, "the 20 s between 104000 and 124000"]];
+    for (var i = 0; i < want.size(); i++) {
+        if (p.slot(want[i][0]) != want[i][1]) {
+            logger.error("slot " + want[i][0] + " (" + want[i][2] + ") = " +
+                         p.slot(want[i][0]) + ", expected " + want[i][1]);
+            ok = false;
+        }
+    }
+    var a = p.snapshot();
+    if (a[$.GpsDiag.I_LAST_CB_S] != 24) {
+        logger.error("the last callback is 24 s after START; snapshot says " +
+                     a[$.GpsDiag.I_LAST_CB_S]);
+        ok = false;
+    }
+    return ok;
+}
+
+// The watchdog has to be WIRED to the tick, not merely to exist.
+//
+// At c1 test_gps_c1_theWatchdogSeamRearmsAtMostOncePerWindow is green while
+// this is red, and the pair is the whole point: one pins the decision, the
+// other pins that anything ever asks it.
+(:test) function test_gps_c2_theTickRearmsAStaleStream(logger) {
+    var R = $.GpsDiag.GPS_REARM_MS;
+    var p = new GpsProbe();
+    p.sessionReset(100000);
+    p.setNowMs(100000);
+    p.feed(4);
+    var ok = true;
+    p.setNowMs(100000 + R - 1);
+    p.onTick();
+    if (p.starts != 0) {
+        logger.error("one ms short of the window the tick must not re-arm; starts=" +
+                     p.starts);
+        ok = false;
+    }
+    p.setNowMs(100000 + R);
+    p.onTick();
+    p.onTick();
+    p.onTick();
+    if (p.starts != 1) {
+        logger.error("three ticks inside one window re-arm ONCE; starts=" + p.starts);
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_REARMS) != 1) {
+        logger.error("the re-arm must be counted; slot says " +
+                     p.slot($.GpsDiag.I_REARMS));
+        ok = false;
+    }
+    p.setNowMs(100000 + 2 * R);
+    p.onTick();
+    if (p.starts != 2) {
+        logger.error("the next window re-arms again; starts=" + p.starts);
+        ok = false;
+    }
+    return ok;
+}
+
+// startGps must CHOOSE a form and RECORD which one it got.
+//
+// The three flag bits are driven by the probe rather than read off the runner,
+// so this pins the code and not fr965 -- see the note on gpsCapConfigApi above.
+(:test) function test_gps_c2_startGpsChoosesTheConfigurationForm(logger) {
+    var p = new GpsProbe();
+    p.capCfgApi = true;
+    p.capSatIq  = true;
+    p.capConst  = true;
+    p.realStartGps();
+    var ok = true;
+    if (!arrEq(p.attempted, [$.GpsDiag.FORM_CONFIG], logger,
+               "the ladder must ask for the configuration form FIRST and stop " +
+               "there when it succeeds")) {
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_FORM) != $.GpsDiag.FORM_CONFIG) {
+        logger.error("the form that succeeded must reach slot I_FORM; got " +
+                     p.slot($.GpsDiag.I_FORM));
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_ENABLE_THROW) != 0) {
+        logger.error("nothing threw; I_ENABLE_THROW=" +
+                     p.slot($.GpsDiag.I_ENABLE_THROW));
+        ok = false;
+    }
+    var want = $.GpsDiag.F_CFG_API | $.GpsDiag.F_SATIQ_OK | $.GpsDiag.F_CONST_API;
+    if (p.slot($.GpsDiag.I_FLAGS) != want) {
+        logger.error("all three capability bits must be recorded; I_FLAGS=" +
+                     p.slot($.GpsDiag.I_FLAGS) + ", expected " + want);
+        ok = false;
+    }
+    // The device that has none of it falls to the legacy call, and its flags
+    // say so -- which is what tells a reader of a mute row which half failed.
+    var q = new GpsProbe();
+    q.realStartGps();
+    if (!arrEq(q.attempted, [$.GpsDiag.FORM_LEGACY], logger,
+               "no capability at all means the legacy call and nothing else")) {
+        ok = false;
+    }
+    if (q.slot($.GpsDiag.I_FORM) != $.GpsDiag.FORM_LEGACY) {
+        logger.error("the legacy form must be recorded too; got " +
+                     q.slot($.GpsDiag.I_FORM));
+        ok = false;
+    }
+    if (q.slot($.GpsDiag.I_FLAGS) != 0) {
+        logger.error("no capability bits should be set; I_FLAGS=" +
+                     q.slot($.GpsDiag.I_FLAGS));
+        ok = false;
+    }
+    return ok;
+}
+
+// A throw on one rung must leave the next one reachable, and the fall-through
+// must SKIP a rung the device cannot support rather than charging it to the
+// throw counter.
+(:test) function test_gps_c2_theEnableLadderFallsThroughAThrow(logger) {
+    var ok = true;
+    var p = new GpsProbe();
+    p.capCfgApi = true;
+    p.capSatIq  = true;
+    p.capConst  = true;
+    p.failForms = [$.GpsDiag.FORM_CONFIG, $.GpsDiag.FORM_CONST];
+    p.realStartGps();
+    if (!arrEq(p.attempted,
+               [$.GpsDiag.FORM_CONFIG, $.GpsDiag.FORM_CONST, $.GpsDiag.FORM_LEGACY],
+               logger, "two throws must walk the ladder to the legacy call")) {
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_FORM) != $.GpsDiag.FORM_LEGACY) {
+        logger.error("the rung that SUCCEEDED is the one recorded; got " +
+                     p.slot($.GpsDiag.I_FORM));
+        ok = false;
+    }
+    if (p.slot($.GpsDiag.I_ENABLE_THROW) != 2) {
+        logger.error("two rungs threw; I_ENABLE_THROW=" +
+                     p.slot($.GpsDiag.I_ENABLE_THROW));
+        ok = false;
+    }
+    // No constellation symbols: that rung is SKIPPED, not attempted and failed.
+    var q = new GpsProbe();
+    q.capCfgApi = true;
+    q.capSatIq  = true;
+    q.capConst  = false;
+    q.failForms = [$.GpsDiag.FORM_CONFIG];
+    q.realStartGps();
+    if (!arrEq(q.attempted, [$.GpsDiag.FORM_CONFIG, $.GpsDiag.FORM_LEGACY], logger,
+               "a device with no CONSTELLATION_* symbols must skip that rung")) {
+        ok = false;
+    }
+    if (q.slot($.GpsDiag.I_ENABLE_THROW) != 1) {
+        logger.error("only one rung threw -- a skipped rung is not a throw; " +
+                     "I_ENABLE_THROW=" + q.slot($.GpsDiag.I_ENABLE_THROW));
+        ok = false;
+    }
+    // Every rung throws: no form succeeded, and the slot says so rather than
+    // naming a form that did not work.
+    var r = new GpsProbe();
+    r.capCfgApi = true;
+    r.capSatIq  = true;
+    r.capConst  = true;
+    r.failForms = [$.GpsDiag.FORM_CONFIG, $.GpsDiag.FORM_CONST, $.GpsDiag.FORM_LEGACY];
+    r.realStartGps();
+    if (r.slot($.GpsDiag.I_FORM) != $.GpsDiag.FORM_NONE) {
+        logger.error("no rung succeeded, so I_FORM must be FORM_NONE; got " +
+                     r.slot($.GpsDiag.I_FORM));
+        ok = false;
+    }
+    if (r.slot($.GpsDiag.I_ENABLE_THROW) != 3) {
+        logger.error("three rungs threw; I_ENABLE_THROW=" +
+                     r.slot($.GpsDiag.I_ENABLE_THROW));
         ok = false;
     }
     return ok;

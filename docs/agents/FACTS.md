@@ -421,9 +421,9 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**441** `(:test)` functions under `source/`, matching
+**446** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/gps-fenix9` branch at its c1 commit: "OK: 441 (:test)
+run on the `claude/gps-fenix9` branch at its c2 commit: "OK: 446 (:test)
 function(s) under source/ match scripts/expected_tests.txt exactly."). It was
 **423** at `a0b1fc9` (`origin/main`, the merge of #213), **412** at `9ece925`
 (v0.9.2, the merge of #208), **362** at `211f106`, **385** at `d2cd8a6`
@@ -617,7 +617,7 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
     AGENTFACT manifest-devices 19
-    AGENTFACT pinned-tests 441
+    AGENTFACT pinned-tests 446
     AGENTFACT ceiling gps-fenix9 251 253 2
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke
