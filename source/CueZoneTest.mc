@@ -1931,8 +1931,16 @@ module CueFix {
     }
 
     // An UNSET property is the declared default, which is preset 1, which is
-    // today's behaviour. The same statement test_cue_c0_theDefaultSettings-
-    // LatchAtTwoSeconds makes on the draw path, made here on the state.
+    // today's behaviour. The same statement made on the state that
+    // test_cue_c0_theDefaultSettingsLatchAtTwoSeconds makes on the draw path.
+    //
+    // THE NAME IS ON ONE LINE ON PURPOSE. scripts/check_source_refs.py reads
+    // test names out of comments and resolves them against the declared
+    // (:test)s; a name wrapped across two lines resolves to the prefix, which
+    // exists nowhere, and reds the check. It did -- CI run 34702308549, "1
+    // unresolved test cross-reference(s) in source/" -- which is the tool
+    // working, since a comment naming a guard that does not exist is exactly
+    // what it was written to catch.
     var d = CueFix.cueProbe(null);
     if (d.viewCuePreset() != $.CUE_PRESET_DEF ||
         d.viewCueOutMs() != $.CUE_PERSIST_OUT_MS ||
