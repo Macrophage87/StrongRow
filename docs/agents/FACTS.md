@@ -389,19 +389,28 @@ is why `scripts/check_ceiling_notes.py` now derives the consequence
 arithmetically.
 
 Current headroom, verbatim from the newest anchor in the tree,
-`source/RrHrvTest.mc:21` (epic #59, the `claude/hrv-correctness` branch):
+`source/GpsFixTest.mc` (#211, the `claude/gps-fenix9` branch):
 
-    CEILING hrv-correctness fenix6: 249 used of 253, 4 free -- the 5th file-scope (:test) added reds
+    CEILING gps-fenix9 fenix6: 251 used of 253, 2 free -- the 3rd file-scope (:test) added reds
 
-Epic #59 costs **two** members against the previous anchor: the `RR_FRESH_MS`
+Bisected at that branch's c1 commit: `monkeyc --unit-test -d fenix6` with 2
+throwaway file-scope `(:test)` stubs is `BUILD SUCCESSFUL`, with 3 it is
+`ERROR: fenix6: Found 254 members in module 'globals', exceeding the limit of
+253.` and with 4 it is `Found 255`. #211 costs **two** members against the
+previous anchor, and they are its two module blocks — `module GpsDiag` and
+`module GpsFix`; every constant and every `(:test)` it adds lives inside one of
+them and costs nothing.
+
+**`hrv-correctness` is the previous anchor, not the current one.** Its note
+(`249 used of 253, 4 free`) is still in the tree at `source/RrHrvTest.mc:21`,
+and epic #59 cost **two** members against *its* predecessor: the `RR_FRESH_MS`
 split is +3 constants and -1, and `module RrDiag` and `module RrHrv` are one
-each. The `v08-display-fixes` note (`246 used of 253, 7 free`) is still in the
-tree at `source/GridGateTest.mc:34` and `source/SetGridLayoutTest.mc:79`; it is
-an OLDER anchor, not the current headroom, and the paragraph below is why that
-is allowed. Re-bisected at the round-2 head of `claude/hrv-correctness`:
-`monkeyc --unit-test -d fenix6` with 4 throwaway file-scope `(:test)` stubs is
-`BUILD SUCCESSFUL`, with 5 it is
-`ERROR: fenix6: Found 254 members in module 'globals', exceeding the limit of 253.`
+each. An earlier revision of this section presented that note as "the newest
+anchor in the tree"; it was correct when written and is not now, and it is
+corrected here rather than left to be noticed. The `v08-display-fixes` note
+(`246 used of 253, 7 free`) is older still and is at
+`source/GridGateTest.mc:34` and `source/SetGridLayoutTest.mc:79`. The paragraph
+below is why keeping all three is allowed.
 
 Older anchors are also in the tree. Do not carry a count of them in prose:
 `python3 scripts/check_ceiling_notes.py` prints every note line with its
@@ -412,16 +421,17 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**423** `(:test)` functions under `source/`, matching
+**447** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/cue-twitchiness` branch at its c2 commit: "OK: 423 (:test)
+run on the `claude/gps-fenix9` branch at its fix-round-1 c2' commit: "OK: 447 (:test)
 function(s) under source/ match scripts/expected_tests.txt exactly."). It was
-**412** at `9ece925` (`origin/main`, v0.9.2, the merge of #208), **362** at
-`211f106`, **385** at `d2cd8a6` (v0.9, epic #59's merge), **397** at `367929a`
-(#70's merge) and **408** at `db4ffcc` (#195's merge). The **net** diff on
-`scripts/expected_tests.txt` is the thing to check, not the arithmetic on
-additions and retirements separately — #193 added five in
-`source/LockGuardTest.mc` and retired one, which is a net `+4 / -0`.
+**423** at `a0b1fc9` (`origin/main`, the merge of #213), **412** at `9ece925`
+(v0.9.2, the merge of #208), **362** at `211f106`, **385** at `d2cd8a6`
+(v0.9, epic #59's merge), **397** at `367929a` (#70's merge) and **408** at
+`db4ffcc` (#195's merge). The **net** diff on `scripts/expected_tests.txt` is
+the thing to check, not the arithmetic on additions and retirements
+separately — #193 added five in `source/LockGuardTest.mc` and retired one,
+which is a net `+4 / -0`.
 
 **THE COUNT WAS RE-DERIVED ON THE REBASED TREE, never added up.** Two branches
 in flight both moved this number, and 385 + 11 + 4 was carried in a review
@@ -442,19 +452,19 @@ deleting a function *and* its pin line together still passes (#52).
 
 ### 5.3 The developer-field id map
 
-28 developer fields, ids unique, and **one id (27) deliberately
-reserved and unused**. Parsed from the `createField`
+29 developer fields, ids unique, **none unused**. Parsed from the `createField`
 calls in `source/StrongRowView.mc`. The table below was taken at `211f106`,
 when there were 26 fields and **id 19 was the one free id**; epic #59 took 19
 for `rr_diag`, which made the id set contiguous at 0 to 26.
 
-**The set is NOT contiguous now, and the hole is deliberate.** `cue_cfg` (#191)
-takes **28**, not 27, because **27 is reserved for `gps_diag`** on the in-flight
-branch `claude/gps-fenix9`; two branches taking the same id would silently
-re-label a field at the point they landed. Until that branch lands the id set
-is 0-26 plus 28, with 27 unused. `scripts/check_step_fields.py` pins the count
-and uniqueness; **nothing pins contiguity**, and nothing should — a reserved id
-is a coordination fact, not a code property.
+**The reservation held and the hole is now closed.** `cue_cfg` (#191) took
+**28** rather than 27 because 27 was reserved for `gps_diag` on the then
+in-flight branch `claude/gps-fenix9`; two branches taking the same id would
+silently re-label a field at the point they landed. Both have now landed, so
+the id set is CONTIGUOUS again — 0 to 28 inclusive, no holes — and the next
+field added takes 29. `scripts/check_step_fields.py` pins the count and
+uniqueness; **nothing pins contiguity**, and nothing should — a reserved id is
+a coordination fact, not a code property.
 
 | id | name | type | id | name | type |
 |---:|---|---|---:|---|---|
@@ -471,26 +481,31 @@ is a coordination fact, not a code property.
 | 9 | `max_core_temperature` | FLOAT | 24 | `rate_base` | FLOAT |
 | 10 | `ct_diag` | UINT16 | 25 | `lap_step_type` | UINT8 |
 | 11 | `heat_strain_index` | FLOAT | 26 | `lap_interval_num` | UINT16 |
-| 12 | `erg_power` | FLOAT | 28 | `cue_cfg` | UINT16 |
-| 13 | `erg_joules_per_stroke` | FLOAT | | (27 reserved, `gps_diag`) | |
+| 12 | `erg_power` | FLOAT | 27 | `gps_diag` | UINT16 |
+| 13 | `erg_joules_per_stroke` | FLOAT | 28 | `cue_cfg` | UINT16 |
 
 **A developer field id is unique per `field_description`**, which is why the
 lap copies (25, 26) could not reuse 17 and 18 — a collision silently re-labels
 a field. `scripts/check_step_fields.py` already pins the count and the
-uniqueness (`STEPFIELDS … total_fields=26`); the **id→name** binding above is
+uniqueness (`STEPFIELDS … total_fields=29`, re-derived on every run); the
+**id→name** binding above is
 pinned by `scripts/check_agent_facts.py` and was not pinned by anything before
 this file existed.
 
 **Twenty-six was two different counts, and they were never related.** There are
-28 developer fields today (this table, machine-checked; it was 26 at `211f106`
-and 27 at `9ece925`) **and** there were 26 device parts in the exported `.iq`
-(§5.5, prose only) — across what were then **12** manifest products (§1.4).
-Three numbers, one coincidence, and the coincidence has now broken three times
-over: the field count moved to 27 and then 28, and the manifest to **19**
-products. Say which one you mean; open
-issue #172's title uses the field figure. Checking *what a figure is measured
-against* rather than just that it is right is this repository's "wrong pair"
-defect class (§6).
+**29** developer fields today (this table, machine-checked; it was 26 at
+`211f106`, 27 at `9ece925` and 28 at `a0b1fc9`) **and** there were 26 device
+parts in the exported `.iq` (§5.5, prose only) — across what were then **12**
+manifest products (§1.4). Three numbers, one coincidence, and the coincidence
+has now broken four times over: the field count moved to 27, 28 and then 29,
+and the manifest to **19** products. Say which one you mean; open issue #172's
+title uses the field figure, at the value it had when it was filed. Checking
+*what a figure is measured against* rather than just that it is right is this
+repository's "wrong pair" defect class (§6).
+
+**Whether any device caps developer fields at all is UNMEASURED**, at 27, at 28
+or at 29. #77 observed eleven and #80 twelve; neither was a cap. #172 owns the
+question.
 
 ### 5.4 Backlog size
 
@@ -607,8 +622,8 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
     AGENTFACT manifest-devices 19
-    AGENTFACT pinned-tests 423
-    AGENTFACT ceiling hrv-correctness 249 253 4
+    AGENTFACT pinned-tests 447
+    AGENTFACT ceiling gps-fenix9 251 253 2
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke
     AGENTFACT devfield 2 rr_interval
@@ -636,11 +651,14 @@ prose above is the explanation.
     AGENTFACT devfield 24 rate_base
     AGENTFACT devfield 25 lap_step_type
     AGENTFACT devfield 26 lap_interval_num
+    AGENTFACT devfield 27 gps_diag
     AGENTFACT devfield 28 cue_cfg
 
 The `CEILING` line in §5.1 is additionally checked by
-`scripts/check_ceiling_notes.py`, which requires it to be byte-identical to its
-two copies in `source/`.
+`scripts/check_ceiling_notes.py`, which requires it to be byte-identical to
+every other copy of the SAME ANCHOR in `source/`. Older anchors are separate
+notes and are checked separately; the number of copies an anchor has is not
+fixed, so do not read a count of them here.
 
 **What is NOT machine-checked**, so nobody reads more into a green run: every
 prose claim in §1-§4, §6 and §7, the `[Local]` issue numbers, the backlog and
