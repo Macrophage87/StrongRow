@@ -1059,4 +1059,73 @@ function arrEq(got, exp, logger, what) {
     return ok;
 }
 
+// ===========================================================================
+// c2' -- FIX-ROUND 1's RED DIFFERENTIAL. Fails on the commit that precedes it
+// and passes once the guard lands.
+// ===========================================================================
+
+// THE MUTE ROW, on the negative half of the clock. Round 1's behaviour lens,
+// P1-1.
+//
+// secsBetween tested the never-seen sentinel on `fromMs` ONLY, and its one call
+// site -- gpsDiagSnapshot's
+// `secsBetween(mGpsBaseMs, mLastGpsMs)` -- carries the sentinel in `toMs`:
+// mLastGpsMs is 0 for a row that received no callback at all. mGpsBaseMs is
+// raw System.getTimer() at START, which is NEGATIVE for 25 of every 50 days of
+// device uptime (#70), so `0 - fromMs` is POSITIVE, the `d < 0` guard does not
+// fire, and slot 4 reported |fromMs| / 1000 clamped at MAXV.
+//
+// That lands on the mute row specifically -- the one row gps_diag exists to
+// explain (source/StrongRowView.mc says so at the createField site) -- and it
+// makes #214's decode rule `total_elapsed_time - I_LAST_CB_S` produce nonsense
+// exactly where a reader needs it.
+//
+// A c2' CASE RATHER THAN A ROW IN the c1 secondsBetween case, which is what
+// the verdict suggested. The two are not equivalent: a row added
+// to a case that is green at the head cannot produce red-before-green evidence
+// for this round, and this is a behaviour change. The c1 case is left alone and
+// stays green throughout.
+//
+// CALLS THE SHIPPING FUNCTION, not a transliteration of it. The lens verified
+// P1-1 by re-implementing secsBetween in Python and said so; this case is what
+// makes the same statement in Monkey C, on the arithmetic the device runs.
+(:test) function test_gps_c2p_theMuteRowReportsNoDurationOnANegativeClock(logger) {
+    var ok = true;
+    // [from, to, expected] -- the sentinel in EITHER argument means 0.
+    var rows = [[-100000,     0, 0],    // mute row, 100 s of negative uptime
+                [-1500000,    0, 0],    // mute row, 25 min in
+                [-2147000000, 0, 0],    // mute row, near the far end of the half
+                [100000,      0, 0],    // mute row, positive clock: already 0
+                [0,      500000, 0],    // the symmetric case, already guarded
+                [0,     -500000, 0],
+                [0,           0, 0]];
+    for (var i = 0; i < rows.size(); i++) {
+        var got = $.GpsDiag.secsBetween(rows[i][0], rows[i][1]);
+        if (got != rows[i][2]) {
+            logger.error("secsBetween(" + rows[i][0] + ", " + rows[i][1] + ") = " +
+                         got + ", expected " + rows[i][2] +
+                         " -- a never-seen stamp in EITHER argument is 0 seconds, " +
+                         "never a duration since device boot");
+            ok = false;
+        }
+    }
+    // And the same fact through the shipping snapshot, so this cannot pass
+    // against a guarded secsBetween that gpsDiagSnapshot stops calling.
+    var p = new GpsProbe();
+    p.sessionReset(-1500000);          // START on the negative half of the clock
+    var a = p.snapshot();              // no callback has ever arrived
+    if (a[$.GpsDiag.I_LAST_CB_S] != 0) {
+        logger.error("a row with no callback at all must report 0 in slot 4; got " +
+                     a[$.GpsDiag.I_LAST_CB_S] + " -- #214 computes the end-of-row " +
+                     "gap as total_elapsed_time minus this slot");
+        ok = false;
+    }
+    if (a[$.GpsDiag.I_CB_TOTAL] != 0) {
+        logger.error("premise of this case: no callback was fed; I_CB_TOTAL=" +
+                     a[$.GpsDiag.I_CB_TOTAL]);
+        ok = false;
+    }
+    return ok;
+}
+
 }
