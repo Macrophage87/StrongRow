@@ -8856,6 +8856,36 @@ class StrongRowView extends Ui.View {
     //   rung 3  "REC 43:45"                stroke count dropped
     //   rung 4  "REC"                      the floor -- fits on all 19
     //
+    // WHAT THAT COSTS, MEASURED, because it is the one product decision here
+    // and it should be read rather than inferred. RUNG 1 IS NOW UNREACHABLE ON
+    // EVERY DEVICE FOR EVERY SESSION VALUE: its NARROWEST possible form,
+    // "REC 0:00 0.00km 0wk", measures 298 px on the 454 px family and the 466 px
+    // device, 278 on the 416 px fenix 8/9 43 mm, 222 on epix2pro47mm, 168/156 on
+    // the two Solars and 141 on the 260/240 px family -- over the chord on all
+    // nineteen, by 9.81 px at best and 106.94 px at worst. So the DISTANCE CELL
+    // IS NO LONGER DRAWN ANYWHERE, in any state, and erg mode's "--" does not
+    // rescue it either. Rung 1 is kept as the ladder's head because it is the
+    // pre-#217 string and the characterization pin is defined as "the widest
+    // rung is unchanged", not because it can be selected. Rung 2 is reachable on
+    // six devices (fenix7, fenix7pro, fenix6, fenix6pro, fenix6xpro,
+    // epix2pro47mm); on the other THIRTEEN -- including every 454 px product and
+    // the 466 px one -- the footer is "REC" plus the clock and the stroke count
+    // is gone too.
+    //
+    // AND THERE IS A RUNG THAT WOULD KEEP THE STROKE COUNT EVERYWHERE, not
+    // taken, recorded so the maintainer can reverse it. Dropping "REC " instead
+    // of the strokes gives "43:45 400wk", MEASURED at 174 px on the 454 px
+    // family against 191.06 px of chord, and it fits on all nineteen (163 vs
+    // 174.33 on the 416 px fenix 8/9; 132 vs 186.46 on epix2pro47mm; 82 vs
+    // 101.44 on fenix6spro; 92 vs 108.50 and 100 vs 119.69 on the two Solars).
+    // The trade is therefore "the word REC, or the stroke count" on thirteen
+    // devices, and this ladder chooses the word for the reason above. That is a
+    // product judgement and not a measurement; #222's wrist session is the
+    // evidence that would reverse it. (The third candidate, "REC 43:45 400" with
+    // the "wk" token dropped, is NOT a way out: MEASURED at 200 px, which does
+    // not fit the 454 px family's 191.06 and clears the 466 px device's 200.28
+    // by 0.28 px -- not a margin anyone should ship.)
+    //
     // THE TWO SAFETY STATES ARE NEVER SHORTENED AND NEVER SUPPRESSED. NO ACCEL
     // and NOT RECORDING each have a one-rung ladder, so footFit returns them
     // unchanged whatever the chord says. NO ACCEL fits on all nineteen devices
