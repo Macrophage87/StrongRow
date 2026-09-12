@@ -46,4 +46,27 @@
     <setting propertyKey="@Properties.jouleBenchmark" title="@Strings.setJouleBenchmark">
         <settingConfig type="numeric" min="50" max="2000"/>
     </setting>
+    <!-- #210: how fast the stroke-rate COLOUR follows the number. The entries
+         carry their millisecond pairs so the rower sees what they are choosing;
+         the measured cost of each is recorded at the CUE_PRESET_* constants in
+         source/StrongRowView.mc and is printed by
+         `python3 scripts/cue_replay.py` with the `presets` flag.
+
+         The list binds the Garmin Connect UI and NOTHING ELSE. That is #21's
+         finding, and it is why StrongRowView.cueClampPreset re-clamps in code:
+         a sideloaded .set file is not re-clamped on load and Properties survive
+         an app update, so a value the code refuses to accept is the only kind
+         that cannot arrive.
+
+         (No double hyphen appears in this comment on purpose: XML forbids one
+         inside a comment, and monkeyc rejects the resource file outright rather
+         than warning. Measured on all 19 devices.) -->
+    <setting propertyKey="@Properties.cueResponse" title="@Strings.setCueResponse">
+        <settingConfig type="list">
+            <listEntry value="0">@Strings.cueRespSteady</listEntry>
+            <listEntry value="1">@Strings.cueRespBalanced</listEntry>
+            <listEntry value="2">@Strings.cueRespTwitchy</listEntry>
+            <listEntry value="3">@Strings.cueRespInstant</listEntry>
+        </settingConfig>
+    </setting>
 </settings>

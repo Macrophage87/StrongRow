@@ -412,16 +412,16 @@ note passes. Re-measure by bisection when the tree changes.
 
 ### 5.2 Pinned test count
 
-**412** `(:test)` functions under `source/`, matching
+**423** `(:test)` functions under `source/`, matching
 `scripts/expected_tests.txt` exactly (`bash scripts/check_expected_tests.sh`,
-run on the `claude/lock-snap-guard` branch, REBASED onto the merge of #192 and
-#195: "OK: 412 (:test) function(s) under source/ match
-scripts/expected_tests.txt exactly."). It was **362** at `211f106`, **385** at
-`d2cd8a6` (v0.9, epic #59's merge), **397** at `367929a` (#70's merge) and
-**408** at `db4ffcc` (#195's merge); #193 adds five in
-`source/LockGuardTest.mc` and retires one — a **net** `+4 / -0` on
-`scripts/expected_tests.txt`, which is the diff to check, not the
-arithmetic on five added and one retired.
+run on the `claude/cue-twitchiness` branch at its c2 commit: "OK: 423 (:test)
+function(s) under source/ match scripts/expected_tests.txt exactly."). It was
+**412** at `9ece925` (`origin/main`, v0.9.2, the merge of #208), **362** at
+`211f106`, **385** at `d2cd8a6` (v0.9, epic #59's merge), **397** at `367929a`
+(#70's merge) and **408** at `db4ffcc` (#195's merge). The **net** diff on
+`scripts/expected_tests.txt` is the thing to check, not the arithmetic on
+additions and retirements separately — #193 added five in
+`source/LockGuardTest.mc` and retired one, which is a net `+4 / -0`.
 
 **THE COUNT WAS RE-DERIVED ON THE REBASED TREE, never added up.** Two branches
 in flight both moved this number, and 385 + 11 + 4 was carried in a review
@@ -442,11 +442,19 @@ deleting a function *and* its pin line together still passes (#52).
 
 ### 5.3 The developer-field id map
 
-27 developer fields, ids unique, **none unused**. Parsed from the `createField`
+28 developer fields, ids unique, and **one id (27) deliberately
+reserved and unused**. Parsed from the `createField`
 calls in `source/StrongRowView.mc`. The table below was taken at `211f106`,
 when there were 26 fields and **id 19 was the one free id**; epic #59 took 19
-for `rr_diag`, so the id set is now CONTIGUOUS — 0 to 26 inclusive, no holes —
-and the next field added takes 27.
+for `rr_diag`, which made the id set contiguous at 0 to 26.
+
+**The set is NOT contiguous now, and the hole is deliberate.** `cue_cfg` (#191)
+takes **28**, not 27, because **27 is reserved for `gps_diag`** on the in-flight
+branch `claude/gps-fenix9`; two branches taking the same id would silently
+re-label a field at the point they landed. Until that branch lands the id set
+is 0-26 plus 28, with 27 unused. `scripts/check_step_fields.py` pins the count
+and uniqueness; **nothing pins contiguity**, and nothing should — a reserved id
+is a coordination fact, not a code property.
 
 | id | name | type | id | name | type |
 |---:|---|---|---:|---|---|
@@ -463,8 +471,8 @@ and the next field added takes 27.
 | 9 | `max_core_temperature` | FLOAT | 24 | `rate_base` | FLOAT |
 | 10 | `ct_diag` | UINT16 | 25 | `lap_step_type` | UINT8 |
 | 11 | `heat_strain_index` | FLOAT | 26 | `lap_interval_num` | UINT16 |
-| 12 | `erg_power` | FLOAT | | | |
-| 13 | `erg_joules_per_stroke` | FLOAT | | | |
+| 12 | `erg_power` | FLOAT | 28 | `cue_cfg` | UINT16 |
+| 13 | `erg_joules_per_stroke` | FLOAT | | (27 reserved, `gps_diag`) | |
 
 **A developer field id is unique per `field_description`**, which is why the
 lap copies (25, 26) could not reuse 17 and 18 — a collision silently re-labels
@@ -474,11 +482,12 @@ pinned by `scripts/check_agent_facts.py` and was not pinned by anything before
 this file existed.
 
 **Twenty-six was two different counts, and they were never related.** There are
-27 developer fields today (this table, machine-checked; it was 26 at `211f106`)
-**and** there were 26 device parts in the exported `.iq` (§5.5, prose only) —
-across what were then **12** manifest products (§1.4). Three numbers, one
-coincidence, and the coincidence has now broken twice over: the field count
-moved to 27 and the manifest to **19** products. Say which one you mean; open
+28 developer fields today (this table, machine-checked; it was 26 at `211f106`
+and 27 at `9ece925`) **and** there were 26 device parts in the exported `.iq`
+(§5.5, prose only) — across what were then **12** manifest products (§1.4).
+Three numbers, one coincidence, and the coincidence has now broken three times
+over: the field count moved to 27 and then 28, and the manifest to **19**
+products. Say which one you mean; open
 issue #172's title uses the field figure. Checking *what a figure is measured
 against* rather than just that it is right is this repository's "wrong pair"
 defect class (§6).
@@ -598,7 +607,7 @@ prose above is the explanation.
 
     AGENTFACT ci-container sha256:64958e8fd2925d0c4986d72a9aa9d8e2101297a881354aab0118be2f1dc22105
     AGENTFACT manifest-devices 19
-    AGENTFACT pinned-tests 412
+    AGENTFACT pinned-tests 423
     AGENTFACT ceiling hrv-correctness 249 253 4
     AGENTFACT devfield 0 row_stroke_rate
     AGENTFACT devfield 1 dist_per_stroke
@@ -627,6 +636,7 @@ prose above is the explanation.
     AGENTFACT devfield 24 rate_base
     AGENTFACT devfield 25 lap_step_type
     AGENTFACT devfield 26 lap_interval_num
+    AGENTFACT devfield 28 cue_cfg
 
 The `CEILING` line in §5.1 is additionally checked by
 `scripts/check_ceiling_notes.py`, which requires it to be byte-identical to its

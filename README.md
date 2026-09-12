@@ -112,7 +112,19 @@ laps.)
   not drives), `rr_interval` (up to 4 raw ms values per record), `rmssd` (ms),
   `core_temperature` and `skin_temperature` (°C) and `heat_strain_index`
   (a.u.) per record, plus session-level `avg_rmssd` (ms),
-  `total_corrective_strokes`, `max_core_temperature`, `ct_diag` and `rr_diag`.
+  `total_corrective_strokes`, `max_core_temperature`, `ct_diag`, `rr_diag` and
+  `cue_cfg`.
+- `cue_cfg` is a session-level record of **the configuration the row was
+  coloured against**: six UINT16 slots, `[layout version, target low, target
+  high, cue response preset (0–3), out-of-band latch ms, re-entry latch ms]`. It
+  exists because a colour complaint could not previously be checked after the
+  row — the file recorded neither the target band nor the latch, so "blue at
+  20 spm" could be neither confirmed nor dismissed. Slot 0 carries a layout
+  version so an older file stays readable, and the latch milliseconds are
+  written out rather than implied by the preset number, so a later change to
+  what a preset means cannot silently mis-date an older row. The slot map lives
+  with the `CUE_CFG_*` constants in
+  [`source/StrongRowView.mc`](source/StrongRowView.mc).
 - `rr_diag` is a session-level **diagnostic** array of 21 counters describing
   what the app's own R-R receive path did — sensor callbacks seen, how many of
   them carried heart-rate data at all, batches and beat intervals received, how
@@ -211,6 +223,36 @@ BACK saves. Both are their own laps, so they're easy to trim in analysis.
 | Target low / high (spm) | 16 / 18 |
 | Press START after rest (gate) | on |
 | Warmup and cooldown steps | on |
+| Rate cue response | Balanced (2000/500 ms) |
+
+**Rate cue response** sets how quickly the stroke-rate *colour* follows the
+number. The colour is an instruction ("row harder" / "hold" / "ease off"), so it
+deliberately lags the measurement: a zone has to hold for a while before the
+colour follows it, which is what stops a single spike ordering a correction. The
+setting is that delay — the first number is how long a change to an out-of-band
+cue must hold, the second how long a change back into the band must:
+
+| | latch | what it costs |
+|---|---|---|
+| Steady | 4000/1000 ms | the least flicker; mean 1.73 s before the colour adopts a change on the calm row, 0.54–1.73 s across the four recorded rows |
+| **Balanced** (default) | 2000/500 ms | the shipped compromise; 0.91 s on the calm row, 0.39–0.91 s across the four |
+| Twitchy | 1000/250 ms | 0.46 s on the calm row, 0.21–0.46 s across the four, at more flicker than the default's own rule admits |
+| Instant | 0/0 ms | 0.18 s on the calm row, 0.10–0.18 s across the four; the deadband and the sign-reversal fast path only |
+
+Two honest caveats. **Twitchy and Instant sit outside the flicker bound the
+default was chosen by** (measured on the recorded rows; they are offered because
+the athlete asked for them, not because they scored better). And **no committed
+recording can tell Instant from Twitchy on flicker**, because the recordings
+carry one reading per second and the difference between a 250 ms window and no
+window lives inside one second. The numbers above come off
+`python3 scripts/cue_replay.py --presets`.
+
+Whatever is selected, the setting is read when the app starts or when settings
+change *before* START; a change made mid-row does not take effect until the next
+row, and the row's own configuration is written into the FIT (`cue_cfg`).
+
+Nothing about the cue is an alarm: it is colour and layout only, never
+vibration, tone or flashing.
 
 Turning the workout off gives a plain free row: live stroke rate with START to
 record and BACK to save.

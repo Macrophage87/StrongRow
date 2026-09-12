@@ -223,6 +223,69 @@ module CueFix {
 
         // The real 250 ms tick, called directly.
         function runTick() { onTick(); }
+
+        // ---- #210: a SCRIPTED PROPERTY STORE ------------------------------
+        //
+        // WHY AN OVERRIDE OF getProp AND NOT A SETTER ON THE VIEW. The defect
+        // class this repository has the receipt for is a case that exercises a
+        // private COPY of the logic instead of the shipping code
+        // (jouleClampBench's note in StrongRowView.mc, where deleting both real
+        // clamp lines left all 308 cases green). Writing mCuePreset directly
+        // from a probe would pin nothing about loadSettings. Overriding the ONE
+        // method that reaches App.Properties leaves the whole of the shipping
+        // loadSettings -- the clamp, the swap, the order -- on the path under
+        // test.
+        //
+        // IT REPRODUCES getProp's NULL RULE, deliberately. The shipping body is
+        // "read; if the value is null, keep the default", so a scripted null
+        // must behave as an absent property and not as a null handed to the
+        // clamp. A case that wants to see the clamp meet a null calls the
+        // clamp directly.
+        //
+        // A key that was never scripted falls through to the real
+        // App.Properties, so a case scripts only what it is varying.
+        var props;
+        hidden function getProp(key, dflt) {
+            if (props != null && props.hasKey(key)) {
+                var p = props.get(key);
+                return (p == null) ? dflt : p;
+            }
+            return HrProbe.getProp(key, dflt);
+        }
+        function setProp(key, v) {
+            if (props == null) { props = {}; }
+            props.put(key, v);
+        }
+
+        // Re-read the settings through the SHIPPING loadSettings. Separate from
+        // reloadThroughSettings below because loadSettings is what a case
+        // varying a setting wants, while reloadSettings is what Garmin Connect
+        // reaches -- and the difference between them (the mid-row refusal) is
+        // itself under test.
+        function loadPropsNow() { loadSettings(); }
+
+        // Drive the SHIPPING reloadSettings, which is the path a settings
+        // change from Garmin Connect takes (StrongRowApp.onSettingsChanged ->
+        // StrongRowView.reloadSettings). Ui.requestUpdate() is its last
+        // statement, so every observable precedes it; the try/catch contains
+        // the catchable failure modes of a headless update request, exactly as
+        // RrHrvTest.tickAt does and for the same reason.
+        function reloadThroughSettings() {
+            try { reloadSettings(); } catch (e) { }
+        }
+
+        // The cue response, as loadSettings resolved it. Read-only: a case that
+        // wants to change them scripts the property and reloads, so the clamp
+        // and the table stay on the path under test.
+        function viewCuePreset() { return mCuePreset; }
+        function viewCueOutMs()  { return mCueOutMs; }
+        function viewCueInMs()   { return mCueInMs; }
+
+        // #191. Stand the cue_cfg handle up without a Session -- no (:test) can
+        // obtain one -- and drive the SHIPPING guarded write. What this can see
+        // is the argument handed to setData and nothing beyond it.
+        function installFitCueCfg(f) { mFitCueCfg = f; }
+        function runCueCfgWrite()    { cueCfgWrite(); }
     }
 
     // The big stroke-rate numeral, located BY ITS FONT rather than by its
@@ -282,6 +345,30 @@ module CueFix {
     // themselves.
     function workProbe() {
         var p = new Probe();
+        p.enterStepLive(p.kindWork(), false);
+        p.setSpeed(0.0);
+        p.setDist(0.0);
+        return p;
+    }
+
+    // workProbe, with the cue-response property scripted FIRST and the shipping
+    // loadSettings re-run over it.
+    //
+    // THE ORDER IS THE WHOLE POINT. StrongRowView.initialize() calls
+    // loadSettings() before a case can script anything, so a probe built and
+    // then scripted still carries the settings it was constructed with. The
+    // re-read has to happen before enterStepLive, because enterStepLive raises
+    // mStarted and reloadSettings refuses to run while it is raised -- which is
+    // the property test_cue_c0_aSettingsReloadIsRefusedMidRow pins.
+    //
+    // `preset` is passed to setProp UNCHANGED, including a non-Number or an
+    // out-of-range one: the clamp is on the shipping side and these cases exist
+    // to watch it work. Pass null for "the property is not set", which getProp
+    // above maps to the declared default exactly as an absent property does.
+    function cueProbe(preset) {
+        var p = new Probe();
+        p.setProp("cueResponse", preset);
+        p.loadPropsNow();
         p.enterStepLive(p.kindWork(), false);
         p.setSpeed(0.0);
         p.setDist(0.0);
@@ -1337,6 +1424,718 @@ module CueFix {
                      CueFix.numeralText(m) + " and the colour is " +
                      CueFix.numeralColour(m) + ", expected COLOR_RED (" +
                      Gfx.COLOR_RED + ")");
+        return false;
+    }
+    return true;
+}
+
+// =============================================================================
+// #210 / #191: THE CUE RESPONSE SETTING
+// =============================================================================
+//
+// THE ASK, from the rower after the first row on v0.9.2 (#210): "The stroke
+// rate is better, though part of me would want it even twitchier." v0.9.1 (#195)
+// had already moved the latch from 4000/1000 to 2000/500 under the maintainer's
+// rule that responsiveness outranks flicker suppression. The answer is not
+// another guess at a number -- it is to make the number a setting, with the
+// four presets' MEASURED cost printed beside them, and let the rower choose.
+//
+// COMMIT PARTITION for this round (docs/agents/rituals/FIX_ROUND.md):
+//   c0   the pins below: today's DEFAULT behaviour, on the shipping draw path
+//        and through the shipping loadSettings. Green before the change and
+//        green after it -- that is their whole job, because "the default is
+//        today's behaviour" is the one promise this change must keep.
+//   c1   the pure seams (cuePresetWindows, cueClampPreset, cueStepW,
+//        cueCfgArray) and green pins on them. No wiring.
+//   c2   the RED differentials: everything that needs the setting to actually
+//        reach the view.
+//   c3   the wiring. Touches no test file, no pin, no scripts/, no .github/.
+//
+// -- c0 -----------------------------------------------------------------------
+
+// TODAY'S DEFAULT, ON THE SHIPPING DRAW PATH, TO THE MILLISECOND.
+//
+// NOT A DUPLICATE of test_cue_c2_theWindowsAreTwoSecondsAndAHalf, which calls
+// cueStep directly with literal stamps. That case would stay green if the view
+// stopped consulting the constants altogether; this one drives onUpdate on a
+// probe whose settings came through the shipping loadSettings, so it covers the
+// join between the two -- which is exactly the join this round moves.
+//
+// LITERAL STAMPS, ON PURPOSE. Everywhere else in this file the windows are read
+// from $.CUE_PERSIST_OUT_MS / $.CUE_PERSIST_IN_MS so a case says "the window,
+// whatever it is". Here the numbers ARE the claim: preset 1 is the default and
+// preset 1 is 2000/500, so a change that silently retuned the default would
+// have to edit this case to land.
+(:test) function test_cue_c0_theDefaultSettingsLatchAtTwoSeconds(logger) {
+    var p = CueFix.workProbe();
+
+    // Setup, asserted rather than assumed: the band the rest of this case's
+    // rates are chosen against is the shipped default, as loadSettings left it.
+    if (p.spmTargetLo() != CueFix.LO || p.spmTargetHi() != CueFix.HI) {
+        logger.error("setup: the default band from loadSettings is " +
+                     p.spmTargetLo() + "-" + p.spmTargetHi() + ", expected " +
+                     CueFix.LO + "-" + CueFix.HI + "; every rate below is " +
+                     "chosen against that band");
+        return false;
+    }
+
+    // Settle IN. Out of CUEZ_NONE the first reading is adopted on its own
+    // frame, so one render is enough.
+    p.setRate(17.0);
+    if (CueFix.numeralColour(CueFix.renderAt(p, 0)) != Gfx.COLOR_GREEN) {
+        logger.error("setup: 17.0 spm inside a 16-18 band must show green on " +
+                     "the first frame out of the no-data state");
+        return false;
+    }
+
+    // LEAVING the band. 19.5 clears hi + CUE_DEADBAND (18 + 1), so cueTarget
+    // asks for ABOVE from the frame at 1000 ms onward.
+    p.setRate(19.5);
+    CueFix.renderAt(p, 1000);
+    if (CueFix.numeralColour(CueFix.renderAt(p, 2999)) != Gfx.COLOR_GREEN) {
+        logger.error("1999 ms of a 2000 ms out-of-band window is not the " +
+                     "window: the colour must still be green. Got " +
+                     CueFix.numeralColour(CueFix.renderAt(p, 2999)));
+        return false;
+    }
+    if (CueFix.numeralColour(CueFix.renderAt(p, 3000)) != Gfx.COLOR_RED) {
+        logger.error("at exactly 2000 ms the out-of-band change is due and " +
+                     "must be taken; the colour is still not COLOR_RED (" +
+                     Gfx.COLOR_RED + ")");
+        return false;
+    }
+
+    // COMING BACK. The candidate is IN, which is the cheap claim and pays the
+    // shorter window.
+    p.setRate(17.0);
+    CueFix.renderAt(p, 4000);
+    if (CueFix.numeralColour(CueFix.renderAt(p, 4499)) != Gfx.COLOR_RED) {
+        logger.error("499 ms of a 500 ms re-entry window is not the window: " +
+                     "the colour must still be red");
+        return false;
+    }
+    if (CueFix.numeralColour(CueFix.renderAt(p, 4500)) != Gfx.COLOR_GREEN) {
+        logger.error("at exactly 500 ms the return to the band is due and " +
+                     "must be taken; the colour is still not COLOR_GREEN (" +
+                     Gfx.COLOR_GREEN + ")");
+        return false;
+    }
+    return true;
+}
+
+// A SETTINGS CHANGE DOES NOT REACH A ROW THAT IS ALREADY RUNNING.
+//
+// Pinned at c0 because the next commit makes it load-bearing in a way it was
+// not before: cue_cfg records ONE configuration per session, and that record is
+// only honest if the configuration cannot move underneath the row. The refusal
+// already exists (StrongRowView.reloadSettings returns early on mStarted), it
+// is simply not pinned anywhere, and a session-scope field that claimed a
+// configuration the second half of the row did not run on would be this
+// repository's "absence rendered as a value" defect wearing a new hat.
+//
+// Driven on an EXISTING setting -- the target band -- so the case is green in
+// both epochs and says nothing about the setting this round adds.
+(:test) function test_cue_c0_aSettingsReloadIsRefusedMidRow(logger) {
+    var p = new CueFix.Probe();
+    if (p.spmTargetLo() != CueFix.LO || p.spmTargetHi() != CueFix.HI) {
+        logger.error("setup: a freshly constructed view must carry the " +
+                     "declared defaults; got " + p.spmTargetLo() + "-" +
+                     p.spmTargetHi());
+        return false;
+    }
+
+    // BEFORE START the reload is honoured, which is the half that makes the
+    // other half meaningful: a case asserting only the refusal would pass on a
+    // reloadSettings that never worked at all.
+    p.setProp("targetLo", 12);
+    p.setProp("targetHi", 14);
+    p.reloadThroughSettings();
+    if (p.spmTargetLo() != 12 || p.spmTargetHi() != 14) {
+        logger.error("before START a settings change must be adopted; the " +
+                     "band is " + p.spmTargetLo() + "-" + p.spmTargetHi() +
+                     ", expected 12-14");
+        return false;
+    }
+
+    // AFTER START it is refused, and the row keeps the configuration it began
+    // with.
+    p.enterStepLive(p.kindWork(), false);
+    p.setProp("targetLo", 4);
+    p.setProp("targetHi", 6);
+    p.reloadThroughSettings();
+    if (p.spmTargetLo() != 12 || p.spmTargetHi() != 14) {
+        logger.error("a settings change arriving mid-row must NOT be adopted: " +
+                     "the band is " + p.spmTargetLo() + "-" + p.spmTargetHi() +
+                     ", expected the 12-14 the row started on. Every " +
+                     "session-scope record of the configuration depends on " +
+                     "this being true for the whole row");
+        return false;
+    }
+    return true;
+}
+
+// -- c1: the pure seams ------------------------------------------------------
+// New symbols, green on the commit that introduces them. None of them is wired
+// to anything yet: loadSettings does not read the property and onUpdate still
+// calls the seven-argument cueStep, which is what makes c2's differentials red.
+
+// THE PRESET TABLE IS THE FOUR MEASURED PAIRS, AND PRESET 1 IS THE CONSTANTS.
+//
+// The second half is the load-bearing one. #210's whole promise is "the default
+// is today's behaviour", and the only way to keep a promise like that across
+// future edits is to make the two impossible to disagree: cuePresetWindows(1)
+// returns $.CUE_PERSIST_OUT_MS / $.CUE_PERSIST_IN_MS by reference, and this
+// case asserts the IDENTITY rather than the numbers 2000 and 500. A retune of
+// the constants therefore moves the default preset with it, by construction.
+//
+// The other three rows ARE asserted as literals, because for them the numbers
+// are the claim: they are what the setting's titles promise the athlete and
+// what scripts/cue_replay.py replays. scripts/test_cue_replay.py E3 reads this
+// function's body out of StrongRowView.mc and reds if the Python copy of the
+// table has drifted from it.
+(:test) function test_cue_c1_thePresetTableIsTheFourMeasuredPairs(logger) {
+    var w0 = StrongRowView.cuePresetWindows(0);
+    var w1 = StrongRowView.cuePresetWindows(1);
+    var w2 = StrongRowView.cuePresetWindows(2);
+    var w3 = StrongRowView.cuePresetWindows(3);
+
+    if (w0[0] != 4000 || w0[1] != 1000) {
+        logger.error("preset 0 (Steady) must be 4000/1000, the pair that " +
+                     "shipped before v0.9.1; got " + w0[0] + "/" + w0[1]);
+        return false;
+    }
+    if (w1[0] != $.CUE_PERSIST_OUT_MS || w1[1] != $.CUE_PERSIST_IN_MS) {
+        logger.error("preset 1 (Balanced) is DEFINED as today's behaviour and " +
+                     "must return the two constants themselves, not a copy of " +
+                     "their current values; got " + w1[0] + "/" + w1[1] +
+                     ", constants are " + $.CUE_PERSIST_OUT_MS + "/" +
+                     $.CUE_PERSIST_IN_MS);
+        return false;
+    }
+    if (w2[0] != 1000 || w2[1] != 250) {
+        logger.error("preset 2 (Twitchy) must be 1000/250; got " + w2[0] +
+                     "/" + w2[1]);
+        return false;
+    }
+    if (w3[0] != 0 || w3[1] != 0) {
+        logger.error("preset 3 (Instant) must be 0/0 -- the deadband and the " +
+                     "sign-reversal fast path only; got " + w3[0] + "/" + w3[1]);
+        return false;
+    }
+
+    // THE ORDER IS PART OF THE TABLE. The presets are offered to the athlete as
+    // a scale from steady to instant, so a permutation of two rows would leave
+    // every assertion above true of SOME preset while making the setting's
+    // titles lie. Asserted as a monotone decrease, both windows, which no
+    // permutation of these four pairs survives.
+    var ws = [w0, w1, w2, w3];
+    for (var i = 1; i < 4; i++) {
+        if (!(ws[i][0] < ws[i - 1][0]) || !(ws[i][1] < ws[i - 1][1])) {
+            logger.error("preset " + i + " (" + ws[i][0] + "/" + ws[i][1] +
+                         ") must be strictly faster than preset " + (i - 1) +
+                         " (" + ws[i - 1][0] + "/" + ws[i - 1][1] + ") in " +
+                         "BOTH windows: the presets are a scale and the " +
+                         "setting's titles say so");
+            return false;
+        }
+        // Leaving the band stays the expensive claim at every preset, which is
+        // the invariant test_cue_c0_theLatchGovernsEverySameSideChange asserts
+        // of the constants. 0/0 is the one row where the two are equal.
+        if (ws[i][0] < ws[i][1]) {
+            logger.error("preset " + i + " has an out-of-band window (" +
+                         ws[i][0] + ") shorter than its re-entry window (" +
+                         ws[i][1] + "): asserting an out-of-band instruction " +
+                         "must never be cheaper than withdrawing one");
+            return false;
+        }
+    }
+    return true;
+}
+
+// THE CLAMP REFUSES EVERYTHING THAT IS NOT A PRESET, AND `false` IS NOT ZERO.
+//
+// The trap this case exists for is measured and already has a receipt in this
+// repository: `0 == false` evaluates TRUE in Monkey C (SDK 9.2.0, fr965, see
+// the note at StrongRowView.ergFlag, which was written after a clamp built out
+// of value comparisons silently accepted a Number 0 as a set toggle). Here the
+// direction is the mirror -- a clamp built that way would accept a Boolean
+// `false` as preset 0, which is STEADY, the SLOWEST setting, from a property
+// that never said so. An athlete who asked for twitchier would get the opposite
+// of what they asked for, silently, on a corrupted property.
+(:test) function test_cue_c1_theClampRefusesEverythingButZeroToThree(logger) {
+    // In range: returned unchanged. A clamp that returned the default for
+    // everything would pass every rejection assertion below.
+    for (var p = 0; p <= 3; p++) {
+        if (StrongRowView.cueClampPreset(p) != p) {
+            logger.error("preset " + p + " is in range and must be returned " +
+                         "unchanged; got " + StrongRowView.cueClampPreset(p));
+            return false;
+        }
+    }
+
+    // Out of range, either end, including the two adjacent values a fencepost
+    // error would admit.
+    var bad = [-100, -1, 4, 5, 100, 65535];
+    for (var i = 0; i < bad.size(); i++) {
+        if (StrongRowView.cueClampPreset(bad[i]) != $.CUE_PRESET_DEF) {
+            logger.error("out-of-range preset " + bad[i] + " must clamp to " +
+                         "the default (" + $.CUE_PRESET_DEF + "); got " +
+                         StrongRowView.cueClampPreset(bad[i]));
+            return false;
+        }
+    }
+
+    // NOT A NUMBER AT ALL. Each of these is what a Connect IQ property can
+    // actually hold after an app update, a settings-schema change or a
+    // sideloaded .set file.
+    if (StrongRowView.cueClampPreset(false) != $.CUE_PRESET_DEF) {
+        logger.error("a Boolean false must clamp to the default (" +
+                     $.CUE_PRESET_DEF + ") and NOT to preset 0: `0 == false` " +
+                     "is TRUE in Monkey C, so a clamp written as value " +
+                     "comparisons would read it as Steady -- the slowest " +
+                     "setting -- and the athlete would never be told. Got " +
+                     StrongRowView.cueClampPreset(false));
+        return false;
+    }
+    if (StrongRowView.cueClampPreset(true) != $.CUE_PRESET_DEF) {
+        logger.error("a Boolean true must clamp to the default, not to " +
+                     "preset 1 by coincidence of value; got " +
+                     StrongRowView.cueClampPreset(true));
+        return false;
+    }
+    if (StrongRowView.cueClampPreset(2.0) != $.CUE_PRESET_DEF) {
+        logger.error("a Float must clamp to the default: the setting is a " +
+                     "list and Connect IQ stores it as a Number, so a Float " +
+                     "here is evidence the property is not what this code " +
+                     "thinks it is; got " + StrongRowView.cueClampPreset(2.0));
+        return false;
+    }
+    if (StrongRowView.cueClampPreset("2") != $.CUE_PRESET_DEF) {
+        logger.error("a String must clamp to the default rather than being " +
+                     "coerced; got " + StrongRowView.cueClampPreset("2"));
+        return false;
+    }
+    if (StrongRowView.cueClampPreset(null) != $.CUE_PRESET_DEF) {
+        logger.error("null must clamp to the default; got " +
+                     StrongRowView.cueClampPreset(null));
+        return false;
+    }
+
+    // The table refuses the same things, because it clamps its own argument.
+    // Without this, a caller reaching cuePresetWindows directly with junk would
+    // fall through the if-chain to the 0/0 row -- the FASTEST setting -- which
+    // is the mirror of the `false` defect above.
+    var junk = StrongRowView.cuePresetWindows(false);
+    var dflt = StrongRowView.cuePresetWindows($.CUE_PRESET_DEF);
+    if (junk[0] != dflt[0] || junk[1] != dflt[1]) {
+        logger.error("cuePresetWindows must clamp its own argument: junk gave " +
+                     junk[0] + "/" + junk[1] + ", the default preset gives " +
+                     dflt[0] + "/" + dflt[1]);
+        return false;
+    }
+    return true;
+}
+
+// THE WINDOWED STEP IS THE SAME MACHINE, AT THE DEFAULT PAIR.
+//
+// cueStepW is cueStep's body with the two windows lifted into the parameter
+// list. This sweeps the two against each other over every ordered pair of
+// zones, a rate on each side of the band, and stamps either side of both
+// windows -- the same shape scripts/test_cue_replay.py D1 uses on the Python
+// side, so the two suites make the same statement about the same split.
+//
+// It is NOT a proof of equivalence: two implementations agreeing on a finite
+// vector set agree on that set. What it closes is the specific drift that would
+// make every c0 pin above meaningless -- cueStep quietly becoming a different
+// machine from the one the shipping draw path will call.
+(:test) function test_cue_c1_theWindowedStepIsTheSameMachineAtTheDefaults(logger) {
+    var zs = [$.CUEZ_NONE, $.CUEZ_BELOW, $.CUEZ_IN, $.CUEZ_ABOVE];
+    var rates = [0.0, 7.0, 14.5, 16.0, 17.0, 18.0, 19.5, 25.0];
+    var stamps = [0, 1, $.CUE_PERSIST_IN_MS - 1, $.CUE_PERSIST_IN_MS,
+                  $.CUE_PERSIST_OUT_MS - 1, $.CUE_PERSIST_OUT_MS,
+                  $.CUE_PERSIST_OUT_MS + 1];
+    for (var r = 0; r < rates.size(); r++) {
+        for (var c = 0; c < zs.size(); c++) {
+            for (var d = 0; d < zs.size(); d++) {
+                for (var t = 0; t < stamps.size(); t++) {
+                    var a = StrongRowView.cueStep(
+                        rates[r], CueFix.LO, CueFix.HI, zs[c], zs[d], 0,
+                        stamps[t]);
+                    var b = StrongRowView.cueStepW(
+                        rates[r], CueFix.LO, CueFix.HI, zs[c], zs[d], 0,
+                        stamps[t], $.CUE_PERSIST_OUT_MS, $.CUE_PERSIST_IN_MS);
+                    if (a[0] != b[0] || a[1] != b[1] || a[2] != b[2]) {
+                        logger.error("cueStep and cueStepW part company at " +
+                                     "rate " + rates[r] + ", cur " + zs[c] +
+                                     ", cand " + zs[d] + ", now " + stamps[t] +
+                                     ": [" + a[0] + "," + a[1] + "," + a[2] +
+                                     "] against [" + b[0] + "," + b[1] + "," +
+                                     b[2] + "]. cueStep is what every " +
+                                     "characterization pin in this file " +
+                                     "calls; cueStepW is what the draw path " +
+                                     "will call");
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// THE cue_cfg ARRAY IS THE SLOT MAP ITS CONSTANTS DOCUMENT.
+//
+// Slot indices ARE the wire format: renumbering one without bumping
+// CUE_CFG_VERSION silently re-keys every file already recorded. Every index is
+// nailed to its literal number here for exactly the reason RrDiag's slot-key
+// case gives -- ct_diag shipped three versions with only a prefix of its
+// indices pinned, and a permutation confined to the unpinned tail would have
+// re-keyed three slots of every file with the whole suite green.
+//
+// WHAT THIS DOES NOT SAY. No (:test) can obtain a Session, so nothing here
+// shows that a six-slot session-scope UINT16 array is accepted by createField,
+// saved, or decodable. That is a [Local] question and #172 owns the field-count
+// half of it.
+(:test) function test_cue_c1_theCueCfgArrayIsTheSlotMapItDocuments(logger) {
+    var a = StrongRowView.cueCfgArray(16, 18, 2, 1000, 250);
+    if (a.size() != $.CUE_CFG_SLOTS) {
+        logger.error("cue_cfg must be exactly $.CUE_CFG_SLOTS (" +
+                     $.CUE_CFG_SLOTS + ") long -- the createField `:count` " +
+                     "reads the same constant, and a setData array longer " +
+                     "than :count is an uncatchable System Error at save time " +
+                     "that takes the whole activity with it; got " + a.size());
+        return false;
+    }
+    var want = [$.CUE_CFG_VERSION, 16, 18, 2, 1000, 250];
+    for (var i = 0; i < want.size(); i++) {
+        if (a[i] != want[i]) {
+            logger.error("cue_cfg slot " + i + " is " + a[i] + ", expected " +
+                         want[i] + " ([VERSION, targetLo, targetHi, preset, " +
+                         "outMs, inMs])");
+            return false;
+        }
+    }
+
+    // THE UINT16 COERCION, which is not decoration: loadSettings swaps an
+    // inverted target band but does not range-clamp it, so a sideloaded
+    // negative targetLo would otherwise reach a UINT16 field.
+    var lowered = StrongRowView.cueCfgArray(-5, 70000, 1, 2000, 500);
+    if (lowered[1] != 0) {
+        logger.error("a negative targetLo must land as 0 in a UINT16 slot; " +
+                     "got " + lowered[1]);
+        return false;
+    }
+    if (lowered[2] != $.CUE_CFG_MAXV) {
+        logger.error("a targetHi past the UINT16 ceiling must clamp to " +
+                     $.CUE_CFG_MAXV + "; got " + lowered[2]);
+        return false;
+    }
+    var nulled = StrongRowView.cueCfgArray(null, null, null, null, null);
+    for (var j = 1; j < $.CUE_CFG_SLOTS; j++) {
+        if (nulled[j] != 0) {
+            logger.error("a null slot input must land as 0, never as null: " +
+                         "slot " + j + " is " + nulled[j]);
+            return false;
+        }
+    }
+    if (nulled[0] != $.CUE_CFG_VERSION) {
+        logger.error("slot 0 is the layout version and does not depend on any " +
+                     "input; got " + nulled[0]);
+        return false;
+    }
+    return true;
+}
+
+// THE SHIPPING WRITE HANDS setData THE ARRAY, AND IS GUARDED ON ITS HANDLE.
+//
+// Drives StrongRowView.cueCfgWrite itself rather than a copy of it, which is
+// the whole point: the write, its guard and the array it builds are what a row
+// records, and a case asserting a locally-built array would pin nothing (this
+// repository's named "a test that re-implements logic" failure, which landed on
+// exactly a settings clamp).
+//
+// SCOPE. This observes the ARGUMENT of an in-app setData call. It says nothing
+// about what lands in the file's bytes and nothing about what a decoder
+// renders; both need a [Local] session.
+(:test) function test_cue_c1_theCueCfgWriteIsGuardedOnItsHandle(logger) {
+    // No handle: createField may have thrown, and a write to null must not
+    // take the save path down. Nothing to assert but that it returns.
+    var q = CueFix.workProbe();
+    q.runCueCfgWrite();
+
+    var p = CueFix.cueProbe(null);          // the declared default, unscripted
+    var f = new CueFix.Field();
+    p.installFitCueCfg(f);
+    p.runCueCfgWrite();
+    var got = f.last();
+    if (got == null) {
+        logger.error("with a handle installed, cueCfgWrite must hand the " +
+                     "field an array; nothing was written");
+        return false;
+    }
+    var want = [$.CUE_CFG_VERSION, CueFix.LO, CueFix.HI, $.CUE_PRESET_DEF,
+                $.CUE_PERSIST_OUT_MS, $.CUE_PERSIST_IN_MS];
+    if (got.size() != want.size()) {
+        logger.error("cue_cfg was written with " + got.size() +
+                     " slots, expected " + want.size());
+        return false;
+    }
+    for (var i = 0; i < want.size(); i++) {
+        if (got[i] != want[i]) {
+            logger.error("on an unconfigured row cue_cfg slot " + i + " is " +
+                         got[i] + ", expected " + want[i] + " -- the declared " +
+                         "defaults, which is what a row with no cueResponse " +
+                         "property set actually runs on");
+            return false;
+        }
+    }
+    return true;
+}
+
+// -- c2: the differentials ---------------------------------------------------
+// RED on the commit that introduces them, by design. Every one of them needs
+// the setting to actually reach the view, and at c1 loadSettings does not read
+// it and onUpdate still calls the seven-argument cueStep.
+//
+// EACH CASE CARRIES A HALF THAT IS RED AT c2 AND A HALF THAT IS NOT. That is
+// deliberate: an assertion that the view sits at the default is VACUOUSLY true
+// while nothing can move it, so a case made only of rejections would be green
+// for the wrong reason and would still be green with the clamp deleted. The
+// "this setting moves it" half is what reds, and it is what makes the "this
+// junk does not" half mean something.
+
+// THE VIEW TAKES ITS WINDOWS FROM THE SETTING.
+(:test) function test_cue_c2_theViewTakesItsWindowsFromTheSetting(logger) {
+    // [property, expected preset, expected out, expected in]
+    var rows = [[0, 0, 4000, 1000],
+                [1, 1, $.CUE_PERSIST_OUT_MS, $.CUE_PERSIST_IN_MS],
+                [2, 2, 1000, 250],
+                [3, 3, 0, 0]];
+    for (var i = 0; i < rows.size(); i++) {
+        var r = rows[i];
+        var p = CueFix.cueProbe(r[0]);
+        if (p.viewCuePreset() != r[1]) {
+            logger.error("cueResponse = " + r[0] + " must leave the view on " +
+                         "preset " + r[1] + "; it is on " + p.viewCuePreset() +
+                         ". loadSettings has to READ the property -- a preset " +
+                         "the athlete selected that never reaches the view is " +
+                         "a setting in name only");
+            return false;
+        }
+        if (p.viewCueOutMs() != r[2] || p.viewCueInMs() != r[3]) {
+            logger.error("cueResponse = " + r[0] + " must resolve to " + r[2] +
+                         "/" + r[3] + " ms; the view carries " +
+                         p.viewCueOutMs() + "/" + p.viewCueInMs());
+            return false;
+        }
+    }
+
+    // An UNSET property is the declared default, which is preset 1, which is
+    // today's behaviour. The same statement made on the state that
+    // test_cue_c0_theDefaultSettingsLatchAtTwoSeconds makes on the draw path.
+    //
+    // THE NAME IS ON ONE LINE ON PURPOSE. scripts/check_source_refs.py reads
+    // test names out of comments and resolves them against the declared
+    // (:test)s; a name wrapped across two lines resolves to the prefix, which
+    // exists nowhere, and reds the check. It did -- CI run 34702308549, "1
+    // unresolved test cross-reference(s) in source/" -- which is the tool
+    // working, since a comment naming a guard that does not exist is exactly
+    // what it was written to catch.
+    var d = CueFix.cueProbe(null);
+    if (d.viewCuePreset() != $.CUE_PRESET_DEF ||
+        d.viewCueOutMs() != $.CUE_PERSIST_OUT_MS ||
+        d.viewCueInMs() != $.CUE_PERSIST_IN_MS) {
+        logger.error("with no cueResponse property set the view must carry " +
+                     "the default preset and today's windows; it carries " +
+                     "preset " + d.viewCuePreset() + " at " + d.viewCueOutMs() +
+                     "/" + d.viewCueInMs());
+        return false;
+    }
+    return true;
+}
+
+// A CORRUPTED SETTING LEAVES THE DEFAULT, AND `false` IS NOT STEADY.
+//
+// The clamp is pinned as a pure function by
+// test_cue_c1_theClampRefusesEverythingButZeroToThree. This is the other half
+// of the claim and the one that cannot be smuggled: that loadSettings puts the
+// property THROUGH that clamp rather than storing it raw. #21 is the open
+// defect of a range declared in settings.xml and enforced nowhere else --
+// Connect IQ Properties survive an app update and a sideloaded .set file is not
+// re-clamped on load, so a value this code refuses to accept is the only kind
+// that cannot arrive.
+(:test) function test_cue_c2_aCorruptedResponseSettingLeavesTheDefault(logger) {
+    // THE HALF THAT REDS AT c2, and without it every assertion below is
+    // vacuous: the setting moves the view at all.
+    var live = CueFix.cueProbe(2);
+    if (live.viewCueOutMs() != 1000 || live.viewCueInMs() != 250) {
+        logger.error("setup: a VALID cueResponse must move the view (preset 2 " +
+                     "-> 1000/250) or the rejections below prove nothing; the " +
+                     "view carries " + live.viewCueOutMs() + "/" +
+                     live.viewCueInMs());
+        return false;
+    }
+
+    // Out of range, both ends, and three things that are not Numbers at all.
+    var junk = [7, -1, 4, false, true, "2", 2.5];
+    for (var i = 0; i < junk.size(); i++) {
+        var p = CueFix.cueProbe(junk[i]);
+        if (p.viewCuePreset() != $.CUE_PRESET_DEF ||
+            p.viewCueOutMs() != $.CUE_PERSIST_OUT_MS ||
+            p.viewCueInMs() != $.CUE_PERSIST_IN_MS) {
+            logger.error("a cueResponse property of " + junk[i] + " must " +
+                         "leave the view on the default preset (" +
+                         $.CUE_PRESET_DEF + ", " + $.CUE_PERSIST_OUT_MS + "/" +
+                         $.CUE_PERSIST_IN_MS + "); it carries preset " +
+                         p.viewCuePreset() + " at " + p.viewCueOutMs() + "/" +
+                         p.viewCueInMs());
+            return false;
+        }
+    }
+
+    // NAMED SEPARATELY BECAUSE IT IS THE ONE THAT WOULD SHIP SILENTLY. `0 ==
+    // false` is TRUE in Monkey C, so a clamp built out of value comparisons
+    // reads a Boolean false as preset 0 -- Steady, 4000/1000, the SLOWEST
+    // setting. The athlete asked for twitchier; the failure mode hands them
+    // twice the latch they had.
+    var b = CueFix.cueProbe(false);
+    if (b.viewCueOutMs() == 4000) {
+        logger.error("a Boolean false has been read as preset 0 (Steady, " +
+                     "4000/1000): `0 == false` is TRUE in Monkey C and the " +
+                     "clamp must test the TYPE before it compares any value");
+        return false;
+    }
+    return true;
+}
+
+// THE TWITCHIEST PRESET ADOPTS ON THE FIRST FRAME, AND STILL PAYS THE DEADBAND.
+//
+// Driven through the shipping draw path -- onUpdate, drawRate, the recorded
+// colour -- because that is where the windows have to arrive. A pure cueStepW
+// call would be green at c1 and would say nothing about the wiring.
+(:test) function test_cue_c2_theTwitchiestPresetAdoptsOnTheFirstFrame(logger) {
+    // (a) PRESET 3, 0/0. ONE TICK, AND THE TICK IS NOT THE WINDOW. cueStepW's
+    //     "a DIFFERENT candidate from last frame starts its own clock" branch
+    //     runs before any window arithmetic, so the frame a new candidate
+    //     first appears only registers it; the NEXT frame adopts, because
+    //     `now - since >= 0` is true immediately. That residual 250 ms is the
+    //     display tick and the candidate rule, not the latch, and no preset
+    //     can remove it -- which is worth pinning so "Instant" is not read as
+    //     a promise the machine does not make.
+    var p = CueFix.cueProbe(3);
+    p.setRate(17.0);
+    CueFix.renderAt(p, 0);
+    p.setRate(19.5);
+    var reg = CueFix.numeralColour(CueFix.renderAt(p, 250));
+    if (reg != Gfx.COLOR_GREEN) {
+        logger.error("(a) the frame a new candidate first appears registers " +
+                     "it and does not adopt it, at every preset; the colour " +
+                     "at 250 ms is " + reg + ", expected COLOR_GREEN (" +
+                     Gfx.COLOR_GREEN + ")");
+        return false;
+    }
+    var first = CueFix.numeralColour(CueFix.renderAt(p, 500));
+    if (first != Gfx.COLOR_RED) {
+        logger.error("(a) at preset 3 (Instant, 0/0) the pending candidate " +
+                     "must be taken on the very next frame -- a zero window " +
+                     "is satisfied the instant it is tested; the colour at " +
+                     "500 ms is " + first + ", expected COLOR_RED (" +
+                     Gfx.COLOR_RED + ")");
+        return false;
+    }
+
+    // (b) THE DEADBAND IS NOT A WINDOW AND DOES NOT GO AWAY. 18.5 is over hi
+    //     and inside hi + CUE_DEADBAND, so from a displayed IN it stays IN --
+    //     at every preset, forever, by design. "Instant" is about the latch.
+    var q = CueFix.cueProbe(3);
+    q.setRate(17.0);
+    CueFix.renderAt(q, 0);
+    q.setRate(18.5);
+    for (var t = 250; t <= 10000; t += 250) {
+        var c = CueFix.numeralColour(CueFix.renderAt(q, t));
+        if (c != Gfx.COLOR_GREEN) {
+            logger.error("(b) 18.5 spm is inside hi + CUE_DEADBAND (" +
+                         CueFix.HI + " + " + $.CUE_DEADBAND + ") and must " +
+                         "never move a colour showing IN, at any preset: at " +
+                         t + " ms the colour is " + c + ", expected " +
+                         "COLOR_GREEN (" + Gfx.COLOR_GREEN + ")");
+            return false;
+        }
+    }
+
+    // (c) THE OTHER END OF THE SCALE, through the same path, so this case
+    //     cannot pass by the windows being ignored in the fast direction.
+    //     Preset 0 is 4000 ms and 3999 is not 4000.
+    var s = CueFix.cueProbe(0);
+    s.setRate(17.0);
+    CueFix.renderAt(s, 0);
+    s.setRate(19.5);
+    CueFix.renderAt(s, 1000);
+    if (CueFix.numeralColour(CueFix.renderAt(s, 4999)) != Gfx.COLOR_GREEN) {
+        logger.error("(c) at preset 0 (Steady, 4000/1000) the colour must not " +
+                     "have moved 3999 ms into a 4000 ms window");
+        return false;
+    }
+    if (CueFix.numeralColour(CueFix.renderAt(s, 5000)) != Gfx.COLOR_RED) {
+        logger.error("(c) at preset 0 the change is due at exactly 4000 ms " +
+                     "and must be taken");
+        return false;
+    }
+    return true;
+}
+
+// THE RECORDED CONFIGURATION IS THE ONE THE ROW RAN ON (#191).
+//
+// The defect #191 names is that a colour complaint cannot be checked after the
+// row: "blue at 20 spm" could be neither confirmed nor dismissed because the
+// file records neither the band nor the latch. This asserts what the shipping
+// write hands setData -- band, preset and BOTH windows -- for a row configured
+// through the shipping loadSettings.
+//
+// SCOPE, because this is exactly where this repository overreaches: it observes
+// the argument of an in-app call. It says nothing about what lands in the
+// file's bytes and nothing about what a decoder renders.
+(:test) function test_cue_c2_theRecordedConfigurationIsTheOneTheRowRanOn(logger) {
+    var p = new CueFix.Probe();
+    p.setProp("cueResponse", 2);
+    p.setProp("targetLo", 12);
+    p.setProp("targetHi", 14);
+    p.loadPropsNow();
+    var f = new CueFix.Field();
+    p.installFitCueCfg(f);
+    p.runCueCfgWrite();
+    var got = f.last();
+    if (got == null) {
+        logger.error("cue_cfg must be written; nothing reached the field");
+        return false;
+    }
+    var want = [$.CUE_CFG_VERSION, 12, 14, 2, 1000, 250];
+    for (var i = 0; i < want.size(); i++) {
+        if (got[i] != want[i]) {
+            logger.error("cue_cfg slot " + i + " is " + got[i] + ", expected " +
+                         want[i] + ". The row ran on a 12-14 band at preset 2 " +
+                         "(1000/250), and #191 is precisely that a file which " +
+                         "does not say so cannot answer a colour complaint " +
+                         "afterwards");
+            return false;
+        }
+    }
+
+    // AND THE CLAMPED PRESET, NOT THE RAW PROPERTY. A row that ran on the
+    // default because the property was junk must record the default, or the
+    // file would blame a preset the cue never used.
+    var q = new CueFix.Probe();
+    q.setProp("cueResponse", 9);
+    q.loadPropsNow();
+    var g = new CueFix.Field();
+    q.installFitCueCfg(g);
+    q.runCueCfgWrite();
+    var h = g.last();
+    if (h[3] != $.CUE_PRESET_DEF || h[4] != $.CUE_PERSIST_OUT_MS ||
+        h[5] != $.CUE_PERSIST_IN_MS) {
+        logger.error("a row whose cueResponse property was out of range ran " +
+                     "on the DEFAULT, and that is what cue_cfg must record; " +
+                     "slots 3-5 are " + h[3] + ", " + h[4] + ", " + h[5]);
         return false;
     }
     return true;
