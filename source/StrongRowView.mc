@@ -1206,7 +1206,11 @@ const CUE_PERSIST_IN_MS  = 500;   // ms a change back into the band must hold
 //   disappears inside one second, which is the whole of the difference between
 //   a 250 ms window and none. What separates them here is adopt lag and the
 //   ambiguous-value fraction. Whether 0/0 flickers on a wrist at the real 4 Hz
-//   estimator rate is UNMEASURED and belongs to a [Local] session.
+//   estimator rate is UNMEASURED: #215 is the [Local] session that measures it,
+//   and it carries the criterion that decides whether preset 3 stays in the
+//   list at all. Do not delete this paragraph without that measurement --
+//   deleting it would leave the table reading as though the two presets had
+//   been compared on flicker, which they have not.
 //
 // EDGE LAG MEANS ARE OVER DIFFERENT POPULATIONS and the denominator is printed
 // beside each one for the reason the block above gives at length: a faster
@@ -6537,8 +6541,9 @@ class StrongRowView extends Ui.View {
                 // ordering argument exactly as it was. (That sentence is not
                 // literally true of startSession as a whole -- several
                 // createField calls follow it -- which is an existing
-                // inaccuracy this change neither relies on nor repairs; it is
-                // filed rather than folded in.)
+                // inaccuracy this change neither relies on nor repairs. Filed
+                // as #216 rather than folded in, because fixing it means
+                // DECIDING which field should absorb a cap failure.)
                 //
                 // `:count` READS $.CUE_CFG_SLOTS AND MUST KEEP DOING SO. It is
                 // the same constant cueCfgArray sizes its array from, and a
@@ -6562,7 +6567,9 @@ class StrongRowView extends Ui.View {
                 // any decoder renders it. 29 developer fields (after the
                 // in-flight gps_diag takes id 27) is past every field-count
                 // observation this repository has -- #77 measured eleven, #80
-                // twelve -- and #172 owns the question.
+                // twelve -- and #172 owns the question. #215 is the [Local]
+                // decode, with byte-exact criteria for this field and for what
+                // survives beside it if the cap does bite.
                 try {
                     mFitCueCfg = mSession.createField(
                         "cue_cfg", 28, Fit.DATA_TYPE_UINT16,
