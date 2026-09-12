@@ -16,8 +16,17 @@
 //   * early firmware on a watch published three weeks before the row;
 //   * a system power policy;
 //   * an interaction with this app's other radios;
-//   * the SDK's own multitasking note on enableLocationEvents ("Location
-//     events will be disabled when app enters inactive state").
+//   * the SDK's own multitasking note on enableLocationEvents, quoted in full
+//     because its second clause is the load-bearing one: "Multitasking:
+//     Location events will be disabled when app enters inacitve state [sic],
+//     and re-enabled when is active again. These state changes are denoted by
+//     calls to AppBase.onActive() and AppBase.onInactive()." As documented
+//     this is a TRANSIENT, SELF-RESTORING disable, so for it to explain a
+//     43-minute silence the re-enable half would have to have failed, which
+//     the note does not say and nothing here has measured. This app implements
+//     neither onActive nor onInactive, so it cannot currently observe the
+//     transition; the watchdog covers the consequence generically and not the
+//     mechanism by name.
 //
 // The lap marker is NOT among them: lap 1 began at 11:50:46 and the stream
 // stopped at 11:50:57, eleven seconds INTO the lap rather than at its edge,
@@ -221,6 +230,15 @@ const I_ENABLE_THROW = 8;
 // The accuracy value carried by the LAST callback, as Position reported it
 // (Position.QUALITY_* is 0..4). Read it only with I_CB_TOTAL > 0: this slot is
 // zeroed at the session boundary, and 0 is also QUALITY_NOT_AVAILABLE.
+//
+// WRITTEN ONLY ON A NON-NULL ACCURACY, which is why a reader comparing this
+// slot to I_CB_TOTAL can find them disagreeing. A callback carrying no accuracy
+// at all still counts into I_CB_TOTAL, still refreshes the pip's freshness
+// stamp, and leaves both this slot and mGpsQual holding the last GRADED
+// reading. So a stream that degrades to delivering accuracy-free callbacks
+// keeps the pip on a grade no live callback carried -- bounded by
+// GPS_FRESH_MS, not by the length of the degradation, and pinned as the
+// shipped latch by the c0 null-accuracy case. Found in round 1 review.
 const I_LAST_ACC     = 9;
 
 const I_FLAGS        = 10;
@@ -303,7 +321,15 @@ function clamp(v) {
 //
 // TRUNCATES rather than rounds, so a seconds slot never overstates its gap.
 function secsBetween(fromMs, toMs) {
-    if (fromMs == 0) { return 0; }
+    // BOTH stamps carry the never-seen sentinel and BOTH are guarded. toMs
+    // is mLastGpsMs at the one call site, and that is 0 for a row that got
+    // no callback at all -- exactly the row this field exists to explain.
+    // With a NEGATIVE session baseline (System.getTimer() is negative for
+    // 25 of every 50 days of uptime) `0 - fromMs` is positive, so the
+    // `d < 0` guard below does not fire and the slot would report
+    // |fromMs| / 1000, clamped at MAXV. That is a fabricated duration, not
+    // a measurement, and it lands on the mute row specifically.
+    if (fromMs == 0 || toMs == 0) { return 0; }
     var d = toMs - fromMs;
     if (d < 0) { return 0; }
     return clamp(d / 1000);

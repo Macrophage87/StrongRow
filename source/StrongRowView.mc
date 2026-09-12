@@ -3284,6 +3284,14 @@ class StrongRowView extends Ui.View {
     // still a fix, and blanking the pip at START would be a lie in the other
     // direction. The gap baseline is what keeps the straddling silence out of
     // the slot.
+    //
+    // NEITHER IS mGpsEver, and it is the more consequential of the two, so it
+    // is named here rather than left to be noticed (round 1 review). It is a
+    // statement about the RECEIVER -- "this device can produce a fix" -- not
+    // about the row, and it gates the watchdog for the whole app lifetime.
+    // Resetting it at START would re-open the acquisition-interrupting window
+    // at the beginning of every row, which is the one interval that gate exists
+    // to protect.
     hidden function gpsDiagSessionReset(now) {
         mGpsDiag    = $.GpsDiag.resetSession(mGpsDiag);
         mGpsBaseMs  = now;
@@ -7038,13 +7046,28 @@ class StrongRowView extends Ui.View {
                 //
                 // ITS OWN try/catch, per #74 and for the reason every group
                 // here gives for theirs: a throw must not null handles that
-                // were already created successfully. It is deliberately created
-                // AFTER rr_diag, which makes it the field most likely to fail
-                // if a cap exists -- 28 developer fields is past every
-                // field-count observation this repository has (#77 measured
-                // eleven, #80 twelve; #172 owns the question and its title
-                // figure of twenty-six is older still). If the cap exists, this
-                // is the field that finds it, and every field above survives.
+                // were already created successfully. It is created immediately AFTER
+                // rr_diag, which is NOT the end of the creation sequence: eleven more
+                // ungated fields follow it in this block, and up to ten more inside the
+                // mErgMode and coreFieldsWanted gates. So if a field-count cap exists,
+                // this is NOT the field that finds it -- the last call executed is, which
+                // is heat_strain_index with both gates open and lap_interval_num with both
+                // shut. 29 developer fields is past every field-count observation this
+                // repository has (#77 measured eleven, #80 twelve; #172 owns the question
+                // and its title figure of twenty-six is older still), and NOTHING here
+                // bounds which field a cap would take. That is unmeasured, not mitigated.
+                //
+                // RE-MEASURED ON THIS TREE rather than copied from the verdict that found
+                // this: gps_diag is the 8th of 29 createField calls here, not the 7th of
+                // 28 the round-1 tests lens measured -- cue_cfg (#191, id 28) landed in
+                // between and is created before rr_diag. The two figures the claim rests
+                // on are unchanged by that: eleven ungated calls still follow, and ten
+                // gated ones.
+                //
+                // WHETHER DIAGNOSTIC FIELDS SHOULD BE CREATED LAST is a real question and
+                // is NOT decided here; reordering createField calls is a behaviour change
+                // to every field's allocation order and does not belong in a fix round.
+                // #216 owns it, together with rr_diag's own older claim one screen up.
                 //
                 // CREATED UNCONDITIONALLY, and that is the point rather than an
                 // oversight. A row where positioning never delivered a single
