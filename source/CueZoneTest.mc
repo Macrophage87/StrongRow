@@ -223,6 +223,56 @@ module CueFix {
 
         // The real 250 ms tick, called directly.
         function runTick() { onTick(); }
+
+        // ---- #210: a SCRIPTED PROPERTY STORE ------------------------------
+        //
+        // WHY AN OVERRIDE OF getProp AND NOT A SETTER ON THE VIEW. The defect
+        // class this repository has the receipt for is a case that exercises a
+        // private COPY of the logic instead of the shipping code
+        // (jouleClampBench's note in StrongRowView.mc, where deleting both real
+        // clamp lines left all 308 cases green). Writing mCuePreset directly
+        // from a probe would pin nothing about loadSettings. Overriding the ONE
+        // method that reaches App.Properties leaves the whole of the shipping
+        // loadSettings -- the clamp, the swap, the order -- on the path under
+        // test.
+        //
+        // IT REPRODUCES getProp's NULL RULE, deliberately. The shipping body is
+        // "read; if the value is null, keep the default", so a scripted null
+        // must behave as an absent property and not as a null handed to the
+        // clamp. A case that wants to see the clamp meet a null calls the
+        // clamp directly.
+        //
+        // A key that was never scripted falls through to the real
+        // App.Properties, so a case scripts only what it is varying.
+        var props;
+        hidden function getProp(key, dflt) {
+            if (props != null && props.hasKey(key)) {
+                var p = props.get(key);
+                return (p == null) ? dflt : p;
+            }
+            return HrProbe.getProp(key, dflt);
+        }
+        function setProp(key, v) {
+            if (props == null) { props = {}; }
+            props.put(key, v);
+        }
+
+        // Re-read the settings through the SHIPPING loadSettings. Separate from
+        // reloadThroughSettings below because loadSettings is what a case
+        // varying a setting wants, while reloadSettings is what Garmin Connect
+        // reaches -- and the difference between them (the mid-row refusal) is
+        // itself under test.
+        function loadPropsNow() { loadSettings(); }
+
+        // Drive the SHIPPING reloadSettings, which is the path a settings
+        // change from Garmin Connect takes (StrongRowApp.onSettingsChanged ->
+        // StrongRowView.reloadSettings). Ui.requestUpdate() is its last
+        // statement, so every observable precedes it; the try/catch contains
+        // the catchable failure modes of a headless update request, exactly as
+        // RrHrvTest.tickAt does and for the same reason.
+        function reloadThroughSettings() {
+            try { reloadSettings(); } catch (e) { }
+        }
     }
 
     // The big stroke-rate numeral, located BY ITS FONT rather than by its
@@ -282,6 +332,30 @@ module CueFix {
     // themselves.
     function workProbe() {
         var p = new Probe();
+        p.enterStepLive(p.kindWork(), false);
+        p.setSpeed(0.0);
+        p.setDist(0.0);
+        return p;
+    }
+
+    // workProbe, with the cue-response property scripted FIRST and the shipping
+    // loadSettings re-run over it.
+    //
+    // THE ORDER IS THE WHOLE POINT. StrongRowView.initialize() calls
+    // loadSettings() before a case can script anything, so a probe built and
+    // then scripted still carries the settings it was constructed with. The
+    // re-read has to happen before enterStepLive, because enterStepLive raises
+    // mStarted and reloadSettings refuses to run while it is raised -- which is
+    // the property test_cue_c0_aSettingsReloadIsRefusedMidRow pins.
+    //
+    // `preset` is passed to setProp UNCHANGED, including a non-Number or an
+    // out-of-range one: the clamp is on the shipping side and these cases exist
+    // to watch it work. Pass null for "the property is not set", which getProp
+    // above maps to the declared default exactly as an absent property does.
+    function cueProbe(preset) {
+        var p = new Probe();
+        p.setProp("cueResponse", preset);
+        p.loadPropsNow();
         p.enterStepLive(p.kindWork(), false);
         p.setSpeed(0.0);
         p.setDist(0.0);
@@ -1337,6 +1411,151 @@ module CueFix {
                      CueFix.numeralText(m) + " and the colour is " +
                      CueFix.numeralColour(m) + ", expected COLOR_RED (" +
                      Gfx.COLOR_RED + ")");
+        return false;
+    }
+    return true;
+}
+
+// =============================================================================
+// #210 / #191: THE CUE RESPONSE SETTING
+// =============================================================================
+//
+// THE ASK, from the rower after the first row on v0.9.2 (#210): "The stroke
+// rate is better, though part of me would want it even twitchier." v0.9.1 (#195)
+// had already moved the latch from 4000/1000 to 2000/500 under the maintainer's
+// rule that responsiveness outranks flicker suppression. The answer is not
+// another guess at a number -- it is to make the number a setting, with the
+// four presets' MEASURED cost printed beside them, and let the rower choose.
+//
+// COMMIT PARTITION for this round (docs/agents/rituals/FIX_ROUND.md):
+//   c0   the pins below: today's DEFAULT behaviour, on the shipping draw path
+//        and through the shipping loadSettings. Green before the change and
+//        green after it -- that is their whole job, because "the default is
+//        today's behaviour" is the one promise this change must keep.
+//   c1   the pure seams (cuePresetWindows, cueClampPreset, cueStepW,
+//        cueCfgArray) and green pins on them. No wiring.
+//   c2   the RED differentials: everything that needs the setting to actually
+//        reach the view.
+//   c3   the wiring. Touches no test file, no pin, no scripts/, no .github/.
+//
+// -- c0 -----------------------------------------------------------------------
+
+// TODAY'S DEFAULT, ON THE SHIPPING DRAW PATH, TO THE MILLISECOND.
+//
+// NOT A DUPLICATE of test_cue_c2_theWindowsAreTwoSecondsAndAHalf, which calls
+// cueStep directly with literal stamps. That case would stay green if the view
+// stopped consulting the constants altogether; this one drives onUpdate on a
+// probe whose settings came through the shipping loadSettings, so it covers the
+// join between the two -- which is exactly the join this round moves.
+//
+// LITERAL STAMPS, ON PURPOSE. Everywhere else in this file the windows are read
+// from $.CUE_PERSIST_OUT_MS / $.CUE_PERSIST_IN_MS so a case says "the window,
+// whatever it is". Here the numbers ARE the claim: preset 1 is the default and
+// preset 1 is 2000/500, so a change that silently retuned the default would
+// have to edit this case to land.
+(:test) function test_cue_c0_theDefaultSettingsLatchAtTwoSeconds(logger) {
+    var p = CueFix.workProbe();
+
+    // Setup, asserted rather than assumed: the band the rest of this case's
+    // rates are chosen against is the shipped default, as loadSettings left it.
+    if (p.spmTargetLo() != CueFix.LO || p.spmTargetHi() != CueFix.HI) {
+        logger.error("setup: the default band from loadSettings is " +
+                     p.spmTargetLo() + "-" + p.spmTargetHi() + ", expected " +
+                     CueFix.LO + "-" + CueFix.HI + "; every rate below is " +
+                     "chosen against that band");
+        return false;
+    }
+
+    // Settle IN. Out of CUEZ_NONE the first reading is adopted on its own
+    // frame, so one render is enough.
+    p.setRate(17.0);
+    if (CueFix.numeralColour(CueFix.renderAt(p, 0)) != Gfx.COLOR_GREEN) {
+        logger.error("setup: 17.0 spm inside a 16-18 band must show green on " +
+                     "the first frame out of the no-data state");
+        return false;
+    }
+
+    // LEAVING the band. 19.5 clears hi + CUE_DEADBAND (18 + 1), so cueTarget
+    // asks for ABOVE from the frame at 1000 ms onward.
+    p.setRate(19.5);
+    CueFix.renderAt(p, 1000);
+    if (CueFix.numeralColour(CueFix.renderAt(p, 2999)) != Gfx.COLOR_GREEN) {
+        logger.error("1999 ms of a 2000 ms out-of-band window is not the " +
+                     "window: the colour must still be green. Got " +
+                     CueFix.numeralColour(CueFix.renderAt(p, 2999)));
+        return false;
+    }
+    if (CueFix.numeralColour(CueFix.renderAt(p, 3000)) != Gfx.COLOR_RED) {
+        logger.error("at exactly 2000 ms the out-of-band change is due and " +
+                     "must be taken; the colour is still not COLOR_RED (" +
+                     Gfx.COLOR_RED + ")");
+        return false;
+    }
+
+    // COMING BACK. The candidate is IN, which is the cheap claim and pays the
+    // shorter window.
+    p.setRate(17.0);
+    CueFix.renderAt(p, 4000);
+    if (CueFix.numeralColour(CueFix.renderAt(p, 4499)) != Gfx.COLOR_RED) {
+        logger.error("499 ms of a 500 ms re-entry window is not the window: " +
+                     "the colour must still be red");
+        return false;
+    }
+    if (CueFix.numeralColour(CueFix.renderAt(p, 4500)) != Gfx.COLOR_GREEN) {
+        logger.error("at exactly 500 ms the return to the band is due and " +
+                     "must be taken; the colour is still not COLOR_GREEN (" +
+                     Gfx.COLOR_GREEN + ")");
+        return false;
+    }
+    return true;
+}
+
+// A SETTINGS CHANGE DOES NOT REACH A ROW THAT IS ALREADY RUNNING.
+//
+// Pinned at c0 because the next commit makes it load-bearing in a way it was
+// not before: cue_cfg records ONE configuration per session, and that record is
+// only honest if the configuration cannot move underneath the row. The refusal
+// already exists (StrongRowView.reloadSettings returns early on mStarted), it
+// is simply not pinned anywhere, and a session-scope field that claimed a
+// configuration the second half of the row did not run on would be this
+// repository's "absence rendered as a value" defect wearing a new hat.
+//
+// Driven on an EXISTING setting -- the target band -- so the case is green in
+// both epochs and says nothing about the setting this round adds.
+(:test) function test_cue_c0_aSettingsReloadIsRefusedMidRow(logger) {
+    var p = new CueFix.Probe();
+    if (p.spmTargetLo() != CueFix.LO || p.spmTargetHi() != CueFix.HI) {
+        logger.error("setup: a freshly constructed view must carry the " +
+                     "declared defaults; got " + p.spmTargetLo() + "-" +
+                     p.spmTargetHi());
+        return false;
+    }
+
+    // BEFORE START the reload is honoured, which is the half that makes the
+    // other half meaningful: a case asserting only the refusal would pass on a
+    // reloadSettings that never worked at all.
+    p.setProp("targetLo", 12);
+    p.setProp("targetHi", 14);
+    p.reloadThroughSettings();
+    if (p.spmTargetLo() != 12 || p.spmTargetHi() != 14) {
+        logger.error("before START a settings change must be adopted; the " +
+                     "band is " + p.spmTargetLo() + "-" + p.spmTargetHi() +
+                     ", expected 12-14");
+        return false;
+    }
+
+    // AFTER START it is refused, and the row keeps the configuration it began
+    // with.
+    p.enterStepLive(p.kindWork(), false);
+    p.setProp("targetLo", 4);
+    p.setProp("targetHi", 6);
+    p.reloadThroughSettings();
+    if (p.spmTargetLo() != 12 || p.spmTargetHi() != 14) {
+        logger.error("a settings change arriving mid-row must NOT be adopted: " +
+                     "the band is " + p.spmTargetLo() + "-" + p.spmTargetHi() +
+                     ", expected the 12-14 the row started on. Every " +
+                     "session-scope record of the configuration depends on " +
+                     "this being true for the whole row");
         return false;
     }
     return true;
