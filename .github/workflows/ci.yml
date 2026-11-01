@@ -544,7 +544,7 @@ jobs:
         # gate that buys nothing. Losing the logs is a diagnostics loss, not a
         # correctness signal.
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ciq-test-logs
           path: |
@@ -664,7 +664,7 @@ jobs:
         # 30129516247 attempt 2 was wrong — that job was cancelled mid-pull
         # and this step never executed).
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # Throwaway-signed: a CI build sanity artifact, not a store upload.
           name: strongrow-build-unsigned
